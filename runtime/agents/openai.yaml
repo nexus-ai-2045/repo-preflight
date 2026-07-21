@@ -1,0 +1,6 @@
+name: public-readiness
+description: "repoの設計、実装、検証、登録、PR、公開、後片付けを証拠と承認ゲート付きで進める。"
+interface:
+  key: public-readiness
+  display_name: "Public Readiness"
+  short_description: "公開repoライフサイクル。"
