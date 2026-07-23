@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -59,6 +60,24 @@ def test_deleted_history_secret_blocks_without_echoing_value(tmp_path: Path):
     report = MODULE.scan(repo)
     assert report["checks"]["secret_scan"]["status"] == "fail"
     assert token not in str(report)
+
+
+def test_cli_json_never_echoes_matched_secret(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    token = "github_pat_" + "Z" * 30
+    (repo / "leak.txt").write_text(token, encoding="utf-8")
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 1
+    assert token not in result.stdout
+    assert json.loads(result.stdout)["checks"]["secret_scan"]["status"] == "fail"
 
 
 def test_subdirectory_still_scans_repo_root(tmp_path: Path):

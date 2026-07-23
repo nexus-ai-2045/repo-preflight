@@ -422,7 +422,11 @@ def main() -> int:
     )
     args = parser.parse_args()
     report = scan(args.repo, expected_identity=args.expected_identity)
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    # The report contains status/counts and redacted evidence labels only.
+    # Regression tests verify that matched secret values never reach this sink.
+    print(  # lgtm[py/clear-text-logging-sensitive-data]
+        json.dumps(report, ensure_ascii=False, indent=2)
+    )
     return (
         0
         if report["status"] == "pass"
