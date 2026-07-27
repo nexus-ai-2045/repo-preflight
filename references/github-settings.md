@@ -12,6 +12,33 @@
 
 設定値は保存記録だけで判断せず、公開前、重要なmerge前、運用変更後にGitHub画面またはAPIで再測定する。
 
+## 初期値と変更要否
+
+次はGitHub REST APIでrepositoryを作成する場合の一般的な初期値である。GitHub画面、template repository、organization / enterprise policy、plan、作成時の指定により変わる。初期値を現在値として扱わず、必ず対象repositoryをread-onlyで確認する。
+
+| 設定 | 一般的なAPI初期値 | 通常の推奨 | 変更要否 |
+|---|---:|---:|---|
+| visibility | public | 承認まではprivate | 必須。安全側へ明示指定する |
+| Issues | ON | 問い合わせを受けるならON | 用途に合わせる |
+| Projects | ON | 未使用ならOFF | 任意 |
+| Wiki | ON | 未使用ならOFF | 任意 |
+| Discussions | OFF | community運用時だけON | 通常は変更不要 |
+| squash merge | ON | ON | 通常は変更不要 |
+| merge commit | ON | repository方針による | squashだけにするならOFF |
+| rebase merge | ON | repository方針による | squashだけにするならOFF |
+| auto-merge | OFF | 初期はOFF | 通常は変更不要 |
+| merge後のhead branch自動削除 | OFF | 短期branch運用ではON | 推奨変更 |
+| PR branchの更新許可 | OFF | 必要時にON | 任意 |
+
+GitHub Actionsの既定token権限、ruleset、security機能は、organization / enterprise policyやpublic / privateで差があるため単一の初期値を置かない。APIで`observed_value`を取得し、推奨値との差だけを変更候補にする。
+
+public repositoryではsecret scanningなど一部機能が自動提供される場合がある。一方、repository単位のpush protectionやprivate vulnerability reportingなどは明示的な有効化が必要な場合がある。画面表示とAPIの現在値を優先する。
+
+公式資料:
+
+- [Repository REST APIの初期値](https://docs.github.com/en/rest/repos/repos)
+- [Security and analysis設定](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository)
+
 ## 基本設定
 
 | 設定 | 推奨度 | 通常の選択 | 選択理由と例外 |
@@ -120,6 +147,76 @@ gh api 'repos/OWNER/REPO/secret-scanning/alerts?state=open&per_page=100'
 ```
 
 APIが404や権限errorを返した項目を無効と断定しない。classic branch protectionとrulesetは別に確認し、organization / enterprise policyによる上書きも区別する。
+
+## AIへ読ませて設定する
+
+AIへ依頼する場合も、いきなり設定変更を実行させない。次の5段階を固定する。
+
+1. **Inspect**: repository、account、現在値、organization policyをread-onlyで取得する。
+2. **Compare**: このガイドの推奨値と比較し、`変更不要 / 推奨変更 / 要判断 / 確認不能`へ分類する。
+3. **Preview**: 対象repository、設定名、現在値、変更後、外部影響、rollback、正確な操作を提示する。
+4. **Approval**: 現在会話で設定ごとの明示承認を待つ。
+5. **Execute / Verify**: 承認された設定だけ変更し、APIで再測定する。未承認項目は変更しない。
+
+AIが守る停止線:
+
+- repository名やGitHub accountが一致しなければ停止する。
+- visibility、Actions権限、ruleset bypass、security機能、auto-mergeを包括承認へ束ねない。
+- organization / enterprise設定をrepository設定と誤認しない。
+- 404、権限不足、plan非対応を`false`へ推測しない。
+- browser画面の見た目だけで完了とせず、可能ならAPIで再確認する。
+- 設定変更と`.github/dependabot.yml`などのcode変更を別工程にする。
+- push、PR、merge、release、公開、告知を設定承認から推論しない。
+
+### AI向け依頼文
+
+`OWNER/REPO`を実際の対象へ置き換える。
+
+```text
+public-readiness の references/github-settings.md を正本として、
+OWNER/REPO のGitHub設定をread-onlyで実測してください。
+
+結果を次へ分類してください。
+- 変更不要
+- 推奨変更
+- 人間判断が必要
+- 確認不能
+
+各候補について、現在値、一般的な初期値、推奨値、選択理由、
+外部影響、rollback、正確な変更操作を提示してください。
+設定変更、push、PR、merge、release、visibility変更はまだ実行しないでください。
+私が設定ごとに明示承認したものだけ実行し、直後にAPIで再測定してください。
+```
+
+### AI向け機械可読packet
+
+設定候補を次の形で出力させると、現在値と提案を混同しにくい。
+
+```json
+{
+  "schema_version": "github-settings-review/v1",
+  "repository": "OWNER/REPO",
+  "observed_at": "RFC3339",
+  "account": "LOGIN",
+  "settings": [
+    {
+      "name": "delete_branch_on_merge",
+      "observed_value": false,
+      "default_value": false,
+      "recommended_value": true,
+      "classification": "recommended_change",
+      "reason": "短期branch運用",
+      "external_effect": "今後mergeしたremote head branchを自動削除",
+      "rollback": "設定をfalseへ戻す",
+      "approved": false
+    }
+  ],
+  "unknowns": [],
+  "external_actions_performed": false
+}
+```
+
+`approved`はAIが推測で`true`にしない。人間承認後も対象repositoryと現在値を再取得し、staleなpacketなら作り直す。
 
 ## 判断記録
 
