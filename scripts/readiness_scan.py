@@ -259,7 +259,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     identities = probes["identities"][1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
     missing = [name for name in REQUIRED if not (repo / name).is_file()]
-    secret_hits: list[str] = []
+    credential_finding_count = 0
     path_hits: list[str] = []
     try:
         paths = working_tree_files(repo)
@@ -289,12 +289,12 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
         if text_has(SECRET_PATTERNS, data):
-            secret_hits.append(sanitized_evidence_label(rel))
+            credential_finding_count += 1
         if text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
     try:
-        history_secret_hits, history_path_hits = history_hits(repo)
-        secret_hits.extend(history_secret_hits)
+        history_credential_findings, history_path_hits = history_hits(repo)
+        credential_finding_count += len(history_credential_findings)
         path_hits.extend(history_path_hits)
     except RuntimeError:
         return {
@@ -345,8 +345,8 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
             "missing": missing,
         },
         "secret_scan": {
-            "status": "pass" if not secret_hits else "fail",
-            "files": secret_hits,
+            "status": "pass" if credential_finding_count == 0 else "fail",
+            "finding_count": credential_finding_count,
         },
         "personal_path_scan": {
             "status": "pass" if not path_hits else "fail",
@@ -422,11 +422,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     report = scan(args.repo, expected_identity=args.expected_identity)
-    # The report contains status/counts and redacted evidence labels only.
-    # Regression tests verify that matched secret values never reach this sink.
-    print(  # lgtm[py/clear-text-logging-sensitive-data]
-        json.dumps(report, ensure_ascii=False, indent=2)
-    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
     return (
         0
         if report["status"] == "pass"

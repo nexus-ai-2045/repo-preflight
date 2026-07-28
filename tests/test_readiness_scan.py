@@ -133,7 +133,8 @@ def test_non_ascii_untracked_filename_is_scanned(tmp_path: Path):
     report = MODULE.scan(repo)
 
     assert report["checks"]["secret_scan"]["status"] == "fail"
-    assert "日本語.txt" in report["checks"]["secret_scan"]["files"]
+    assert report["checks"]["secret_scan"]["finding_count"] == 1
+    assert "files" not in report["checks"]["secret_scan"]
 
 
 def test_percent_encoded_secret_is_scanned(tmp_path: Path):
