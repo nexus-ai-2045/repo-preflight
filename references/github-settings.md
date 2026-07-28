@@ -137,16 +137,28 @@ gh api repos/OWNER/REPO --jq `
   '{visibility,default_branch,delete_branch_on_merge,allow_squash_merge,allow_merge_commit,allow_rebase_merge,allow_auto_merge,security_and_analysis}'
 
 gh api repos/OWNER/REPO/rulesets
+# 上の一覧で得た各IDについて繰り返す
+gh api repos/OWNER/REPO/rulesets/{RULESET_ID}
 gh api repos/OWNER/REPO/actions/permissions
 gh api repos/OWNER/REPO/actions/permissions/workflow
+# allowed_actionsがselectedの場合だけ追加取得する
+gh api repos/OWNER/REPO/actions/permissions/selected-actions
 gh api repos/OWNER/REPO/private-vulnerability-reporting
 
+gh api repos/OWNER/REPO/code-scanning/default-setup
+gh api 'repos/OWNER/REPO/code-scanning/analyses?per_page=100'
 gh api 'repos/OWNER/REPO/code-scanning/alerts?state=open&per_page=100'
 gh api 'repos/OWNER/REPO/dependabot/alerts?state=open&per_page=100'
 gh api 'repos/OWNER/REPO/secret-scanning/alerts?state=open&per_page=100'
 ```
 
-APIが404や権限errorを返した項目を無効と断定しない。classic branch protectionとrulesetは別に確認し、organization / enterprise policyによる上書きも区別する。
+ruleset一覧はsummaryにすぎない。各rulesetのIDから詳細を取得し、conditions、bypass actors、required checks、pull request rulesまで確認する。classic branch protectionとrulesetは別に確認し、organization / enterprise policyによる上書きも区別する。
+
+Code scanning alertsは検出結果であり、設定状態そのものではない。alertが0件でもCodeQL設定済みとは判定しない。default setup、`.github/workflows`のadvanced setup、default branchとPRを対象にしたrecent analysesを合わせて確認する。
+
+Actionsの`allowed_actions`が`selected`の場合は、`selected-actions` endpointから`github_owned_allowed`、`verified_allowed`、`patterns_allowed`も取得する。policy modeだけで許可listの妥当性を承認しない。
+
+APIが404や権限errorを返した項目を無効と断定しない。取得不能として記録し、権限、plan、organization policyを別に確認する。
 
 ## AIへ読ませて設定する
 
@@ -157,6 +169,8 @@ AIへ依頼する場合も、いきなり設定変更を実行させない。次
 3. **Preview**: 対象repository、設定名、現在値、変更後、外部影響、rollback、正確な操作を提示する。
 4. **Approval**: 現在会話で設定ごとの明示承認を待つ。
 5. **Execute / Verify**: 承認された設定だけ変更し、APIで再測定する。未承認項目は変更しない。
+
+Inspectではsummary endpointだけで完了としない。ruleset、CodeQL、selected Actions policyのように一覧・結果・modeと詳細設定が別endpointへ分かれる項目は、詳細まで取得できなければ`確認不能`に分類する。
 
 AIが守る停止線:
 
