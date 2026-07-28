@@ -79,5 +79,6 @@ remaining_blockers:
 
 - 状態判定: [references/lifecycle.md](references/lifecycle.md)
 - 承認と安全停止条件: [references/gates.md](references/gates.md)
+- GitHub設定の推奨値と選択理由: [references/github-settings.md](references/github-settings.md)
 - repositoryへ残す成果物: [references/artifacts.md](references/artifacts.md)
 - repository catalogへの登録: [references/repository-catalog.md](references/repository-catalog.md)
