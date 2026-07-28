@@ -88,6 +88,10 @@ def sanitized_evidence_label(label: str) -> str:
     return label
 
 
+def repository_evidence_label(repo: Path) -> str:
+    return sanitized_evidence_label(repo.name or "<repository>")
+
+
 def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
@@ -251,7 +255,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     if any(code for code, _ in probes.values()):
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_probe_failed"],
         }
     head = probes["head"][1]
@@ -259,7 +263,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     identities = probes["identities"][1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
     missing = [name for name in REQUIRED if not (repo / name).is_file()]
-    secret_hits: list[str] = []
+    credential_finding_count = 0
     path_hits: list[str] = []
     try:
         paths = working_tree_files(repo)
@@ -267,7 +271,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_worktree_inventory_failed"],
         }
     for path in paths:
@@ -277,7 +281,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
         if not path.is_file():
             return {
                 "status": "tool_error",
-                "repo": str(repo),
+                "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
         try:
@@ -285,21 +289,21 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
         except OSError:
             return {
                 "status": "tool_error",
-                "repo": str(repo),
+                "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
         if text_has(SECRET_PATTERNS, data):
-            secret_hits.append(sanitized_evidence_label(rel))
+            credential_finding_count += 1
         if text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
     try:
-        history_secret_hits, history_path_hits = history_hits(repo)
-        secret_hits.extend(history_secret_hits)
+        history_credential_findings, history_path_hits = history_hits(repo)
+        credential_finding_count += len(history_credential_findings)
         path_hits.extend(history_path_hits)
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_history_inventory_failed"],
         }
     identity_lines = {line for line in identities.splitlines() if line}
@@ -345,8 +349,8 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
             "missing": missing,
         },
         "secret_scan": {
-            "status": "pass" if not secret_hits else "fail",
-            "files": secret_hits,
+            "status": "pass" if credential_finding_count == 0 else "fail",
+            "finding_count": credential_finding_count,
         },
         "personal_path_scan": {
             "status": "pass" if not path_hits else "fail",
@@ -406,7 +410,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     return {
         "status": "blocked" if blocking or unknown else "pass",
         "publication_decision": "blocked_human_review_required",
-        "repo": top,
+        "repo": repository_evidence_label(repo),
         "head": head,
         "checks": checks,
     }
