@@ -80,6 +80,25 @@ def test_cli_json_never_echoes_matched_secret(tmp_path: Path):
     assert json.loads(result.stdout)["checks"]["secret_scan"]["status"] == "fail"
 
 
+def test_cli_json_never_echoes_secret_shaped_checkout_path(tmp_path: Path):
+    token = "github_pat_" + "Y" * 30
+    secret_parent = tmp_path / token
+    secret_parent.mkdir()
+    repo = make_repo(secret_parent)
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    assert token not in result.stdout
+    assert json.loads(result.stdout)["repo"] == "repo"
+
+
 def test_subdirectory_still_scans_repo_root(tmp_path: Path):
     repo = make_repo(tmp_path)
     (repo / "nested").mkdir()

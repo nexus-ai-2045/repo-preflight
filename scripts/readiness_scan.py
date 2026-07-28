@@ -88,6 +88,10 @@ def sanitized_evidence_label(label: str) -> str:
     return label
 
 
+def repository_evidence_label(repo: Path) -> str:
+    return sanitized_evidence_label(repo.name or "<repository>")
+
+
 def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
@@ -251,7 +255,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     if any(code for code, _ in probes.values()):
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_probe_failed"],
         }
     head = probes["head"][1]
@@ -267,7 +271,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_worktree_inventory_failed"],
         }
     for path in paths:
@@ -277,7 +281,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
         if not path.is_file():
             return {
                 "status": "tool_error",
-                "repo": str(repo),
+                "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
         try:
@@ -285,7 +289,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
         except OSError:
             return {
                 "status": "tool_error",
-                "repo": str(repo),
+                "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
         if text_has(SECRET_PATTERNS, data):
@@ -299,7 +303,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": str(repo),
+            "repo": repository_evidence_label(repo),
             "issues": ["git_history_inventory_failed"],
         }
     identity_lines = {line for line in identities.splitlines() if line}
@@ -406,7 +410,7 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
     return {
         "status": "blocked" if blocking or unknown else "pass",
         "publication_decision": "blocked_human_review_required",
-        "repo": top,
+        "repo": repository_evidence_label(repo),
         "head": head,
         "checks": checks,
     }
