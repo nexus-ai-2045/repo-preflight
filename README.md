@@ -49,6 +49,8 @@ JSONの`status: pass`は、このCLIが担当するローカル自動検査に�
 
 Codexなどから使う場合は [SKILL.md](SKILL.md) を入口にしてください。状態遷移、承認境界、成果物テンプレートを同梱しています。
 
+公開repositoryのruleset、merge方式、Actions権限、security機能などの選択理由は、[GitHub repository設定ガイド](references/github-settings.md)を参照してください。
+
 ## License
 
 MIT License。詳細は [LICENSE](LICENSE) を参照してください。
