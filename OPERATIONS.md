@@ -4,10 +4,13 @@
 
 ```powershell
 python scripts/readiness_scan.py --repo . --json
+python scripts/readiness_scan.py --repo . --release --json
 python -m pytest -q
 ```
 
 `status: pass`はローカル自動検査の結果です。公開可否は`publication_decision`と各`unknown`項目を確認し、人が判断します。
+release準備では `--release` を省略しません。`readme_release_design` がfailならREADMEを修正し、
+再実行します。推奨capabilityは不足箇所へのroutingであり、全pluginの一括起動指示ではありません。
 
 ## 更新
 

@@ -39,6 +39,28 @@ def test_clean_complete_repo_passes(tmp_path: Path):
     assert MODULE.scan(make_repo(tmp_path))["status"] == "pass"
 
 
+def test_release_mode_autoruns_readme_design_gate(tmp_path: Path):
+    report = MODULE.scan(make_repo(tmp_path), release=True)
+    assert report["status"] == "blocked"
+    assert report["checks"]["readme_release_design"]["status"] == "fail"
+    assert report["checks"]["readme_release_design"]["design_status"] == "blocked"
+    assert (
+        report["checks"]["readme_release_design"]["human_visual_review_required"]
+        is True
+    )
+
+
+def test_release_mode_missing_readme_fails_closed_without_crashing(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    (repo / "README.md").unlink()
+    report = MODULE.scan(repo, release=True)
+    assert report["status"] == "blocked"
+    assert (
+        report["checks"]["readme_release_design"]["release_gate"]
+        == "blocked_readme_missing"
+    )
+
+
 def test_expected_identity_detects_mismatch(tmp_path: Path):
     report = MODULE.scan(
         make_repo(tmp_path), expected_identity="Release Bot <release@example.invalid>"

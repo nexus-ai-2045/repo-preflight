@@ -1,6 +1,6 @@
 name: public-readiness
-description: "repoの設計、実装、検証、登録、PR、公開、後片付けを証拠と承認ゲート付きで進める。"
+description: "repoの設計、実装、検証、登録、README release gate、PR、公開、後片付けを証拠と承認ゲート付きで進める。"
 interface:
   key: public-readiness
   display_name: "Public Readiness"
-  short_description: "公開repoライフサイクル。"
+  short_description: "README設計を含む公開repoライフサイクル。"

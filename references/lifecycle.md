@@ -15,7 +15,7 @@
 | human_review_complete | reviewer、日時、対象HEAD/PR diff、確認範囲、判定、未解決事項 | review範囲不明 |
 | merge_approved | exact PR/HEAD/方式の承認 | stale review/CI |
 | merged | default branch上のmerge証拠 | merge未確認 |
-| public_release_approved | repository固有のvisibility承認 | 包括的・過去承認のみ |
+| public_release_approved | repository固有のvisibility承認、current HEADのREADME release gate、人間目視review | README設計fail、包括的・過去承認のみ |
 | public | visibility再実測 | 設定不明 |
 | public_checks_passed | 公開内容、CI、security再確認 | 公開後検査未実施 |
 | cleanup_complete | branch/worktree参照なし | unmerged/unpushed work |

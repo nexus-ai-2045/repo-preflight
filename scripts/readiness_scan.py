@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
 import subprocess
@@ -237,7 +238,21 @@ def deleted_working_tree_files(repo: Path) -> set[Path]:
     }
 
 
-def scan(repo: Path, expected_identity: str | None = None) -> dict:
+def run_readme_release_gate(repo: Path) -> dict:
+    script = Path(__file__).with_name("readme_release_gate.py")
+    spec = importlib.util.spec_from_file_location("readme_release_gate", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module.review(repo / "README.md")
+
+
+def scan(
+    repo: Path,
+    expected_identity: str | None = None,
+    *,
+    release: bool = False,
+) -> dict:
     repo = repo.resolve()
     if not repo.is_dir():
         return {"status": "tool_error", "issues": ["not_git_repository"]}
@@ -395,6 +410,33 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
             "url": redact_remote(remote),
         },
     }
+    if release:
+        if (repo / "README.md").is_file():
+            readme_report = run_readme_release_gate(repo)
+            checks["readme_release_design"] = {
+                "status": "pass" if readme_report["status"] == "pass" else "fail",
+                "design_status": readme_report["status"],
+                "release_gate": readme_report["release_gate"],
+                "metrics": readme_report["metrics"],
+                "findings": readme_report["findings"],
+                "recommended_capabilities": readme_report["recommended_capabilities"],
+                "human_visual_review_required": True,
+            }
+        else:
+            checks["readme_release_design"] = {
+                "status": "fail",
+                "design_status": "blocked",
+                "release_gate": "blocked_readme_missing",
+                "findings": [
+                    {
+                        "code": "readme_missing",
+                        "severity": "error",
+                        "message": "README.mdがありません。",
+                    }
+                ],
+                "recommended_capabilities": ["Template Creator"],
+                "human_visual_review_required": True,
+            }
     automated_check_names = {
         "clean_worktree",
         "required_documents",
@@ -405,6 +447,8 @@ def scan(repo: Path, expected_identity: str | None = None) -> dict:
         "ci_configuration",
         "origin",
     }
+    if release:
+        automated_check_names.add("readme_release_design")
     blocking = any(checks[name]["status"] == "fail" for name in automated_check_names)
     unknown = any(checks[name]["status"] == "unknown" for name in automated_check_names)
     return {
@@ -421,11 +465,20 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
+        "--release",
+        action="store_true",
+        help="release準備としてREADME情報設計ゲートも自動実行する",
+    )
+    parser.add_argument(
         "--expected-identity",
         help='Expected Git author and committer identity, for example "Example <dev@example.com>"',
     )
     args = parser.parse_args()
-    report = scan(args.repo, expected_identity=args.expected_identity)
+    report = scan(
+        args.repo,
+        expected_identity=args.expected_identity,
+        release=args.release,
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return (
         0
