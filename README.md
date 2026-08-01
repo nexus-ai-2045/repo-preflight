@@ -21,6 +21,16 @@ Public Readinessは、Gitリポジトリを公開してよいか判断するた�
 python scripts/readiness_scan.py --repo C:\path\to\repo --json
 ```
 
+release準備ではREADME設計ゲートも自動実行します。
+
+```powershell
+python scripts/readiness_scan.py --repo C:\path\to\repo --release --json
+```
+
+READMEは、短い導入、目的、できること、Quickstart、制約、見出し階層、全体の長さを
+read-onlyで検査します。不足に応じて Template Creator、Product Design、Visualize、
+Figma / frontend-design、ai-slop-check のうち必要なものだけを提案します。
+
 終了コード:
 
 - `0`: scannerが扱う必須項目がpass
@@ -28,6 +38,7 @@ python scripts/readiness_scan.py --repo C:\path\to\repo --json
 - `2`: Gitや履歴取得など検査自体が失敗
 
 scannerは既定でread-onlyです。GitHub repo作成、push、PR、merge、visibility変更、投稿は行いません。
+`--release` もREADMEやreleaseを自動変更・作成しません。
 
 JSONの`status: pass`は、このCLIが担当するローカル自動検査に合格したという意味です。`publication_decision`は常に人間レビューを要求します。`pass`だけを根拠に公開しないでください。
 

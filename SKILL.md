@@ -1,6 +1,6 @@
 ---
 name: public-readiness
-description: "repositoryを構想、登録、設計、リサーチ、TDD、実装、security review、test、運用準備、private GitHub、PR、人間目視review、merge、public化、告知、branch/worktree cleanupまで検査記録に基づいて進める。『publicを目指す』『公開前チェック』『公開repoとして完成させる』『PRからmerge後の後片付けまで』の依頼で使う。登録だけの依頼では登録手順だけを実行する。"
+description: "repositoryを構想、登録、設計、リサーチ、TDD、実装、security review、test、運用準備、private GitHub、PR、人間目視review、merge、public化、release、告知、branch/worktree cleanupまで検査記録に基づいて進める。release準備ではREADMEの短さ、理解順序、Quickstart、制約、見出し設計を自動検査し、必要なデザインskill/pluginだけを選ぶ。『publicを目指す』『公開前チェック』『READMEを分かりやすく』『releaseを作る』『PRからmerge後の後片付けまで』の依頼で使う。"
 ---
 
 # Public Readiness
@@ -30,7 +30,7 @@ discovered -> requirements_defined -> research_complete -> design_complete
 ## 実行
 
 1. repo root、対象成果、owner、non-goals、成功条件を確定する。曖昧さが結果を変えない限り質問せず進める。
-2. `readiness_scan.py`でrepo、文書、identity、history、secret候補、個人path、CIをread-only検査する。
+2. `readiness_scan.py`でrepo、文書、identity、history、secret候補、個人path、CIをread-only検査する。release準備では必ず `python scripts/readiness_scan.py --repo <path> --release --json` を使い、README設計ゲートを自動実行する。
 3. 必要な作業だけを選ぶ。
    - 壁打ち・UX: Product Design / brainstorming
    - 公式仕様: OpenAI Developers / official docs
@@ -39,8 +39,15 @@ discovered -> requirements_defined -> research_complete -> design_complete
    - security: Codex Security threat model / security scan
    - GitHub: github-cli-ops-guard / GitHub specialist / pr review
    - 完了: verification-before-completion / finishing-a-development-branch
+   - READMEの構造不足: Template Creator
+   - 読者・価値・理解順序の不足: Product Design
+   - 4工程以上の複雑な流れで図がない: Visualize
+   - UI製品なのに画面証拠がない: Figma / frontend-design（実画像が必要な場合だけ）
+   - 装飾過多・量産型表現: ai-slop-check（README向けには限定適用）
+   すべてを毎回起動せず、`readme_release_design.recommended_capabilities` に出たものだけ使う。
 4. [成果物契約](references/artifacts.md)に従い、必要なrepo文書と機械可読evidenceを作る。
 5. [承認手順](references/gates.md)に従い、外部操作ごとに内容提示、承認、実行、結果確認を分離する。
+   READMEゲートのpassは人間の見やすさ確認を代替しない。release作成、tag、告知、公開は引き続き別承認にする。
 6. 依頼された完了地点（登録のみ、private保存、PRまで、mergeまで、publicまで）に到達したら完了として扱う。public化を促し続けない。
 7. merge後にdefault branchを再測定し、参照がないことを確認してからbranch/worktreeを片付ける。
 
