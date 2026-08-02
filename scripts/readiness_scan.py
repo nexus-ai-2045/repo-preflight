@@ -47,7 +47,10 @@ PATH_PATTERNS = (
 
 
 def run(repo: Path, *args: str) -> tuple[int, str]:
-    # git出力はlocale既定ではなくUTF-8として読む。不正byteはfail-closed比較に残す
+    # git側の出力encodingをUTF-8に固定してから読む。i18n.logOutputEncodingが
+    # 非UTF-8のrepositoryでも作者名を壊さない。不正byteはfail-closed比較に残す
+    if args and args[0] == "git":
+        args = (args[0], "-c", "i18n.logOutputEncoding=UTF-8", *args[1:])
     result = subprocess.run(
         args,
         cwd=repo,
@@ -348,17 +351,22 @@ def scan(
             run(repo, "git", "var", "GIT_AUTHOR_IDENT"),
             run(repo, "git", "var", "GIT_COMMITTER_IDENT"),
         )
-        if any(code for code, _ in effective_probes):
+        # probeは個別に評価する。片方が失敗しても、成功した側が示すmismatchは
+        # 捨てない (失敗を理由にunknownへ丸めると既知の不一致が隠れる)
+        probe_failed = False
+        for code, value in effective_probes:
+            if code:
+                probe_failed = True
+                continue
+            identity = effective_identity(value)
+            if identity != expected_identity:
+                effective_mismatches.add(identity)
+        if effective_mismatches:
+            effective_status = "fail"
+        elif probe_failed:
             effective_status = "unknown"
         else:
-            effective_mismatches = {
-                identity
-                for identity in (
-                    effective_identity(value) for _, value in effective_probes
-                )
-                if identity != expected_identity
-            }
-            effective_status = "pass" if not effective_mismatches else "fail"
+            effective_status = "pass"
     workflows = sorted(
         list((repo / ".github" / "workflows").glob("*.y*ml"))
         if (repo / ".github" / "workflows").is_dir()

@@ -294,6 +294,45 @@ def test_unexpected_exception_exits_with_tool_error_code(
     assert "secret-bearing message" not in json.dumps(report)
 
 
+def test_non_utf8_log_output_encoding_does_not_corrupt_identity(tmp_path: Path):
+    """i18n.logOutputEncoding が非UTF-8でも作者名を誤判定しない (Codex review P2)."""
+    repo = make_repo(tmp_path)
+    git(repo, "config", "i18n.logOutputEncoding", "ISO-8859-1")
+    git(repo, "config", "user.name", "José")
+    git(repo, "config", "user.email", "jose@example.invalid")
+    (repo / "latin.txt").write_text("latin\n", encoding="utf-8")
+    git(repo, "add", "latin.txt")
+    git(repo, "commit", "-m", "add latin author commit")
+
+    report = MODULE.scan(repo, expected_identity="José <jose@example.invalid>")
+
+    identity = report["checks"]["commit_identity"]
+    assert identity["identity_count"] == 2
+    # 追加commitのみ一致想定。初期commitのTest Authorが1件mismatchになる
+    assert identity["mismatch_count"] == 1
+    assert identity["effective_mismatch_count"] == 0
+    assert identity["effective_identity"] == "pass"
+
+
+def test_successful_identity_probe_mismatch_survives_failed_probe(
+    tmp_path: Path, monkeypatch
+):
+    """片方のprobeが失敗しても、成功したprobeのmismatchを握り潰さない (Codex review P2)."""
+    repo = make_repo(tmp_path)
+    clear_local_identity(repo, tmp_path, monkeypatch)
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Other Author")
+    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "other@example.invalid")
+
+    report = MODULE.scan(
+        repo, expected_identity="Test Author <test-author@example.invalid>"
+    )
+
+    identity = report["checks"]["commit_identity"]
+    assert identity["status"] == "fail"
+    assert identity["effective_identity"] == "fail"
+    assert identity["effective_mismatch_count"] == 1
+
+
 def test_effective_identity_mismatch_is_reported(tmp_path: Path):
     repo = make_repo(tmp_path)
     git(repo, "config", "user.email", "different@example.invalid")
