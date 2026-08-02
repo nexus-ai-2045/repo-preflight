@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -203,6 +204,94 @@ def test_missing_repo_returns_sanitized_tool_error(tmp_path: Path):
     report = MODULE.scan(missing)
 
     assert report == {"status": "tool_error", "issues": ["not_git_repository"]}
+
+
+def clear_local_identity(repo: Path, tmp_path: Path, monkeypatch) -> None:
+    # system/global configを遮断してもline ending判定が変わらないよう、
+    # 現在有効なcore.autocrlfをlocal configへ固定してからidentityを消す
+    autocrlf = subprocess.run(
+        ["git", "config", "--get", "core.autocrlf"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    git(repo, "config", "core.autocrlf", autocrlf or "false")
+    git(repo, "config", "--unset", "user.name")
+    git(repo, "config", "--unset", "user.email")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global-gitconfig"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for variable in (
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "EMAIL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+
+
+def test_scan_works_without_configured_git_identity(tmp_path: Path, monkeypatch):
+    repo = make_repo(tmp_path)
+    clear_local_identity(repo, tmp_path, monkeypatch)
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "pass"
+    assert report["checks"]["commit_identity"]["status"] == "pass"
+
+
+def test_missing_identity_with_expected_identity_reports_unknown(
+    tmp_path: Path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    clear_local_identity(repo, tmp_path, monkeypatch)
+
+    report = MODULE.scan(
+        repo, expected_identity="Test Author <test-author@example.invalid>"
+    )
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["status"] == "unknown"
+    assert report["checks"]["commit_identity"]["effective_identity"] == "unknown"
+
+
+def test_non_ascii_identity_matches_expected_identity(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "config", "user.name", "日本語 太郎")
+    (repo / "extra.txt").write_text("extra\n", encoding="utf-8")
+    git(repo, "add", "extra.txt")
+    git(repo, "commit", "-m", "add extra")
+
+    report = MODULE.scan(
+        repo,
+        expected_identity="日本語 太郎 <test-author@example.invalid>",
+    )
+
+    assert report["status"] != "tool_error"
+    identity = report["checks"]["commit_identity"]
+    assert identity["identity_count"] == 2
+    assert identity["mismatch_count"] == 1
+    assert identity["effective_mismatch_count"] == 0
+
+
+def test_unexpected_exception_exits_with_tool_error_code(
+    tmp_path: Path, monkeypatch, capsys
+):
+    repo = make_repo(tmp_path)
+
+    def explode(repo_path, expected_identity=None, release=False):
+        raise OSError("secret-bearing message")
+
+    monkeypatch.setattr(MODULE, "scan", explode)
+    monkeypatch.setattr(sys, "argv", ["readiness_scan.py", "--repo", str(repo)])
+
+    exit_code = MODULE.main()
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["unexpected_exception:OSError"]
+    assert "secret-bearing message" not in json.dumps(report)
 
 
 def test_effective_identity_mismatch_is_reported(tmp_path: Path):
