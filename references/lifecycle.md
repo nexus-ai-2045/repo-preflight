@@ -10,7 +10,7 @@
 | local_checks_passed | test/build/lint/smoke/E2E | 必須check失敗 |
 | operations_checked | 実環境smoke、alert delivery、restore/rollback test、owner、RTO/RPO、検査期限 | 文書のみ、外部運用未確認 |
 | repository_recorded | repository catalog、公開名義、canonical path | 登録先不明 |
-| private_remote_synced | private remoteとHEAD一致、PUBLIC_READY | secret/PII/license問題 |
+| private_remote_synced | private remoteとHEAD一致、PREFLIGHT | secret/PII/license問題 |
 | pull_request_ready | PR、現在HEADのCI、review記録 | 未解決の重大指摘 |
 | human_review_complete | reviewer、日時、対象HEAD/PR diff、確認範囲、判定、未解決事項 | review範囲不明 |
 | merge_approved | exact PR/HEAD/方式の承認 | stale review/CI |

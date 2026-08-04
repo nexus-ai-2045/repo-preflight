@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
-REQUIRED = ("README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "PUBLIC_READY.md")
+REQUIRED = ("README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "PREFLIGHT.md")
 DEPENDENCY_FILES = (
     "pyproject.toml",
     "requirements.txt",

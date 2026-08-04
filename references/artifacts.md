@@ -9,7 +9,7 @@
 - `docs/architecture.md`: componentとtrust boundary
 - `docs/threat-model.md`: asset、attacker input、invariant、failure mode
 - `OPERATIONS.md`: install、smoke、monitor、rollback、再検証条件
-- `PUBLIC_READY.md`: 検査対象HEADと検査日時を含むreview記録。この記録を追加する後続commitでは、検査対象HEADと文書commitを分けて明示する
+- `PREFLIGHT.md`: 検査対象HEADと検査日時を含むreview記録。この記録を追加する後続commitでは、検査対象HEADと文書commitを分けて明示する
 - `readiness-report.json`: pass/fail/unknown/not_applicableとevidence。対象リポジトリ側または非公開の運用記録へ保存し、このツールのリポジトリへ個別案件の結果をcommitしない
 - `cleanup-report.md`: merged確認、削除候補、残務
 

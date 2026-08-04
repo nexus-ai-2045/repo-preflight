@@ -187,7 +187,7 @@ AIが守る停止線:
 `OWNER/REPO`を実際の対象へ置き換える。
 
 ```text
-public-readiness の references/github-settings.md を正本として、
+repo-preflight の references/github-settings.md を正本として、
 OWNER/REPO のGitHub設定をread-onlyで実測してください。
 
 結果を次へ分類してください。
