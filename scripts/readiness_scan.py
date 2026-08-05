@@ -5,6 +5,7 @@ import importlib.util
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -46,7 +47,19 @@ PATH_PATTERNS = (
 
 
 def run(repo: Path, *args: str) -> tuple[int, str]:
-    result = subprocess.run(args, cwd=repo, text=True, capture_output=True, shell=False)
+    # git側の出力encodingをUTF-8に固定してから読む。i18n.logOutputEncodingが
+    # 非UTF-8のrepositoryでも作者名を壊さない。不正byteはfail-closed比較に残す
+    if args and args[0] == "git":
+        args = (args[0], "-c", "i18n.logOutputEncoding=UTF-8", *args[1:])
+    result = subprocess.run(
+        args,
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+        capture_output=True,
+        shell=False,
+    )
     return result.returncode, result.stdout.strip()
 
 
@@ -264,8 +277,6 @@ def scan(
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
         "identities": run(repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"),
-        "effective_author": run(repo, "git", "var", "GIT_AUTHOR_IDENT"),
-        "effective_committer": run(repo, "git", "var", "GIT_COMMITTER_IDENT"),
     }
     if any(code for code, _ in probes.values()):
         return {
@@ -331,15 +342,31 @@ def scan(
             or line.split("|")[-1] != expected_identity
         )
     }
-    effective_identities = {
-        effective_identity(probes["effective_author"][1]),
-        effective_identity(probes["effective_committer"][1]),
-    }
-    effective_mismatches = {
-        identity
-        for identity in effective_identities
-        if expected_identity and identity != expected_identity
-    }
+    # 現在設定の名義はexpected_identity指定時だけ測る。identity未設定環境
+    # (CI containerなど) をtool_errorにせず、判定はunknownでfail-closedに保つ
+    effective_status = "not_evaluated"
+    effective_mismatches: set[str] = set()
+    if expected_identity:
+        effective_probes = (
+            run(repo, "git", "var", "GIT_AUTHOR_IDENT"),
+            run(repo, "git", "var", "GIT_COMMITTER_IDENT"),
+        )
+        # probeは個別に評価する。片方が失敗しても、成功した側が示すmismatchは
+        # 捨てない (失敗を理由にunknownへ丸めると既知の不一致が隠れる)
+        probe_failed = False
+        for code, value in effective_probes:
+            if code:
+                probe_failed = True
+                continue
+            identity = effective_identity(value)
+            if identity != expected_identity:
+                effective_mismatches.add(identity)
+        if effective_mismatches:
+            effective_status = "fail"
+        elif probe_failed:
+            effective_status = "unknown"
+        else:
+            effective_status = "pass"
     workflows = sorted(
         list((repo / ".github" / "workflows").glob("*.y*ml"))
         if (repo / ".github" / "workflows").is_dir()
@@ -373,13 +400,14 @@ def scan(
         },
         "commit_identity": {
             "status": (
-                "pass"
-                if not identity_mismatches and not effective_mismatches
-                else "fail"
+                "fail"
+                if identity_mismatches or effective_status == "fail"
+                else "unknown" if effective_status == "unknown" else "pass"
             ),
             "policy": "expected_identity" if expected_identity else "not_configured",
             "identity_count": len(identity_lines),
             "mismatch_count": len(identity_mismatches),
+            "effective_identity": effective_status,
             "effective_mismatch_count": len(effective_mismatches),
         },
         "dependency_configuration": {
@@ -461,6 +489,8 @@ def scan(
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--json", action="store_true")
@@ -474,11 +504,18 @@ def main() -> int:
         help='Expected Git author and committer identity, for example "Example <dev@example.com>"',
     )
     args = parser.parse_args()
-    report = scan(
-        args.repo,
-        expected_identity=args.expected_identity,
-        release=args.release,
-    )
+    try:
+        report = scan(
+            args.repo,
+            expected_identity=args.expected_identity,
+            release=args.release,
+        )
+    except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
+        # 例外messageはpath/secretを含み得るため型名だけ返す
+        report = {
+            "status": "tool_error",
+            "issues": [f"unexpected_exception:{type(exc).__name__}"],
+        }
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return (
         0
