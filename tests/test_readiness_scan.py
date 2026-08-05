@@ -23,7 +23,10 @@ def make_repo(tmp_path: Path) -> Path:
     git(repo, "config", "user.name", "Test Author")
     git(repo, "config", "user.email", "test-author@example.invalid")
     for name in MODULE.REQUIRED:
-        (repo / name).write_text(f"# {name}\n", encoding="utf-8")
+        body = f"# {name}\n"
+        if name == MODULE.REVIEW_RECORD:
+            body += f"{MODULE.REVIEW_RECORD_MARKER}\n"
+        (repo / name).write_text(body, encoding="utf-8")
     workflows = repo / ".github" / "workflows"
     workflows.mkdir(parents=True)
     (workflows / "ci.yml").write_text(
@@ -34,6 +37,38 @@ def make_repo(tmp_path: Path) -> Path:
     git(repo, "commit", "-m", "initial")
     git(repo, "remote", "add", "origin", "https://github.com/example/repo.git")
     return repo
+
+
+def test_unrelated_preflight_file_does_not_satisfy_review_record(tmp_path: Path):
+    """deployment preflight 等の無関係な同名fileでpassしない (Codex review P2)."""
+    repo = make_repo(tmp_path)
+    (repo / MODULE.REVIEW_RECORD).write_text(
+        "# Deployment preflight\n\n1. drain traffic\n2. run migrations\n",
+        encoding="utf-8",
+    )
+
+    documents = MODULE.scan(repo)["checks"]["required_documents"]
+
+    assert documents["status"] == "fail"
+    assert MODULE.REVIEW_RECORD in documents["invalid"]
+    assert MODULE.REVIEW_RECORD not in documents["missing"]
+
+
+def test_review_record_with_marker_passes(tmp_path: Path):
+    documents = MODULE.scan(make_repo(tmp_path))["checks"]["required_documents"]
+
+    assert documents["status"] == "pass"
+    assert documents["invalid"] == []
+
+
+def test_unreadable_review_record_fails_closed(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    (repo / MODULE.REVIEW_RECORD).write_bytes(b"\xff\xfe\x00binary")
+
+    documents = MODULE.scan(repo)["checks"]["required_documents"]
+
+    assert documents["status"] == "fail"
+    assert MODULE.REVIEW_RECORD in documents["invalid"]
 
 
 def test_clean_complete_repo_passes(tmp_path: Path):

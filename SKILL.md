@@ -24,8 +24,13 @@ discovered -> requirements_defined -> research_complete -> design_complete
 -> implementation_in_progress -> local_checks_passed -> operations_checked
 -> repository_recorded -> private_remote_synced -> pull_request_ready
 -> human_review_complete -> merge_approved -> merged
--> public_release_approved -> public -> public_checks_passed -> cleanup_complete
+-> audience_expansion_approved -> audience_expanded -> expansion_checks_passed
+-> cleanup_complete
 ```
+
+末尾3状態は「見せる相手を広げる」操作の一般形であり、public化はその一形態にすぎない。
+team共有、客先納品、外部協力者への受け渡しも同じ経路を通り、`audience`（広げる相手）と
+実際に見えるようになる範囲を状態ごとに明示する。public化の場合の`audience`は「Web全体」。
 
 検査記録の不足、`unknown`、失敗があれば先へ進めず、停止理由と再実行条件を返す。詳細は[状態一覧](references/lifecycle.md)を読む。
 

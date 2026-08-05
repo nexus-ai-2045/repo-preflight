@@ -10,6 +10,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 REQUIRED = ("README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "PREFLIGHT.md")
+# PREFLIGHT.md は一般的な語のため、deployment preflight 手順書のような無関係な
+# 同名fileが存在しうる。ファイル名の一致だけでreview記録とみなすと、検査記録が
+# 無いrepositoryがpassする。テンプレートが埋め込むmarkerの実在まで確認する。
+REVIEW_RECORD = "PREFLIGHT.md"
+REVIEW_RECORD_MARKER = "<!-- repo-preflight:review-record -->"
 DEPENDENCY_FILES = (
     "pyproject.toml",
     "requirements.txt",
@@ -289,6 +294,17 @@ def scan(
     identities = probes["identities"][1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
     missing = [name for name in REQUIRED if not (repo / name).is_file()]
+    invalid_documents: list[str] = []
+    review_record = repo / REVIEW_RECORD
+    if REVIEW_RECORD not in missing:
+        try:
+            record_text = review_record.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # 読めない記録を「存在するからpass」にしない
+            invalid_documents.append(REVIEW_RECORD)
+        else:
+            if REVIEW_RECORD_MARKER not in record_text:
+                invalid_documents.append(REVIEW_RECORD)
     credential_finding_count = 0
     path_hits: list[str] = []
     try:
@@ -387,8 +403,9 @@ def scan(
     checks = {
         "clean_worktree": {"status": "pass" if not dirty else "fail"},
         "required_documents": {
-            "status": "pass" if not missing else "fail",
+            "status": "pass" if not missing and not invalid_documents else "fail",
             "missing": missing,
+            "invalid": invalid_documents,
         },
         "secret_scan": {
             "status": "pass" if credential_finding_count == 0 else "fail",
