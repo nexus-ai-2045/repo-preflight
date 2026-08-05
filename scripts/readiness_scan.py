@@ -509,8 +509,8 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser()
+    # 出力は常にJSON。format を選ぶ flag は置かない (旧 --json は未参照だった)
     parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--json", action="store_true")
     parser.add_argument(
         "--release",
         action="store_true",

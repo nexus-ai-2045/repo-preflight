@@ -3,8 +3,8 @@
 ## Smoke
 
 ```powershell
-python scripts/readiness_scan.py --repo . --json
-python scripts/readiness_scan.py --repo . --release --json
+python scripts/readiness_scan.py --repo .
+python scripts/readiness_scan.py --repo . --release
 python -m pytest -q
 ```
 
