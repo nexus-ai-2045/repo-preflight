@@ -1,11 +1,13 @@
 ---
-name: public-readiness
-description: "repositoryを構想、登録、設計、リサーチ、TDD、実装、security review、test、運用準備、private GitHub、PR、人間目視review、merge、public化、release、告知、branch/worktree cleanupまで検査記録に基づいて進める。release準備ではREADMEの短さ、理解順序、Quickstart、制約、見出し設計を自動検査し、必要なデザインskill/pluginだけを選ぶ。『publicを目指す』『公開前チェック』『READMEを分かりやすく』『releaseを作る』『PRからmerge後の後片付けまで』の依頼で使う。"
+name: repo-preflight
+description: "repositoryを構想、登録、設計、リサーチ、TDD、実装、security review、test、運用準備、private GitHub、PR、人間目視review、merge、public化、release、告知、branch/worktree cleanupまで検査記録に基づいて進める。repositoryを見せる相手を広げる前の検査に使い、public化に限らずチーム共有、客先納品、外部協力者への受け渡しでも同じ手順を通す。release準備ではREADMEの短さ、理解順序、Quickstart、制約、見出し設計を自動検査し、必要なデザインskill/pluginだけを選ぶ。『publicを目指す』『公開前チェック』『共有前チェック』『納品前チェック』『READMEを分かりやすく』『releaseを作る』『PRからmerge後の後片付けまで』の依頼で使う。"
 ---
 
-# Public Readiness
+# Repo Preflight
 
-repositoryの公開準備手順を管理する。専門作業は既存skillへ委譲し、各状態を現在の検査結果で判定する。organization固有の台帳や名義ポリシーは公開コアの外で扱う。
+repositoryを見せる相手を広げる前の手順を管理する。専門作業は既存skillへ委譲し、各状態を現在の検査結果で判定する。organization固有の台帳や名義ポリシーは公開コアの外で扱う。
+
+public化は到達点のひとつであり、唯一の終点ではない。private保存、PRまで、mergeまで、チーム共有、客先納品も正規の完了地点として扱う。
 
 ## 原則
 
@@ -22,8 +24,13 @@ discovered -> requirements_defined -> research_complete -> design_complete
 -> implementation_in_progress -> local_checks_passed -> operations_checked
 -> repository_recorded -> private_remote_synced -> pull_request_ready
 -> human_review_complete -> merge_approved -> merged
--> public_release_approved -> public -> public_checks_passed -> cleanup_complete
+-> audience_expansion_approved -> audience_expanded -> expansion_checks_passed
+-> cleanup_complete
 ```
+
+末尾3状態は「見せる相手を広げる」操作の一般形であり、public化はその一形態にすぎない。
+team共有、客先納品、外部協力者への受け渡しも同じ経路を通り、`audience`（広げる相手）と
+実際に見えるようになる範囲を状態ごとに明示する。public化の場合の`audience`は「Web全体」。
 
 検査記録の不足、`unknown`、失敗があれば先へ進めず、停止理由と再実行条件を返す。詳細は[状態一覧](references/lifecycle.md)を読む。
 
@@ -64,7 +71,7 @@ discovered -> requirements_defined -> research_complete -> design_complete
 - remote/local branch、worktree削除
 - 実home runtimeへのskill配布
 
-public化直前は `owner/name`、正確な操作、使用account、README/LICENSE/SECURITY/secret scan/personal path scan/PUBLIC_READY、Webから見えるfilesと全commit history、review済み/未reviewを提示して対象repo固有のyesを待つ。
+public化直前は `owner/name`、正確な操作、使用account、README/LICENSE/SECURITY/secret scan/personal path scan/PREFLIGHT、Webから見えるfilesと全commit history、review済み/未reviewを提示して対象repo固有のyesを待つ。
 
 ## 完了報告
 

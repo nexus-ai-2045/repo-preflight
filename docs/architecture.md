@@ -2,7 +2,7 @@
 
 ## 目的
 
-Public Readinessは、ローカルGit repositoryを読み取り、公開判断に必要な証拠を構造化するローカルファーストのscanner兼ライフサイクルskillです。scanner自身はGitHub作成、push、visibility変更、投稿を行いません。
+Repo Preflightは、ローカルGit repositoryを読み取り、見せる相手を広げる判断に必要な証拠を構造化するローカルファーストのscanner兼ライフサイクルskillです。scanner自身はGitHub作成、push、visibility変更、投稿を行いません。
 
 ## コンポーネント
 
