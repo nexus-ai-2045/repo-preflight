@@ -7,6 +7,7 @@
 - package名、skill名、agent interface keyを`public-readiness`から`repo-preflight`へ変更。旧名は永久欠番とし、再利用しない。
 - 必須成果物を`PUBLIC_READY.md`から`PREFLIGHT.md`へ改名。`REQUIRED`が検査対象repositoryに要求するファイル名が変わるため、既存の`PUBLIC_READY.md`は改名が必要。
 - README release gateのschema識別子を`repo-preflight.readme-release-gate/v1`へ変更。
+- `readiness_scan.py`から`--json`を削除。定義されていたがどこからも参照されておらず、「付けないとJSONにならない」という誤解を生んでいた。出力は以前から常にJSONであり、実際の挙動は変わらない。`--json`を付けて呼んでいた場合はexit 2になるため、フラグを外す。
 
 旧名は「public化がゴール」と読めるが、private保存、PRまで、mergeまでを正規の完了地点として扱う本来の設計と矛盾していた。検査項目は公開可否と無関係に効くため、チーム共有、客先納品、外部協力者への受け渡しでも同じ手順を通す。
 

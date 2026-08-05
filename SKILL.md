@@ -12,7 +12,7 @@ public化は到達点のひとつであり、唯一の終点ではない。priva
 ## 原則
 
 - `ready` を単独で使わず、`local_checks_passed`、`operations_checked`、`private_remote_synced`、`ready_for_public_review`を分ける。
-- 既定をread-onlyにする。`scripts/readiness_scan.py --repo <path> --json`から始める。
+- 既定をread-onlyにする。`scripts/readiness_scan.py --repo <path>`から始める。
 - 保存済み判定を信用せず、現在のHEAD、remote、GitHub、CI、reviewを再測定する。
 - 診断、ローカル修正、外部操作を分離する。
 - 永久保証を主張しない。運用保証は検証日時、対象環境、監視、復旧、再検証条件が揃った状態とする。
@@ -37,7 +37,7 @@ team共有、客先納品、外部協力者への受け渡しも同じ経路を�
 ## 実行
 
 1. repo root、対象成果、owner、non-goals、成功条件を確定する。曖昧さが結果を変えない限り質問せず進める。
-2. `readiness_scan.py`でrepo、文書、identity、history、secret候補、個人path、CIをread-only検査する。release準備では必ず `python scripts/readiness_scan.py --repo <path> --release --json` を使い、README設計ゲートを自動実行する。
+2. `readiness_scan.py`でrepo、文書、identity、history、secret候補、個人path、CIをread-only検査する。release準備では必ず `python scripts/readiness_scan.py --repo <path> --release` を使い、README設計ゲートを自動実行する。
 3. 必要な作業だけを選ぶ。
    - 壁打ち・UX: Product Design / brainstorming
    - 公式仕様: OpenAI Developers / official docs

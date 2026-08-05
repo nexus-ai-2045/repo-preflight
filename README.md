@@ -63,17 +63,54 @@ flowchart LR
 
 ## クイックスタート
 
-```powershell
-python scripts/readiness_scan.py --repo C:\path\to\repo --json
+PyPIには公開していません。このリポジトリを取得して、**検査したいリポジトリのパスを渡します**。
+追加の依存はなく、Python 3.11以降とgitがあれば動きます。
+
+```bash
+git clone https://github.com/nexus-ai-2045/repo-preflight.git
+cd repo-preflight
+python scripts/readiness_scan.py --repo /path/to/your-repo
 ```
 
-release準備では、README設計ゲートも同時に実行します。
+Windows (PowerShell) の場合:
 
 ```powershell
-python scripts/readiness_scan.py --repo C:\path\to\repo --release --json
+python scripts\readiness_scan.py --repo C:\path\to\your-repo
 ```
 
-終了コード:
+出力は常にJSONです。整形やフィルタは `jq` などに任せます。
+
+```json
+{
+  "status": "pass",
+  "publication_decision": "blocked_human_review_required",
+  "repo": "your-repo",
+  "head": "c6bb6af2...",
+  "checks": {
+    "secret_scan": { "status": "pass", "finding_count": 0 },
+    "required_documents": { "status": "pass", "missing": [], "invalid": [] },
+    "commit_identity": { "status": "pass", "identity_count": 1 },
+    "ci_runtime_result": { "status": "unknown", "reason": "requires_current_remote_ci_evidence" }
+  }
+}
+```
+
+### オプション
+
+| オプション | 用途 |
+|---|---|
+| `--repo <path>` | 検査対象。必須 |
+| `--release` | README情報設計ゲートも同時に実行する |
+| `--expected-identity "<Name> <mail>"` | 全commitの作者/committerが指定の名義かを検査する |
+
+公開名義を統一しているリポジトリでは、履歴に個人名義が混ざっていないかを確認できます。
+
+```bash
+python scripts/readiness_scan.py --repo /path/to/your-repo \
+  --expected-identity "Example <dev@example.invalid>"
+```
+
+### 終了コード
 
 | コード | 意味 |
 |---|---|

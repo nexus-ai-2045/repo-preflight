@@ -39,6 +39,41 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_output_is_json_without_any_output_flag(tmp_path: Path):
+    """出力は常にJSON。formatを選ぶflagは受け付けない。
+
+    以前は --json を定義しながらどこからも参照しておらず、付けないとJSONに
+    ならないという誤解を生んでいた。曖昧さを消すためflag自体を削除する。
+    """
+    repo = make_repo(tmp_path)
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["status"] == "pass"
+
+
+def test_removed_json_flag_is_rejected(tmp_path: Path):
+    repo = make_repo(tmp_path)
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo), "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert result.returncode == 2
+    assert "--json" in result.stderr
+
+
 def test_unrelated_preflight_file_does_not_satisfy_review_record(tmp_path: Path):
     """deployment preflight 等の無関係な同名fileでpassしない (Codex review P2)."""
     repo = make_repo(tmp_path)
@@ -126,7 +161,7 @@ def test_cli_json_never_echoes_matched_secret(tmp_path: Path):
     (repo / "leak.txt").write_text(token, encoding="utf-8")
 
     result = subprocess.run(
-        ["python", str(SCRIPT), "--repo", str(repo), "--json"],
+        ["python", str(SCRIPT), "--repo", str(repo)],
         check=False,
         capture_output=True,
         text=True,
@@ -145,7 +180,7 @@ def test_cli_json_never_echoes_secret_shaped_checkout_path(tmp_path: Path):
     repo = make_repo(secret_parent)
 
     result = subprocess.run(
-        ["python", str(SCRIPT), "--repo", str(repo), "--json"],
+        ["python", str(SCRIPT), "--repo", str(repo)],
         check=False,
         capture_output=True,
         text=True,
