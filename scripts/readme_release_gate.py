@@ -149,7 +149,7 @@ def review(readme: Path) -> dict[str, object]:
 
     blocked = any(item["severity"] == "error" for item in findings)
     return {
-        "schema": "public-readiness.readme-release-gate/v1",
+        "schema": "repo-preflight.readme-release-gate/v1",
         "status": "blocked" if blocked else "pass",
         "release_gate": "blocked_readme_design" if blocked else "passed_readme_design",
         "metrics": {
@@ -174,7 +174,7 @@ def main() -> int:
     readme = args.repo.resolve() / "README.md"
     if not readme.is_file():
         result = {
-            "schema": "public-readiness.readme-release-gate/v1",
+            "schema": "repo-preflight.readme-release-gate/v1",
             "status": "blocked",
             "release_gate": "blocked_readme_missing",
             "findings": [

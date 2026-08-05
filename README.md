@@ -1,6 +1,8 @@
-# Public Readiness
+# Repo Preflight
 
-Public Readinessは、Gitリポジトリを公開してよいか判断するための、読み取り専用CLIとチェック手順です。ローカルのファイルとGit履歴を調べ、機械で確認できたこと、人が確認すべきこと、確認できなかったことをJSONで分けて返します。
+Repo Preflightは、Gitリポジトリを**見せる相手を広げてよいか**判断するための、読み取り専用CLIとチェック手順です。ローカルのファイルとGit履歴を調べ、機械で確認できたこと、人が確認すべきこと、確認できなかったことをJSONで分けて返します。
+
+public化専用ではありません。private repositoryをチームへ開くとき、成果物を客先へ納品するとき、外部の協力者へ渡すときも、必要な検査は同じです。public化は数ある到達点のひとつとして扱います。
 
 ## 目的
 
@@ -9,7 +11,7 @@ Public Readinessは、Gitリポジトリを公開してよいか判断するた�
 ## できること
 
 - repo root、Git状態、remote、作者履歴を検査
-- README、LICENSE、SECURITY、CONTRIBUTING、PUBLIC_READYを確認
+- README、LICENSE、SECURITY、CONTRIBUTING、PREFLIGHTを確認
 - 現在treeと全Git履歴のsecret・個人path候補を検査
 - 依存定義ファイルの有無とCI設定の最低限の構造を確認
 - 自動検査結果と、人間レビューを含む公開判断を分離

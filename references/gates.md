@@ -9,7 +9,7 @@
 - secret、個人情報、絶対path、第三者素材の権利が未処理。
 - dependency advisory、license、CI workflow securityが未検査またはstale。
 - test、build、smoke test、E2E、reviewの必須checkが失敗。
-- project登録、PUBLIC_READY、人間目視reviewが現在HEADと一致しない。
+- project登録、PREFLIGHT、人間目視reviewが現在HEADと一致しない。
 
 ## GitHub操作
 

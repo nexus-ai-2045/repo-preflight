@@ -1,3 +1,5 @@
+<!-- repo-preflight:review-record -->
+
 # 公開準備状況
 
 - HEAD: `<commit>`

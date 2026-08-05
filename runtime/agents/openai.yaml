@@ -1,6 +1,6 @@
-name: public-readiness
+name: repo-preflight
 description: "repoの設計、実装、検証、登録、README release gate、PR、公開、後片付けを証拠と承認ゲート付きで進める。"
 interface:
-  key: public-readiness
-  display_name: "Public Readiness"
+  key: repo-preflight
+  display_name: "Repo Preflight"
   short_description: "README設計を含む公開repoライフサイクル。"
