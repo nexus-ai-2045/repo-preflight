@@ -132,21 +132,22 @@ def install_one(
     link_mode = link_checkout(dest / "checkout", repo)
     action["link"] = link_mode
 
+    # README にも個人 path / 絶対 path を書かない
     (dest / "README.md").write_text(
         (
             "# repo-preflight skill (portable)\n\n"
-            "絶対 path 固定ではありません。\n\n"
+            "絶対 path 固定ではありません。個人のホーム path も記録しません。\n\n"
             "解決順:\n"
             "1. 環境変数 `REPO_PREFLIGHT_ROOT`\n"
             "2. この skill 隣の `checkout/` (install が作る link)\n"
             "3. カレントから repo-preflight root を探索\n\n"
             "```bash\n"
-            f'python "{dest / "run_preflight.py"}" --repo "<TARGET>" --intent open_pr --human\n'
-            f'python "{dest / "run_preflight.py"}" --intent create_repo --human\n'
+            "python run_preflight.py --repo \"<TARGET>\" --intent open_pr --human\n"
+            "python run_preflight.py --intent create_repo --human\n"
             "```\n"
             "\n"
-            f"clone: `{repo.resolve()}`\n"
             f"link mode: `{link_mode}`\n"
+            "（clone の実 path は `checkout/` link を辿ること。本文には書かない）\n"
         ),
         encoding="utf-8",
     )
