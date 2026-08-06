@@ -1,13 +1,14 @@
 # Repo Preflight
 
-Gitリポジトリを見せる相手を広げてよいか判断する、読み取り専用のCLIとチェック手順です。機械で確認できたこと、人が確認すべきこと、確認できなかったことを分けて返します。
+リポジトリを人に見せる前に、見せてまずいものが混ざっていないか機械で調べる道具です。
+
+APIキーらしき文字列、自分のPCのパス、足りない文書を、今のファイルだけでなく**過去の全履歴まで遡って**探します。
+ただし「公開してよい」とは絶対に言いません。調べられた範囲を報告するだけで、公開の判断は人間が下します。
 
 public化専用ではありません。privateリポジトリをチームへ開くとき、成果物を客先へ納品するとき、外部の協力者へ渡すときも、必要な検査は同じです。
 
-> **v0.3** — **AI実装フロー向けの自動発火対話**を追加しました。
-> リポジトリ作成・push・PR・公開などの直前にエージェントが preflight を走らせ、
-> 「この設定にしますか？」「未設定ですが設定しますか？」を人間に聞きます。
-> **保証すること / 保証しないこと**は毎回表示されます。
+AIエージェントから使う場合は、リポジトリ作成・push・PR・公開の**直前に自動で発火**し、
+「この設定にしますか？」を人間に聞いてから進みます。詳しくは [AI 実装フロー](#ai-実装フロー--intent-対話-本体)。
 
 > **v0.1.x から来た方へ** — v0.2.0 でリポジトリ名と必須ファイル名が変わりました。
 > `public-readiness` → `repo-preflight`、`PUBLIC_READY.md` → `PREFLIGHT.md` です。
@@ -41,7 +42,7 @@ flowchart LR
 
 対話モードでも非対話モードでも、次の境界は同じです。JSON report にも `guarantees` / `non_guarantees` として入ります。
 
-### 保証すること (CLIが担当する範囲)
+### できること — 保証する範囲
 
 | 対象 | 内容 |
 |---|---|
@@ -53,7 +54,7 @@ flowchart LR
 
 削除済みのファイルも履歴に残っていれば検出します。
 
-### 保証しないこと (別証拠・人間判断が要る)
+### 制約 — 保証しない範囲 (別証拠・人間判断が要る)
 
 | 対象 | なぜCLIで判定しないか |
 |---|---|
@@ -248,33 +249,9 @@ private保存、PRまで、mergeまでも正規の完了地点として扱いま
 
 ## v0.1.x からの移行
 
-v0.2.0 で2つの名前が変わりました。旧名 `public-readiness` は「public化がゴール」と読めますが、
-この道具は private 保存やチーム共有も正規の完了地点として扱うため、設計と名前が食い違っていました。
-
-| 対象 | v0.1.x | v0.2.0 |
-|---|---|---|
-| リポジトリ / パッケージ | `public-readiness` | `repo-preflight` |
-| 必須のレビュー記録 | `PUBLIC_READY.md` | `PREFLIGHT.md` |
-| README gate の schema | `public-readiness.readme-release-gate/v1` | `repo-preflight.readme-release-gate/v1` |
-
-検査対象のリポジトリ側で必要な作業:
-
-```bash
-git mv PUBLIC_READY.md PREFLIGHT.md
-```
-
-さらに `PREFLIGHT.md` の先頭に次の1行を置いてください。
-
-```markdown
-<!-- repo-preflight:review-record -->
-```
-
-`PREFLIGHT` は一般的な語なので、deployment preflight 手順書のような無関係な同名ファイルが
-存在しえます。CLIはこのマーカーの有無でレビュー記録かどうかを判別します。マーカーが無い場合は
-`required_documents` が `invalid` として fail します。テンプレートは [assets/PREFLIGHT.template.md](assets/PREFLIGHT.template.md)。
-
-旧URL `github.com/nexus-ai-2045/public-readiness` はGitHubのリダイレクトで引き続き解決します。
-旧名は永久欠番とし、再利用しません。
+v0.2.0 でリポジトリ名 (`public-readiness` → `repo-preflight`) と、必須のレビュー記録
+(`PUBLIC_READY.md` → `PREFLIGHT.md`) が変わりました。
+手順は [v0.1.x から v0.2.0 への移行](docs/migration-v0.1-to-v0.2.md) を読んでください。
 
 ## Skill (Claude Code / Grok / Codex)
 
