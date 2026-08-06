@@ -276,10 +276,26 @@ git mv PUBLIC_READY.md PREFLIGHT.md
 旧URL `github.com/nexus-ai-2045/public-readiness` はGitHubのリダイレクトで引き続き解決します。
 旧名は永久欠番とし、再利用しません。
 
-## Skill
+## Skill (Claude Code / Grok / Codex)
 
-Codexなどのエージェントから使う場合は [SKILL.md](SKILL.md) を入口にしてください。
-状態遷移、承認境界、成果物テンプレートを同梱しています。
+| Runtime | 入口 |
+|---|---|
+| 正本 | [SKILL.md](SKILL.md) |
+| Claude Code | [runtime/claude-code/SKILL.md](runtime/claude-code/SKILL.md) |
+| Grok | [runtime/grok/SKILL.md](runtime/grok/SKILL.md) |
+| Codex | [runtime/agents/openai.yaml](runtime/agents/openai.yaml) |
+
+保証範囲（何が機械検証され、何が運用契約か）は
+[docs/runtime-support.md](docs/runtime-support.md)。
+
+```bash
+# このマシンで CLI + skill 入口の最小保証を確認
+python scripts/runtime_smoke.py --repo .
+
+# Claude Code / Grok の skills へ pointer を配布 (確認のみ → 書込)
+python scripts/install_runtime_skills.py --repo .
+python scripts/install_runtime_skills.py --repo . --apply
+```
 
 公開リポジトリのruleset、merge方式、Actions権限、security機能の選択理由は
 [GitHub repository設定ガイド](references/github-settings.md) を参照してください。

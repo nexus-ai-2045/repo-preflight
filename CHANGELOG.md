@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.1 - 2026-08-06
+
+### 追加
+
+- Claude Code / Grok / Codex 向け runtime adapter と保証境界文書 (`docs/runtime-support.md`)。
+- `scripts/runtime_smoke.py`: CLI 対話契約 + skill 入口の最小 smoke。
+- `scripts/install_runtime_skills.py`: ホーム skills への pointer 配布 (dry-run 既定、`--apply` で書込)。
+- CI を `ubuntu-latest` + `macos-latest` の matrix に拡大し、runtime smoke を必須化。
+
+### 保証境界 (明示)
+
+- 保証: 同一 CLI 契約が Linux/macOS CI で通る。Claude Code/Grok adapter が正本 SKILL を指す。
+- 非保証: 各製品が skill を自動導入すること、モデルが skill を無視しないことの物理強制。
+
 ## 0.3.0 - 2026-08-06
 
 ### 追加
