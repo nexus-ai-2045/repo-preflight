@@ -25,7 +25,8 @@
    Claude Code / Grok / Codex 向け adapter が root `SKILL.md` を正本として指す。  
    各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
 4. **クロス OS smoke**  
-   CI で Linux + macOS 上の `runtime_smoke` が通る（Windows は追加予定またはローカル実測）。
+   CI で Linux + macOS 上の pytest と `runtime_smoke` が通る。  
+   Windows はローカル実測（本開発環境）で確認。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
 
