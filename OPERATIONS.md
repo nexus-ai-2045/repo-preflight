@@ -5,8 +5,18 @@
 ```powershell
 python scripts/readiness_scan.py --repo .
 python scripts/readiness_scan.py --repo . --release
+python scripts/runtime_smoke.py --repo .
 python -m pytest -q
 ```
+
+Claude Code / Grok へ skill pointer を配る (書込は `--apply`):
+
+```powershell
+python scripts/install_runtime_skills.py --repo .
+python scripts/install_runtime_skills.py --repo . --apply
+```
+
+保証境界: [docs/runtime-support.md](docs/runtime-support.md)
 
 `status: pass`はローカル自動検査の結果です。公開可否は`publication_decision`と各`unknown`項目を確認し、人が判断します。
 release準備では `--release` を省略しません。`readme_release_design` がfailならREADMEを修正し、

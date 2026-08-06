@@ -140,6 +140,7 @@ remaining_blockers:
 
 ## Progressive Reads
 
+- Claude Code / Grok 保証境界: [docs/runtime-support.md](docs/runtime-support.md)
 - 状態判定: [references/lifecycle.md](references/lifecycle.md)
 - 承認と安全停止条件: [references/gates.md](references/gates.md)
 - GitHub設定の推奨値と選択理由: [references/github-settings.md](references/github-settings.md)
