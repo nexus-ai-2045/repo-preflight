@@ -1,0 +1,90 @@
+# Runtime サポートと保証境界
+
+この文書は、repo-preflight が **どの実行環境で何を保証するか** の正本です。
+
+## 対象 runtime
+
+| Runtime | サポート | 入口 | 機械検証 |
+|---|---|---|---|
+| CLI (直接) | 一次対応 | `python scripts/readiness_scan.py` | pytest + `runtime_smoke` + CI |
+| Claude Code | 対応 | `runtime/claude-code/SKILL.md` または root `SKILL.md` | skill 存在・trigger 語・smoke |
+| Grok (Grok Build / agents skills) | 対応 | `runtime/grok/SKILL.md` または root `SKILL.md` | 同上 |
+| Codex / OpenAI agents | 対応 | `runtime/agents/openai.yaml` + root `SKILL.md` | metadata 検査 |
+
+「対応」は **手順と CLI が同じ契約で動く** こと。各製品の内部モデル挙動そのものは保証しない。
+
+## 保証すること
+
+1. **CLI 契約**  
+   Python 3.11+ と git があれば、Linux / macOS / Windows で同じ JSON schema  
+   (`repo-preflight.scan/v3` / `repo-preflight.dialogue/v3`) を返す。
+2. **intent 対話**  
+   `create_repo` / `push` / `open_pr` / `merge` / `publish` / `release` で  
+   guarantees / non_guarantees / proposals / confirmations が機械生成される。
+3. **Skill 入口**  
+   Claude Code / Grok / Codex 向け adapter が root `SKILL.md` を正本として指す。  
+   各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
+4. **クロス OS smoke**  
+   CI で Linux + macOS 上の pytest と `runtime_smoke` が通る。  
+   Windows はローカル実測（本開発環境）で確認。
+5. **発火は skill 遵守前提**  
+   エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
+
+## 保証しないこと
+
+1. Claude Code / Grok が **skill を自動インストール**すること（導入は `install_runtime_skills.py` または手動）。
+2. モデルが skill を **無視して** push / PR / 公開を実行しないことの物理強制（hook が無い環境では運用契約）。
+3. Claude Code Cloud / リモート sandbox に git やローカル path が無い場合の完全動作。
+4. 各製品 UI のバージョン差分・権限ダイアログ・ネットワーク制限。
+5. GitHub 設定の自動適用。
+
+## 導入 (Claude Code / Grok)
+
+リポジトリを clone したうえで:
+
+```bash
+# 事前確認 (書き込まない)
+python scripts/install_runtime_skills.py --repo .
+
+# ホーム skills へ pointer を書く (明示 --apply が必要)
+python scripts/install_runtime_skills.py --repo . --apply
+```
+
+既定の配布先:
+
+| Runtime | 既定 path |
+|---|---|
+| Claude Code | `~/.claude/skills/repo-preflight/` |
+| Grok / shared agents | `~/.agents/skills/repo-preflight/` |
+| Grok (user skills) | `~/.grok/skills/repo-preflight/` (ディレクトリが存在するとき) |
+
+pointer は root `SKILL.md` への相対参照と、CLI 起動コマンドを含む薄い SKILL です。  
+正本の更新は clone した repo-preflight 側を pull すれば反映されます（pointer は追従）。
+
+プロジェクト限定にしたい場合:
+
+```text
+<your-project>/.claude/skills/repo-preflight/   # Claude Code project skill
+```
+
+へ同様に pointer を置いてもよい。
+
+## 動作確認コマンド
+
+```bash
+python scripts/runtime_smoke.py --repo .
+python -m pytest -q
+```
+
+`runtime_smoke` が exit 0 なら、そのマシン上で CLI + skill 契約の最小保証は満たす。
+
+## エージェント向け最小契約 (全 runtime 共通)
+
+1. 外部操作直前に  
+   `python <repo-preflight>/scripts/readiness_scan.py --repo <target> --intent <intent> --human`
+2. stdout JSON の `status` が `needs_human_input` / `blocked` なら操作しない
+3. guarantees / non_guarantees を短く人間へ示す
+4. proposals を番号付きで聞き、yes だけ実行
+5. secret に ignore を出さない
+
+この 5 点は Claude Code でも Grok でも同じ。
