@@ -1,0 +1,17 @@
+{
+  "schema": "repo-preflight.preferences/v1",
+  "notes": "推奨・任意の再質問を抑止する。secret / 必須文書欠落 / 危険操作の最終確認は抑止できない。",
+  "dismissals": {
+    "configure_expected_identity": {
+      "mode": "forever",
+      "dismissed_at": "2026-08-06",
+      "reason": "例: private のみ運用のため名義固定照合は後回し"
+    },
+    "run_dependency_audit": {
+      "mode": "snooze",
+      "until": "2026-09-06",
+      "dismissed_at": "2026-08-06",
+      "reason": "例: 30日後に再確認"
+    }
+  }
+}

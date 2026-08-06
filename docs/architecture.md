@@ -6,25 +6,41 @@ Repo Preflightは、ローカルGit repositoryを読み取り、見せる相手�
 
 ## コンポーネント
 
-- `scripts/readiness_scan.py`: Git状態、必須文書、履歴、secret候補、個人path、作者名義、CI、originを検査するread-only CLI
-- `SKILL.md`と`references/`: 状態、承認手順、必要文書、repository catalog登録の仕様
-- `tests/`: 一時Git repositoryを使い、履歴secret、読取不能、壊れたGit object、非ASCII path、gitlinkなどのfail-closed挙動を固定
+- `scripts/readiness_scan.py`: Git状態、必須文書、履歴、secret候補、個人path、作者名義、CI、originを検査するread-only CLI。v0.3 では `--intent` で操作直前の質問パケットも返す
+- `scripts/dialogue_gate.py`: AI向け intent 対話パケット (proposals / confirmations) を組み立てる
+- `SKILL.md`と`references/`: 状態、承認手順、必要文書、repository catalog登録の仕様。AI自動発火トリガーを定義
+- `tests/`: 一時Git repositoryを使い、履歴secret、読取不能、壊れたGit object、非ASCII path、gitlink、intent対話などのfail-closed挙動を固定
 - `assets/`: 対象repoへ明示的に適用する文書テンプレート。scannerから自動上書きしない
 - `.github/workflows/ci.yml`: Linux上のPython 3.11/3.13でformatterと回帰試験を実行
 
 ## データフロー
 
 ```text
-user supplied repo path
+AI is about to create_repo / push / open_pr / merge / publish / release
+  -> readiness_scan.py --intent <intent> [--repo PATH]
+  -> (optional) local scan
+  -> dialogue_gate: proposals + confirmations + guarantees/non_guarantees
+  -> agent presents numbered questions to human
+  -> human answers
+  -> agent applies only approved local fixes / settings
+  -> separate approval for the external execute step
+  -> verify
+```
+
+素の検査だけの場合:
+
+```text
+--repo PATH
   -> resolve Git top-level
   -> fixed-argument git subprocess
-  -> tracked/untracked inventory + Git object inventory
-  -> bounded blob reads
-  -> regex candidate detection + repository metadata checks
-  -> JSON report to stdout
+  -> inventory + bounded blob reads
+  -> regex + metadata checks
+  -> schema v3 JSON on stdout
 ```
 
 scannerは検査対象の内容を外部送信しません。secret本文をreportへ含めず、候補ファイル位置だけを返します。
+保証境界 (`guarantees` / `non_guarantees`) は scan / dialogue のどちらでも同じ定義を使い、pass を公開承認と誤読させない。
+intent 対話は設定提案までで、push/PR/public の実行そのものは別承認境界に残す。
 
 ## Trust boundary
 
