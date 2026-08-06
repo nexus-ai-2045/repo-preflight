@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0 - 2026-08-06
+
+### 追加
+
+- **AI 実装フロー向け intent 対話ゲート** (`--intent create_repo|push|open_pr|merge|publish|release`)。
+  エージェントが repo 作成 / push / PR / merge / 公開 / release に進む直前に自動発火し、
+  不足文書・未設定・推奨設定を「設定しますか？」形式の `proposals` / `confirmations` として返す。
+- dialogue schema `repo-preflight.dialogue/v3` と `scripts/dialogue_gate.py`。
+- **次から出さない / snooze**: 推奨質問に `dismiss_30d` / `dismiss_90d` / `dismiss_forever` を付与。
+  採用先 `.repo-preflight.json` に記録 (`--record-dismissal`)。secret 等 fail-closed は抑止不可。
+- **GitHub 設定ガイド鮮度**: `references/github-settings.md` の `last_reviewed` 期限切れを検知し、
+  更新確認の proposal を出す。リアルタイム自動追従は非保証、鮮度検知と更新確認は保証。
+- 保証すること / 保証しないことを scan と dialogue の両方に常に同梱する。
+- scan schema `repo-preflight.scan/v3`、`--human`、`--audience`。
+- コンソール補助の `--interactive` (本体は intent 対話。TTY メニューは任意)。
+
+### 互換
+
+- 素の検査 (`--repo` のみ、stdout JSON) は維持する。
+- `status: pass` と `publication_decision: blocked_human_review_required` の分離は変えない。
+- secret 検出時に ignore 選択肢を出さない。
+- 旧 `--json` は引き続き受け付けない (v0.2.0 と同様)。
+
 ## 0.2.0 - 2026-08-01
 
 ### 破壊的変更

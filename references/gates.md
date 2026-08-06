@@ -1,6 +1,11 @@
 # 承認手順
 
-外部操作は `inspect -> preview -> approval -> execute -> verify` の順にする。
+外部操作は `inspect -> dialogue(intent) -> preview -> approval -> execute -> verify` の順にする。
+
+AI エージェントは repo 作成 / push / PR / merge / 公開 / release の直前に
+`python scripts/readiness_scan.py --intent <intent> ...` を自動発火し、
+返ってきた `proposals` / `confirmations` を人間へ質問する。
+未回答の required がある間は execute に進まない。
 
 ## Fail closed
 
@@ -10,10 +15,13 @@
 - dependency advisory、license、CI workflow securityが未検査またはstale。
 - test、build、smoke test、E2E、reviewの必須checkが失敗。
 - project登録、PREFLIGHT、人間目視reviewが現在HEADと一致しない。
+- intent 対話の status が `needs_human_input` / `blocked` のまま。
 
 ## GitHub操作
 
-private repo作成、push、PR、merge、public化、告知を別承認にする。GitHub connectorはPR/issue情報を優先し、branch/commit/push/account/Actions logはlocal git/ghで補う。
+private repo作成、push、PR、merge、public化、告知を別承認にする。
+intent 対話で yes を得ても、実行直前に操作内容を再掲して承認を取り直す。
+GitHub connectorはPR/issue情報を優先し、branch/commit/push/account/Actions logはlocal git/ghで補う。
 
 ## 履歴と名義
 

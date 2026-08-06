@@ -7,7 +7,47 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
+
+SCHEMA = "repo-preflight.scan/v3"
+
+# CLIが担当する範囲の境界。対話・非対話のどちらでも同じ文言を出す。
+GUARANTEES = (
+    "ローカルGitの現在treeと履歴を読み取り専用で検査する",
+    "必須文書・secret候補・個人path・作者名義・CI設定の最低限の構造を機械判定する",
+    "status は CLI が担当する自動検査の結果だけを表す (pass / blocked / tool_error)",
+    "publication_decision は常に人間レビュー要求とし、自動で公開承認しない",
+    "検出結果に秘密値そのものを出力しない",
+    "推奨質問の dismiss/snooze を採用先 .repo-preflight.json に記録し、次回から抑止する",
+    "同梱 GitHub 設定ガイドの last_reviewed 期限切れを検知し、更新確認の質問を出す",
+)
+
+NON_GUARANTEES = (
+    "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内は見逃し得る)",
+    "依存ライブラリの既知脆弱性",
+    "第三者素材を公開する権利・ライセンス判断",
+    "GitHubのbranch保護・review必須・Actions権限など remote 設定の現在状態",
+    "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
+    "CIが remote で実際に成功したか",
+    "障害通知先・復旧手順が実運用で機能すること",
+    "README・個人情報・公開範囲の目視確認",
+    "公開・push・merge・visibility変更・投稿の実行",
+    "dismiss した推奨項目が将来も安全であること (期限切れ snooze や再発火があり得る)",
+)
+
+AUDIENCE_CHOICES = (
+    ("public", "Web全体 (public化)"),
+    ("team", "team / organization 共有"),
+    ("client", "客先納品"),
+    ("collaborator", "外部協力者 (期限付き)"),
+    ("local", "ローカル確認のみ (見せる相手はまだ決めない)"),
+)
+
+MODE_CHOICES = (
+    ("standard", "標準 preflight (文書・secret・path・identity・CI設定)"),
+    ("release", "release準備 (標準 + README情報設計ゲート)"),
+)
 
 REQUIRED = ("README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "PREFLIGHT.md")
 # PREFLIGHT.md は一般的な語のため、deployment preflight 手順書のような無関係な
@@ -265,6 +305,27 @@ def run_readme_release_gate(repo: Path) -> dict:
     return module.review(repo / "README.md")
 
 
+def load_dialogue_gate():
+    script = Path(__file__).with_name("dialogue_gate.py")
+    spec = importlib.util.spec_from_file_location("dialogue_gate", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    # importlib 経由でもモジュール属性参照できるよう登録する
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_preferences_module():
+    script = Path(__file__).with_name("preferences.py")
+    spec = importlib.util.spec_from_file_location("preferences", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def scan(
     repo: Path,
     expected_identity: str | None = None,
@@ -505,12 +566,391 @@ def scan(
     }
 
 
-def main() -> int:
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
-    parser = argparse.ArgumentParser()
-    # 出力は常にJSON。format を選ぶ flag は置かない (旧 --json は未参照だった)
-    parser.add_argument("--repo", type=Path, required=True)
+class ScanOptions:
+    """検査実行時の選択。importlib経由のテスト読込でも使えるようdataclassを避ける。"""
+
+    def __init__(
+        self,
+        repo: Path | None,
+        release: bool = False,
+        expected_identity: str | None = None,
+        audience: str = "unspecified",
+        interactive: bool = False,
+        show_json: bool = True,
+        intent: str | None = None,
+    ) -> None:
+        self.repo = repo
+        self.release = release
+        self.expected_identity = expected_identity
+        self.audience = audience
+        self.interactive = interactive
+        self.show_json = show_json
+        self.intent = intent
+
+
+def boundary_sections() -> dict[str, list[str]]:
+    return {
+        "guarantees": list(GUARANTEES),
+        "non_guarantees": list(NON_GUARANTEES),
+    }
+
+
+def format_boundary_text() -> str:
+    lines = [
+        "## 保証すること (CLIが担当する範囲)",
+        *(f"- {item}" for item in GUARANTEES),
+        "",
+        "## 保証しないこと (別証拠・人間判断が要る)",
+        *(f"- {item}" for item in NON_GUARANTEES),
+    ]
+    return "\n".join(lines)
+
+
+def enrich_report(report: dict, options: ScanOptions) -> dict:
+    """scan結果に V3 の境界メタデータと選択オプションを載せる。"""
+    enriched = dict(report)
+    enriched["schema"] = SCHEMA
+    enriched["options"] = {
+        "audience": options.audience,
+        "mode": "release" if options.release else "standard",
+        "expected_identity_configured": bool(options.expected_identity),
+        "interactive": options.interactive,
+        "intent": options.intent,
+    }
+    enriched.update(boundary_sections())
+    return enriched
+
+
+def build_intent_dialogue(options: ScanOptions) -> dict:
+    """AI が外部操作直前に使う質問パケットを作る。"""
+    gate = load_dialogue_gate()
+    prefs_mod = load_preferences_module()
+    scan_report: dict | None = None
+    needs_scan = gate.intent_needs_scan(options.intent) or options.repo is not None
+    if needs_scan and options.repo is not None:
+        release = options.release or gate.intent_uses_release_gate(options.intent)
+        scan_report = scan(
+            options.repo,
+            expected_identity=options.expected_identity,
+            release=release,
+        )
+        scan_report = enrich_report(
+            scan_report,
+            ScanOptions(
+                repo=options.repo,
+                release=release,
+                expected_identity=options.expected_identity,
+                audience=options.audience,
+                interactive=options.interactive,
+                show_json=options.show_json,
+                intent=options.intent,
+            ),
+        )
+    elif needs_scan and options.repo is None:
+        scan_report = None
+    preferences = prefs_mod.load_preferences(options.repo)
+    github_baseline = prefs_mod.github_baseline_status(
+        prefs_mod.default_github_baseline_path()
+    )
+    boundaries = boundary_sections()
+    return gate.build_dialogue(
+        intent=options.intent,
+        scan=scan_report,
+        audience=options.audience,
+        guarantees=boundaries["guarantees"],
+        non_guarantees=boundaries["non_guarantees"],
+        preferences=preferences,
+        github_baseline=github_baseline,
+        preferences_module=prefs_mod,
+    )
+
+
+def dialogue_exit_code(dialogue: dict) -> int:
+    status = dialogue.get("status")
+    if status == "ready_after_confirmation":
+        return 0
+    if status == "blocked":
+        return 1
+    if status == "needs_human_input":
+        return 1
+    return 2
+
+
+def format_check_line(name: str, check: dict) -> str:
+    status = check.get("status", "unknown")
+    detail_parts: list[str] = []
+    if name == "secret_scan" and "finding_count" in check:
+        detail_parts.append(f"findings={check['finding_count']}")
+    if name == "required_documents":
+        if check.get("missing"):
+            detail_parts.append(f"missing={','.join(check['missing'])}")
+        if check.get("invalid"):
+            detail_parts.append(f"invalid={','.join(check['invalid'])}")
+    if name == "personal_path_scan" and check.get("files"):
+        detail_parts.append(f"files={len(check['files'])}")
+    if name == "commit_identity":
+        detail_parts.append(f"identities={check.get('identity_count', 0)}")
+        if check.get("mismatch_count"):
+            detail_parts.append(f"mismatches={check['mismatch_count']}")
+    if name == "ci_configuration":
+        detail_parts.append(f"workflows={check.get('workflow_count', 0)}")
+    if check.get("reason"):
+        detail_parts.append(str(check["reason"]))
+    detail = f" ({'; '.join(detail_parts)})" if detail_parts else ""
+    return f"- {name}: {status}{detail}"
+
+
+def format_human_report(report: dict) -> str:
+    lines = [
+        "# Repo Preflight 結果",
+        "",
+        f"schema: {report.get('schema', SCHEMA)}",
+        f"status: {report.get('status')}",
+        f"publication_decision: {report.get('publication_decision', 'n/a')}",
+    ]
+    if report.get("repo"):
+        lines.append(f"repo: {report['repo']}")
+    if report.get("head"):
+        lines.append(f"head: {report['head']}")
+    options = report.get("options") or {}
+    if options:
+        lines.append(
+            "options: "
+            f"audience={options.get('audience')}, "
+            f"mode={options.get('mode')}, "
+            f"expected_identity_configured={options.get('expected_identity_configured')}"
+        )
+    lines.extend(["", format_boundary_text(), ""])
+    if report.get("issues"):
+        lines.append("## issues")
+        lines.extend(f"- {issue}" for issue in report["issues"])
+        lines.append("")
+    checks = report.get("checks") or {}
+    if checks:
+        lines.append("## checks")
+        for name, check in checks.items():
+            if isinstance(check, dict):
+                lines.append(format_check_line(name, check))
+        lines.append("")
+    lines.extend(
+        [
+            "## 読み方",
+            "- status:pass は「このCLIが担当するローカル自動検査に合格した」だけを意味します。",
+            "- publication_decision は常に人間レビュー要求です。pass だけを根拠に公開しないでください。",
+            "- unknown / fail の項目は、別の証拠または人が埋めるまで先へ進めません。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _emit(stream: TextIO, text: str) -> None:
+    stream.write(text)
+    if not text.endswith("\n"):
+        stream.write("\n")
+    stream.flush()
+
+
+def prompt_from_stdin(prompt: str = "") -> str:
+    """対話入力。promptはstderrへ出し、stdoutのJSONを汚さない。"""
+    if prompt:
+        sys.stderr.write(prompt)
+        sys.stderr.flush()
+    line = sys.stdin.readline()
+    if line == "":
+        raise EOFError("EOF while reading interactive input")
+    return line.rstrip("\r\n")
+
+
+def prompt_text(
+    message: str,
+    *,
+    default: str | None = None,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> str:
+    suffix = f" [{default}]" if default is not None else ""
+    while True:
+        raw = input_fn(f"{message}{suffix}: ").strip()
+        if raw:
+            return raw
+        if default is not None:
+            return default
+        output_fn("値を入力してください。")
+
+
+def prompt_choice(
+    title: str,
+    choices: tuple[tuple[str, str], ...],
+    *,
+    default_key: str,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> str:
+    keys = [key for key, _ in choices]
+    if default_key not in keys:
+        raise ValueError(f"unknown default choice: {default_key}")
+    output_fn(title)
+    for index, (key, label) in enumerate(choices, start=1):
+        marker = " (default)" if key == default_key else ""
+        output_fn(f"  {index}) {key} — {label}{marker}")
+    while True:
+        raw = input_fn(f"番号または key [{default_key}]: ").strip().lower()
+        if not raw:
+            return default_key
+        if raw.isdigit():
+            position = int(raw)
+            if 1 <= position <= len(choices):
+                return choices[position - 1][0]
+        for key, _ in choices:
+            if raw == key.lower():
+                return key
+        output_fn("選択肢の番号または key を入力してください。")
+
+
+def prompt_yes_no(
+    message: str,
+    *,
+    default: bool,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+) -> bool:
+    default_label = "Y/n" if default else "y/N"
+    while True:
+        raw = input_fn(f"{message} [{default_label}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw in {"y", "yes", "はい"}:
+            return True
+        if raw in {"n", "no", "いいえ"}:
+            return False
+        output_fn("y または n で答えてください。")
+
+
+def collect_interactive_options(
+    *,
+    initial_repo: Path | None = None,
+    initial_release: bool = False,
+    initial_identity: str | None = None,
+    input_fn: Callable[[str], str] = prompt_from_stdin,
+    output_fn: Callable[[str], None] | None = None,
+) -> ScanOptions:
+    """対話で ScanOptions を集める。入出力はテスト差し替え可能。"""
+    if output_fn is None:
+        output_fn = lambda text: _emit(sys.stderr, text)
+
+    output_fn("Repo Preflight v3 — 対話モード")
+    output_fn("見せる相手を広げる前のローカル検査です。公開や push は実行しません。")
+    output_fn("")
+    output_fn(format_boundary_text())
+    output_fn("")
+
+    audience = prompt_choice(
+        "見せる相手 (audience) を選んでください。必要な人間確認の観点が変わります。",
+        AUDIENCE_CHOICES,
+        default_key="local",
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+    mode = prompt_choice(
+        "検査モードを選んでください。",
+        MODE_CHOICES,
+        default_key="release" if initial_release else "standard",
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+    release = mode == "release"
+
+    default_repo = str(initial_repo) if initial_repo is not None else str(Path.cwd())
+    repo_text = prompt_text(
+        "検査対象リポジトリのパス",
+        default=default_repo,
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+    repo = Path(repo_text)
+
+    use_identity = prompt_yes_no(
+        "全commitの作者/committer名義を固定値と照合しますか?",
+        default=bool(initial_identity),
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+    expected_identity = initial_identity
+    if use_identity:
+        expected_identity = prompt_text(
+            "期待する名義 (例: Example <dev@example.invalid>)",
+            default=initial_identity or "",
+            input_fn=input_fn,
+            output_fn=output_fn,
+        )
+        if not expected_identity:
+            expected_identity = None
+    else:
+        expected_identity = None
+
+    show_json = prompt_yes_no(
+        "結果のJSONも表示しますか?",
+        default=True,
+        input_fn=input_fn,
+        output_fn=output_fn,
+    )
+
+    output_fn("")
+    output_fn("選択内容:")
+    output_fn(f"- audience: {audience}")
+    output_fn(f"- mode: {mode}")
+    output_fn(f"- repo: {repo}")
+    output_fn(
+        f"- expected_identity: {expected_identity if expected_identity else '(未設定)'}"
+    )
+    output_fn(f"- show_json: {show_json}")
+    if not prompt_yes_no(
+        "この内容で検査を実行しますか?",
+        default=True,
+        input_fn=input_fn,
+        output_fn=output_fn,
+    ):
+        raise SystemExit(1)
+
+    return ScanOptions(
+        repo=repo,
+        release=release,
+        expected_identity=expected_identity,
+        audience=audience,
+        interactive=True,
+        show_json=show_json,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    gate = load_dialogue_gate()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Gitリポジトリを見せる相手を広げる前の読み取り専用 preflight。"
+            "AI実装フローでは --intent で操作直前の質問パケットを出す。"
+            "保証範囲と非保証範囲を常に表示する。"
+        )
+    )
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        help="検査対象リポジトリ。--intent create_repo 以外では必須",
+    )
+    parser.add_argument(
+        "--intent",
+        choices=list(gate.INTENTS),
+        help=(
+            "AIが実行しようとする操作。"
+            "create_repo / push / open_pr / merge / publish / release。"
+            "指定時は不足設定と推奨案を質問パケットとして返す"
+        ),
+    )
+    parser.add_argument(
+        "--interactive",
+        "-i",
+        action="store_true",
+        help="コンソール補助: 検査オプションをTTYで選ぶ (本体は --intent のエージェント対話)",
+    )
     parser.add_argument(
         "--release",
         action="store_true",
@@ -520,12 +960,202 @@ def main() -> int:
         "--expected-identity",
         help='Expected Git author and committer identity, for example "Example <dev@example.com>"',
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--audience",
+        choices=[key for key, _ in AUDIENCE_CHOICES],
+        default="unspecified",
+        help="見せる相手。publish intent やメタデータに使う",
+    )
+    parser.add_argument(
+        "--human",
+        action="store_true",
+        help="人間/エージェント向け要約を stderr に出し、JSONは stdout に出す",
+    )
+    parser.add_argument(
+        "--record-dismissal",
+        metavar="PROPOSAL_ID",
+        help=(
+            "採用先 repo の .repo-preflight.json に dismiss を記録して終了。"
+            "--repo と --dismissal-mode が必要"
+        ),
+    )
+    parser.add_argument(
+        "--dismissal-mode",
+        choices=["forever", "7d", "30d", "90d"],
+        help="--record-dismissal と併用。forever / 7d / 30d / 90d",
+    )
+    parser.add_argument(
+        "--dismissal-reason",
+        default="",
+        help="dismiss 記録の理由 (任意)",
+    )
+    return parser
+
+
+def resolve_options(
+    args: argparse.Namespace,
+    *,
+    stdin_is_tty: bool,
+    input_fn: Callable[[str], str] = prompt_from_stdin,
+    output_fn: Callable[[str], None] | None = None,
+) -> ScanOptions:
+    intent = getattr(args, "intent", None)
+    # intent モードはエージェント対話が本体。TTYメニューは使わない
+    want_console = bool(
+        args.interactive or (args.repo is None and stdin_is_tty and not intent)
+    )
+    if want_console:
+        options = collect_interactive_options(
+            initial_repo=args.repo,
+            initial_release=bool(args.release),
+            initial_identity=args.expected_identity,
+            input_fn=input_fn,
+            output_fn=output_fn,
+        )
+        options.intent = intent
+        return options
+
+    gate = load_dialogue_gate()
+    if intent and not gate.intent_needs_scan(intent) and args.repo is None:
+        return ScanOptions(
+            repo=None,
+            release=bool(args.release),
+            expected_identity=args.expected_identity,
+            audience=args.audience,
+            interactive=False,
+            show_json=True,
+            intent=intent,
+        )
+    if args.repo is None:
+        raise SystemExit(
+            "error: --repo is required "
+            "(create_repo intent のみ省略可。コンソール補助は --interactive)"
+        )
+    return ScanOptions(
+        repo=args.repo,
+        release=bool(args.release),
+        expected_identity=args.expected_identity,
+        audience=args.audience,
+        interactive=False,
+        show_json=True,
+        intent=intent,
+    )
+
+
+def report_exit_code(report: dict) -> int:
+    if report["status"] == "pass":
+        return 0
+    if report["status"] == "tool_error":
+        return 2
+    return 1
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    stdin_is_tty: bool | None = None,
+    input_fn: Callable[[str], str] = prompt_from_stdin,
+    console: TextIO | None = None,
+    stdout: TextIO | None = None,
+) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+    out = stdout if stdout is not None else sys.stdout
+    err = console if console is not None else sys.stderr
+    tty = sys.stdin.isatty() if stdin_is_tty is None else stdin_is_tty
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # dismiss 記録専用パス (対話の回答を機械反映)
+    if args.record_dismissal:
+        if args.repo is None or not args.dismissal_mode:
+            _emit(
+                err,
+                "error: --record-dismissal requires --repo and --dismissal-mode",
+            )
+            return 2
+        prefs_mod = load_preferences_module()
+        try:
+            prefs = prefs_mod.load_preferences(args.repo)
+            prefs = prefs_mod.record_dismissal(
+                prefs,
+                args.record_dismissal,
+                mode=args.dismissal_mode,
+                reason=args.dismissal_reason or "",
+            )
+            path = prefs_mod.save_preferences(args.repo, prefs)
+        except Exception as exc:
+            _emit(
+                err,
+                f"error: failed to record dismissal ({type(exc).__name__})",
+            )
+            return 2
+        _emit(
+            out,
+            json.dumps(
+                {
+                    "schema": prefs_mod.PREFERENCES_SCHEMA,
+                    "status": "recorded",
+                    "path": path.name,
+                    "proposal_id": args.record_dismissal,
+                    "dismissal": prefs["dismissals"][args.record_dismissal],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
+        return 0
+
+    try:
+        options = resolve_options(
+            args,
+            stdin_is_tty=tty,
+            input_fn=input_fn,
+            output_fn=lambda text: _emit(err, text),
+        )
+    except EOFError:
+        _emit(err, "error: interactive input ended before options were complete")
+        return 2
+    except SystemExit as exc:
+        # argparse / 対話キャンセル。message付きは人間向けに stderr へ
+        if exc.code not in (0, None) and not isinstance(exc.code, int):
+            _emit(err, str(exc.code))
+            return 2
+        if isinstance(exc.code, int):
+            return exc.code
+        return 0
+
+    # AI 操作直前ゲート: 不足設定を質問パケットとして返す
+    if options.intent:
+        try:
+            dialogue = build_intent_dialogue(options)
+        except Exception as exc:
+            dialogue = {
+                "schema": "repo-preflight.dialogue/v3",
+                "intent": options.intent,
+                "status": "blocked",
+                "publication_decision": "blocked_human_review_required",
+                "issues": [f"unexpected_exception:{type(exc).__name__}"],
+                "proposals": [],
+                "confirmations": [],
+            }
+            _emit(out, json.dumps(dialogue, ensure_ascii=False, indent=2))
+            return 2
+        gate = load_dialogue_gate()
+        if args.human or options.interactive:
+            _emit(err, gate.format_dialogue_for_agent(dialogue))
+        _emit(out, json.dumps(dialogue, ensure_ascii=False, indent=2))
+        return dialogue_exit_code(dialogue)
+
     try:
         report = scan(
-            args.repo,
-            expected_identity=args.expected_identity,
-            release=args.release,
+            options.repo,
+            expected_identity=options.expected_identity,
+            release=options.release,
         )
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す
@@ -533,12 +1163,21 @@ def main() -> int:
             "status": "tool_error",
             "issues": [f"unexpected_exception:{type(exc).__name__}"],
         }
-    print(json.dumps(report, ensure_ascii=False, indent=2))
-    return (
-        0
-        if report["status"] == "pass"
-        else 2 if report["status"] == "tool_error" else 1
-    )
+    report = enrich_report(report, options)
+
+    human_wanted = options.interactive or bool(args.human)
+    if human_wanted:
+        _emit(err, format_human_report(report))
+        if options.interactive and not options.show_json:
+            return report_exit_code(report)
+        if options.interactive:
+            _emit(err, "")
+            _emit(err, "## JSON")
+
+    # 機械可読の正本は常に stdout の JSON (対話で JSON 非表示を選んだ場合のみ省略)
+    if not options.interactive or options.show_json:
+        _emit(out, json.dumps(report, ensure_ascii=False, indent=2))
+    return report_exit_code(report)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repo-preflight"
-version = "0.2.0"
+version = "0.3.0"
 description = "Evidence-driven preflight scanner and lifecycle skill for repositories, run before widening who can see them."
 readme = "README.md"
 requires-python = ">=3.11"

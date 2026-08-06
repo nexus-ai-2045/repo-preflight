@@ -1,6 +1,24 @@
 # GitHub repository設定ガイド
 
+<!-- repo-preflight:github-baseline last_reviewed: 2026-08-06 max_age_days: 90 -->
+
 この文書は、公開repositoryで確認するGitHub設定と選択理由を整理する。特定repositoryの現在値や検査記録は対象repository側または非公開の運用記録へ保存し、この文書には含めない。
+
+## 鮮度と更新の保証境界
+
+| 区分 | 内容 |
+|---|---|
+| 保証すること | `last_reviewed` と `max_age_days` を機械判定し、期限切れなら intent 対話で「ガイドを更新しますか？」を出す |
+| 保証しないこと | GitHub 製品変更・公式推奨のリアルタイム自動追従そのもの |
+| 更新トリガ | public/release 前後、GitHub の security / ruleset / Actions 周りに大きな変更があったと気づいたとき、または age が max を超えたとき |
+| 更新手順 | 公式 docs / changelog を確認 → この文書の表を直す → 上記 marker の `last_reviewed` を今日にする → 必要なら CHANGELOG に1行 |
+
+公式の入口 (更新時に再確認):
+
+- [GitHub Changelog](https://github.blog/changelog/)
+- [Repository security and analysis](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-security-and-analysis-settings-for-your-repository)
+- [Rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
+- [GitHub Actions security hardening](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
 
 ## 推奨度
 
