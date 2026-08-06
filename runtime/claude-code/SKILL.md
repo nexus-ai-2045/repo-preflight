@@ -19,10 +19,15 @@ description: >
 3. 検査・対話は必ず CLI で実行する（推測で pass にしない）:
 
 ```bash
-python <REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py --repo <TARGET_REPO> --intent <intent> --human
+# 既存 repo に対する操作
+python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --repo "<TARGET_REPO>" --intent open_pr --human
+
+# 新規 repo 作成前は --repo を付けない（存在しない path を渡さない）
+python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --intent create_repo --human
 ```
 
-`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`
+`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
+`create_repo` 以外は `--repo <TARGET_REPO>` が必須。
 
 ## Claude Code 固有の読み替え
 

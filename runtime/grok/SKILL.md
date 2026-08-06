@@ -17,10 +17,15 @@ description: >
 3. CLI:
 
 ```bash
-python <REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py --repo <TARGET_REPO> --intent <intent> --human
+# existing target repo
+python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --repo "<TARGET_REPO>" --intent open_pr --human
+
+# before creating a repo: omit --repo
+python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --intent create_repo --human
 ```
 
-`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`
+`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
+Use `--repo` for every intent except `create_repo`.
 
 ## Grok 固有
 

@@ -14,14 +14,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-SCAN = ROOT / "scripts" / "readiness_scan.py"
-REQUIRED_ADAPTERS = (
-    ROOT / "SKILL.md",
-    ROOT / "runtime" / "claude-code" / "SKILL.md",
-    ROOT / "runtime" / "grok" / "SKILL.md",
-    ROOT / "runtime" / "agents" / "openai.yaml",
-    ROOT / "docs" / "runtime-support.md",
+REQUIRED_RELATIVE = (
+    "SKILL.md",
+    "runtime/claude-code/SKILL.md",
+    "runtime/grok/SKILL.md",
+    "runtime/agents/openai.yaml",
+    "docs/runtime-support.md",
 )
 TRIGGER_TOKENS = (
     "PR",
@@ -33,10 +31,13 @@ TRIGGER_TOKENS = (
 )
 
 
-def run_scan(*args: str) -> tuple[int, dict | None, str]:
+def run_scan(root: Path, *args: str) -> tuple[int, dict | None, str]:
+    scan = root / "scripts" / "readiness_scan.py"
+    if not scan.is_file():
+        return 2, None, "readiness_scan_missing"
     result = subprocess.run(
-        [sys.executable, str(SCAN), *args],
-        cwd=ROOT,
+        [sys.executable, str(scan), *args],
+        cwd=root,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -76,6 +77,13 @@ def make_min_repo(base: Path) -> Path:
     repo = base / "sample"
     repo.mkdir()
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    # グローバル commit.gpgsign=true でも smoke が壊れないようにする
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     subprocess.run(
         ["git", "config", "user.name", "Smoke Author"],
         cwd=repo,
@@ -114,7 +122,7 @@ def main() -> int:
     parser.add_argument(
         "--repo",
         type=Path,
-        default=ROOT,
+        default=Path(__file__).resolve().parents[1],
         help="repo-preflight root (default: this checkout)",
     )
     args = parser.parse_args()
@@ -129,16 +137,14 @@ def main() -> int:
     if not (root / "scripts" / "readiness_scan.py").is_file():
         errors.append("readiness_scan_missing")
 
-    for path in REQUIRED_ADAPTERS:
-        rel = path.relative_to(ROOT).as_posix()
-        candidate = root / path.relative_to(ROOT)
+    for rel in REQUIRED_RELATIVE:
+        candidate = root / rel
         if candidate.suffix == ".md":
             errors.extend(check_skill_file(candidate, rel=rel))
         elif not candidate.is_file():
             errors.append(f"missing:{rel}")
 
-    # create_repo dialogue (no target repo required)
-    code, report, _ = run_scan("--intent", "create_repo")
+    code, report, _ = run_scan(root, "--intent", "create_repo")
     if report is None:
         errors.append("create_repo_not_json")
     else:
@@ -155,7 +161,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         sample = make_min_repo(Path(tmp))
         code, report, _ = run_scan(
-            "--repo", str(sample), "--intent", "open_pr", "--human"
+            root, "--repo", str(sample), "--intent", "open_pr", "--human"
         )
         if report is None:
             errors.append("open_pr_not_json")
@@ -166,7 +172,7 @@ def main() -> int:
                 errors.append("open_pr_missing_scan")
             notes.append(f"open_pr_status={report.get('status')} exit={code}")
 
-        code, report, _ = run_scan("--repo", str(sample))
+        code, report, _ = run_scan(root, "--repo", str(sample))
         if report is None or report.get("schema") != "repo-preflight.scan/v3":
             errors.append("scan_schema")
         else:

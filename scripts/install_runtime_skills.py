@@ -74,14 +74,16 @@ def install_one(
         return action
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "SKILL.md").write_text(body, encoding="utf-8")
-    # CLI への近道メモ
+    scan_path = repo.resolve() / "scripts" / "readiness_scan.py"
+    # CLI への近道メモ (path の空白対策で引用符を付ける)
     (dest / "README.md").write_text(
         (
             f"# repo-preflight pointer\n\n"
             f"正本: `{repo.resolve()}`\n\n"
             f"```bash\n"
-            f"python {repo.resolve() / 'scripts' / 'readiness_scan.py'} "
-            f"--repo <TARGET> --intent open_pr --human\n"
+            f'python "{scan_path}" --repo "<TARGET>" --intent open_pr --human\n'
+            f"# create_repo のときは --repo を付けない\n"
+            f'python "{scan_path}" --intent create_repo --human\n'
             f"```\n"
         ),
         encoding="utf-8",
@@ -132,6 +134,8 @@ def main() -> int:
         ),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if any(item.get("status") == "missing_adapter" for item in results):
+        return 1
     return 0
 
 
