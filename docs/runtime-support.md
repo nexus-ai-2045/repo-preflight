@@ -40,14 +40,36 @@
 
 ## 導入 (Claude Code / Grok)
 
-リポジトリを clone したうえで:
+リポジトリを **好きな場所** に clone したうえで:
 
 ```bash
 # 事前確認 (書き込まない)
 python scripts/install_runtime_skills.py --repo .
 
-# ホーム skills へ pointer を書く (明示 --apply が必要)
+# ホーム skills へ portable skill を書く (明示 --apply が必要)
 python scripts/install_runtime_skills.py --repo . --apply
+```
+
+### path の持ち方（重要）
+
+| やること | OK? |
+|---|---|
+| 各自が clone → 各自が `--apply` | OK |
+| skill 隣の `run_preflight.py` と `checkout/` link を使う | OK（推奨） |
+| 環境変数 `REPO_PREFLIGHT_ROOT` を自分で設定 | OK |
+| 他人の skill フォルダをコピー | NG（壊れる） |
+| skill 本文に他人の絶対 path を焼く | NG（廃止） |
+
+install が skill ディレクトリに置くもの:
+
+- `SKILL.md` — 手順（絶対 path なし）
+- `run_preflight.py` — root 自動解決 launcher
+- `checkout/` — clone への symlink / junction（失敗時は `ROOT_PATH.txt`）
+
+起動例:
+
+```bash
+python ~/.claude/skills/repo-preflight/run_preflight.py --repo /path/to/app --intent open_pr --human
 ```
 
 既定の配布先:
@@ -58,8 +80,7 @@ python scripts/install_runtime_skills.py --repo . --apply
 | Grok / shared agents | `~/.agents/skills/repo-preflight/` |
 | Grok (user skills) | `~/.grok/skills/repo-preflight/` (ディレクトリが存在するとき) |
 
-pointer は root `SKILL.md` への相対参照と、CLI 起動コマンドを含む薄い SKILL です。  
-正本の更新は clone した repo-preflight 側を pull すれば反映されます（pointer は追従）。
+正本の更新は clone 側を `git pull` すれば反映されます（`checkout` link が追従）。
 
 プロジェクト限定にしたい場合:
 
@@ -67,7 +88,7 @@ pointer は root `SKILL.md` への相対参照と、CLI 起動コマンドを含
 <your-project>/.claude/skills/repo-preflight/   # Claude Code project skill
 ```
 
-へ同様に pointer を置いてもよい。
+へ同様に install してもよい。
 
 ## 動作確認コマンド
 

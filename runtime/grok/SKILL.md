@@ -8,41 +8,43 @@ description: >
 
 # repo-preflight (Grok adapter)
 
-## 正本
+## Source of truth
 
-このファイルは runtime adapter。手順の正本はリポジトリ root の `SKILL.md`。
+This file is a runtime adapter. Canonical steps live in the clone root `SKILL.md`.
 
-1. `REPO_PREFLIGHT_ROOT`（install が記入）を使う。無ければユーザーに path を確認する。
-2. 正本: `<REPO_PREFLIGHT_ROOT>/SKILL.md`
-3. CLI:
+**No hardcoded absolute paths.** Resolve the root via `run_preflight.py` next to this skill.
+
+1. Use `<THIS_SKILL_DIR>/run_preflight.py` (written by install)
+2. Resolution order: env `REPO_PREFLIGHT_ROOT` → skill-local `checkout/` → walk from cwd
+3. Canonical skill: `<resolved-root>/SKILL.md`
+4. Always run the CLI; never invent pass/fail
 
 ```bash
 # existing target repo
-python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --repo "<TARGET_REPO>" --intent open_pr --human
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --human
 
 # before creating a repo: omit --repo
-python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --intent create_repo --human
+python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 ```
+
+`THIS_SKILL_DIR` = directory containing this SKILL.md (e.g. `~/.grok/skills/repo-preflight`)
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
 
-## Grok 固有
-
-| 正本の表現 | Grok |
-|---|---|
-| エージェント | この Grok セッション |
-| 外部操作 | shell / gh / git |
-| 人間へ質問 | 通常の確認応答（操作前に停止） |
-
 ## MUST
 
-- PR / push / merge / publish / release / create_repo の直前に `--intent` を実行
-- dialogue `status` が `needs_human_input` / `blocked` なら外部操作しない
-- guarantees / non_guarantees を短く示す
-- secret に ignore を出さない
+- Run `--intent` before PR / push / merge / publish / release / create_repo
+- Do not perform external ops while dialogue status is `needs_human_input` or `blocked`
+- Show guarantees / non_guarantees briefly
+- Never offer ignore for secrets
 
-## REPO_PREFLIGHT_ROOT
+## Install
 
-<!-- repo-preflight:root -->
-REPO_PREFLIGHT_ROOT=
+```bash
+git clone https://github.com/nexus-ai-2045/repo-preflight.git
+cd repo-preflight
+python scripts/install_runtime_skills.py --repo . --apply
+```
+
+Re-run `--apply` after moving the clone. Do not copy another user's skill folder.

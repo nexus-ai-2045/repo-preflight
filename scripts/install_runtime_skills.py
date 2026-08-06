@@ -1,5 +1,11 @@
 """Claude Code / Grok 向け skill pointer をホームへ配布する。
 
+絶対 path を skill 本文に焼かない。
+install 先に:
+  - SKILL.md (portable 手順)
+  - run_preflight.py (root 自動解決 launcher)
+  - checkout/ (clone への symlink / junction)
+
 既定は dry-run。--apply で書き込む。
 """
 
@@ -8,10 +14,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
-
-ROOT_MARKER = "<!-- repo-preflight:root -->"
 
 
 def default_targets(home: Path) -> list[tuple[str, Path]]:
@@ -20,7 +25,6 @@ def default_targets(home: Path) -> list[tuple[str, Path]]:
         ("agents", home / ".agents" / "skills" / "repo-preflight"),
     ]
     grok_skills = home / ".grok" / "skills"
-    # .grok/skills が既にある環境だけ配る（未使用ホームを増やさない）
     if grok_skills.is_dir() or (home / ".grok").is_dir():
         targets.append(("grok", grok_skills / "repo-preflight"))
     return targets
@@ -30,27 +34,58 @@ def adapter_source(repo: Path, runtime: str) -> Path:
     if runtime == "claude-code":
         return repo / "runtime" / "claude-code" / "SKILL.md"
     if runtime in {"grok", "agents"}:
-        # agents home は Grok 系と共有されることが多い
         return repo / "runtime" / "grok" / "SKILL.md"
     raise ValueError(runtime)
 
 
-def render_pointer(template: str, repo_root: Path) -> str:
-    root = str(repo_root.resolve())
-    lines = template.splitlines()
-    out: list[str] = []
-    for line in lines:
-        if line.startswith("REPO_PREFLIGHT_ROOT="):
-            out.append(f"REPO_PREFLIGHT_ROOT={root}")
+def link_checkout(dest_checkout: Path, repo: Path) -> str:
+    """checkout を repo へリンク。成功した方式名を返す。"""
+    if dest_checkout.exists() or dest_checkout.is_symlink():
+        is_junc = bool(getattr(dest_checkout, "is_junction", lambda: False)())
+        if dest_checkout.is_symlink() or is_junc:
+            dest_checkout.unlink()
+        elif dest_checkout.is_dir():
+            # 古い実ディレクトリ / path-file fallback を消す
+            shutil.rmtree(dest_checkout)
         else:
-            out.append(line)
-    text = "\n".join(out) + "\n"
-    if ROOT_MARKER in text and f"REPO_PREFLIGHT_ROOT={root}" not in text:
-        text = text.replace(
-            "REPO_PREFLIGHT_ROOT=\n",
-            f"REPO_PREFLIGHT_ROOT={root}\n",
+            dest_checkout.unlink()
+
+    target = str(repo.resolve())
+    link = str(dest_checkout)
+
+    # 1) symlink
+    try:
+        dest_checkout.symlink_to(repo.resolve(), target_is_directory=True)
+        return "symlink"
+    except OSError:
+        pass
+
+    # 2) Windows junction (管理者不要なことが多い)
+    if os.name == "nt":
+        import subprocess
+
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", link, target],
+            capture_output=True,
+            text=True,
         )
-    return text
+        if result.returncode == 0 and dest_checkout.exists():
+            return "junction"
+
+    # 3) fallback: path ファイル
+    dest_checkout.mkdir(parents=True, exist_ok=True)
+    (dest_checkout / "ROOT_PATH.txt").write_text(target + "\n", encoding="utf-8")
+    # resolve 側が checkout/scripts を見るので、最低限のリダイレクト用 run は skill 直下
+    return "path-file"
+
+
+def enhance_run_preflight_for_path_file(run_src: Path, dest: Path) -> None:
+    """path-file fallback でも動くよう、run_preflight をそのままコピー。
+
+    discover は checkout/ に readiness が無い場合 ROOT_PATH.txt を読むよう本体を拡張済みにする。
+    """
+    text = run_src.read_text(encoding="utf-8")
+    (dest / "run_preflight.py").write_text(text, encoding="utf-8")
 
 
 def install_one(
@@ -61,30 +96,57 @@ def install_one(
     apply: bool,
 ) -> dict:
     source = adapter_source(repo, runtime)
+    run_src = repo / "runtime" / "shared" / "run_preflight.py"
     if not source.is_file():
         return {"runtime": runtime, "dest": str(dest), "status": "missing_adapter"}
-    body = render_pointer(source.read_text(encoding="utf-8"), repo)
+    if not run_src.is_file():
+        return {"runtime": runtime, "dest": str(dest), "status": "missing_adapter"}
+
     action = {
         "runtime": runtime,
         "dest": str(dest),
         "source": str(source.relative_to(repo)),
         "status": "would_write" if not apply else "written",
+        "link": "pending",
     }
     if not apply:
+        action["link"] = "would_link_checkout"
         return action
+
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / "SKILL.md").write_text(body, encoding="utf-8")
-    scan_path = repo.resolve() / "scripts" / "readiness_scan.py"
-    # CLI への近道メモ (path の空白対策で引用符を付ける)
+    # 絶対 path を焼かない adapter 本文
+    body = source.read_text(encoding="utf-8")
+    # 旧 install の絶対 path 行を掃除
+    cleaned_lines = []
+    for line in body.splitlines():
+        if (
+            line.startswith("REPO_PREFLIGHT_ROOT=")
+            and line.strip() != "REPO_PREFLIGHT_ROOT="
+        ):
+            cleaned_lines.append("REPO_PREFLIGHT_ROOT=")
+        else:
+            cleaned_lines.append(line)
+    (dest / "SKILL.md").write_text("\n".join(cleaned_lines) + "\n", encoding="utf-8")
+
+    enhance_run_preflight_for_path_file(run_src, dest)
+    link_mode = link_checkout(dest / "checkout", repo)
+    action["link"] = link_mode
+
     (dest / "README.md").write_text(
         (
-            f"# repo-preflight pointer\n\n"
-            f"正本: `{repo.resolve()}`\n\n"
-            f"```bash\n"
-            f'python "{scan_path}" --repo "<TARGET>" --intent open_pr --human\n'
-            f"# create_repo のときは --repo を付けない\n"
-            f'python "{scan_path}" --intent create_repo --human\n'
-            f"```\n"
+            "# repo-preflight skill (portable)\n\n"
+            "絶対 path 固定ではありません。\n\n"
+            "解決順:\n"
+            "1. 環境変数 `REPO_PREFLIGHT_ROOT`\n"
+            "2. この skill 隣の `checkout/` (install が作る link)\n"
+            "3. カレントから repo-preflight root を探索\n\n"
+            "```bash\n"
+            f'python "{dest / "run_preflight.py"}" --repo "<TARGET>" --intent open_pr --human\n'
+            f'python "{dest / "run_preflight.py"}" --intent create_repo --human\n'
+            "```\n"
+            "\n"
+            f"clone: `{repo.resolve()}`\n"
+            f"link mode: `{link_mode}`\n"
         ),
         encoding="utf-8",
     )
@@ -115,6 +177,9 @@ def main() -> int:
     if not (repo / "SKILL.md").is_file():
         print("error: SKILL.md not found in --repo", file=sys.stderr)
         return 2
+    if not (repo / "runtime" / "shared" / "run_preflight.py").is_file():
+        print("error: runtime/shared/run_preflight.py missing", file=sys.stderr)
+        return 2
 
     results = []
     for runtime, dest in default_targets(args.home.resolve()):
@@ -126,11 +191,12 @@ def main() -> int:
         "schema": "repo-preflight.install-runtime-skills/v1",
         "apply": bool(args.apply),
         "repo": str(repo),
+        "portable": True,
         "results": results,
         "next": (
             "re-run with --apply to write"
             if not args.apply
-            else "run: python scripts/runtime_smoke.py --repo <repo-preflight>"
+            else 'run: python "<skill>/run_preflight.py" --intent create_repo --human'
         ),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

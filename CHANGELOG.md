@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2 - 2026-08-06
+
+### 修正 / 改善
+
+- skill に絶対 path を焼かない portable install に変更。
+  - install 先に `run_preflight.py` + `checkout/` link を置く
+  - root 解決: `REPO_PREFLIGHT_ROOT` → `checkout/` → cwd 探索
+- 他人の skill フォルダをコピーすると壊れる問題を設計上避ける（各自 `--apply`）
+- Claude Code / Grok adapter と runtime-support 文書を更新
+
 ## 0.3.1 - 2026-08-06
 
 ### 追加
