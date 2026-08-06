@@ -11,20 +11,24 @@ description: >
 
 ## 正本
 
-このファイルは runtime adapter。手順の正本はリポジトリ root の `SKILL.md`。
+このファイルは runtime adapter。手順の正本は clone 側 root の `SKILL.md`。
 
-1. この skill ディレクトリから repo-preflight の clone を特定する  
-   （`install_runtime_skills.py` が書いた `REPO_PREFLIGHT_ROOT` を優先）。
-2. 正本を読む: `<REPO_PREFLIGHT_ROOT>/SKILL.md`
-3. 検査・対話は必ず CLI で実行する（推測で pass にしない）:
+**絶対 path 固定はしない。** root 解決は隣の `run_preflight.py` に任せる。
+
+1. この skill ディレクトリの `run_preflight.py` を使う（install が置く）
+2. 解決順: 環境変数 `REPO_PREFLIGHT_ROOT` → skill 隣 `checkout/` → cwd 探索
+3. 正本: `<resolved-root>/SKILL.md`
+4. 検査は推測せず CLI で実行する
 
 ```bash
-# 既存 repo に対する操作
-python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --repo "<TARGET_REPO>" --intent open_pr --human
+# 既存 repo
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --human
 
-# 新規 repo 作成前は --repo を付けない（存在しない path を渡さない）
-python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --intent create_repo --human
+# 新規 repo 作成前は --repo を付けない
+python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 ```
+
+`THIS_SKILL_DIR` = この SKILL.md があるディレクトリ（例: `~/.claude/skills/repo-preflight`）
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
 `create_repo` 以外は `--repo <TARGET_REPO>` が必須。
@@ -45,9 +49,12 @@ python "<REPO_PREFLIGHT_ROOT>/scripts/readiness_scan.py" --intent create_repo --
 - secret 検出に ignore を提案しない
 - 公開・投稿ボタンは押さない（別承認）
 
-## REPO_PREFLIGHT_ROOT
+## 導入
 
-<!-- repo-preflight:root -->
-`REPO_PREFLIGHT_ROOT` は install 時に次行へ実 path が書かれる。未設定ならユーザーに clone path を確認する。
+```bash
+git clone https://github.com/nexus-ai-2045/repo-preflight.git
+cd repo-preflight
+python scripts/install_runtime_skills.py --repo . --apply
+```
 
-REPO_PREFLIGHT_ROOT=
+clone を移したら `--apply` をやり直す。他人の skill フォルダをコピーしない。
