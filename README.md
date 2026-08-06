@@ -292,10 +292,15 @@ git mv PUBLIC_READY.md PREFLIGHT.md
 # このマシンで CLI + skill 入口の最小保証を確認
 python scripts/runtime_smoke.py --repo .
 
-# Claude Code / Grok の skills へ pointer を配布 (確認のみ → 書込)
+# Claude Code / Grok の skills へ portable 配布 (確認のみ → 書込)
 python scripts/install_runtime_skills.py --repo .
 python scripts/install_runtime_skills.py --repo . --apply
+
+# install 後は skill 側 launcher を使う (絶対 path 不要)
+python ~/.claude/skills/repo-preflight/run_preflight.py --intent create_repo --human
 ```
+
+skill は **各自が clone したうえで `--apply`** する。他人の skill フォルダをコピーしない。
 
 公開リポジトリのruleset、merge方式、Actions権限、security機能の選択理由は
 [GitHub repository設定ガイド](references/github-settings.md) を参照してください。
