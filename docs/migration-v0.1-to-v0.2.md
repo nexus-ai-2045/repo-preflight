@@ -23,7 +23,7 @@ git mv PUBLIC_READY.md PREFLIGHT.md
 
 `PREFLIGHT` は一般的な語なので、deployment preflight 手順書のような無関係な同名ファイルが
 存在しえます。CLIはこのマーカーの有無でレビュー記録かどうかを判別します。マーカーが無い場合は
-`required_documents` が `invalid` として fail します。テンプレートは [assets/PREFLIGHT.template.md](assets/PREFLIGHT.template.md)。
+`required_documents` が `invalid` として fail します。テンプレートは [assets/PREFLIGHT.template.md](../assets/PREFLIGHT.template.md)。
 
 旧URL `github.com/nexus-ai-2045/public-readiness` はGitHubのリダイレクトで引き続き解決します。
 旧名は永久欠番とし、再利用しません。
