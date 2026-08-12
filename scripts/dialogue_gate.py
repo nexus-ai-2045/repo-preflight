@@ -476,6 +476,9 @@ def build_confirmations(
     label = INTENT_LABELS.get(intent, intent)
     head = (scan or {}).get("head")
     repo = (scan or {}).get("repo")
+    scan_scope = (scan or {}).get("scan_scope") or {}
+    base_ref = scan_scope.get("base_ref")
+    base_oid = scan_scope.get("base_oid")
     base = {
         "id": f"confirm_{intent}",
         "kind": "intent_confirmation",
@@ -484,6 +487,7 @@ def build_confirmations(
             f"次の操作へ進んでよいですか: {label}"
             + (f" / repo={repo}" if repo else "")
             + (f" / head={head}" if head else "")
+            + (f" / base={base_ref}@{base_oid}" if base_ref and base_oid else "")
             + (f" / audience={audience}" if intent == "publish" else "")
             + "。実行内容を再掲したうえで yes が必要です。"
         ),
@@ -510,6 +514,14 @@ def build_confirmations(
         }
     else:
         base["proposed"] = {"action": intent}
+        if base_ref and base_oid:
+            base["proposed"]["operation_binding"] = {
+                "base_ref": base_ref,
+                "base_oid": base_oid,
+                "head_oid": head,
+                "require_exact_base_for_push_or_pr": True,
+                "rerun_if_base_or_head_changes": True,
+            }
     return [base]
 
 
