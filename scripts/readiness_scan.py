@@ -651,8 +651,8 @@ def scan(
         "scan_scope": (
             {
                 "mode": "target_diff",
-                "base_ref": base_ref,
-                "resolved_base_ref": resolved_base_ref,
+                "base_ref": sanitized_evidence_label(base_ref),
+                "resolved_base_ref": sanitized_evidence_label(resolved_base_ref),
                 "base_oid": base_oid,
             }
             if base_ref
@@ -718,7 +718,9 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         "expected_identity_configured": bool(options.expected_identity),
         "interactive": options.interactive,
         "intent": options.intent,
-        "base_ref": options.base_ref,
+        "base_ref": (
+            sanitized_evidence_label(options.base_ref) if options.base_ref else None
+        ),
     }
     enriched.update(boundary_sections())
     return enriched
@@ -1129,6 +1131,7 @@ def resolve_options(
             output_fn=output_fn,
         )
         options.intent = intent
+        options.base_ref = base_ref
         return options
 
     gate = load_dialogue_gate()

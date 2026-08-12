@@ -189,6 +189,21 @@ def test_target_diff_rejects_local_ancestor_ref(tmp_path: Path):
     assert report["issues"] == ["invalid_non_remote_or_non_ancestor_base_ref"]
 
 
+def test_target_diff_redacts_secret_shaped_base_ref_from_dialogue(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    token = "github_pat_" + "D" * 30
+    base = set_remote_base(repo, token)
+    (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "safe.txt")
+    git(repo, "commit", "-m", "safe target")
+
+    options = MODULE.ScanOptions(repo=repo, intent="open_pr", base_ref=base)
+    serialized = json.dumps(MODULE.build_intent_dialogue(options))
+
+    assert token not in serialized
+    assert "<redacted-path>" in serialized
+
+
 def test_target_diff_does_not_follow_changed_symlink(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)

@@ -101,6 +101,33 @@ def test_collect_interactive_options_walks_menus(tmp_path: Path):
     assert "保証しないこと" in joined
 
 
+def test_resolve_options_preserves_base_ref_in_interactive_mode(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = "origin/main"
+    args = MODULE.build_parser().parse_args(
+        [
+            "--repo",
+            str(repo),
+            "--intent",
+            "open_pr",
+            "--base-ref",
+            base,
+            "--interactive",
+        ]
+    )
+    answers = ScriptedInput(["local", "standard", str(repo), "n", "y", "y"])
+
+    options = MODULE.resolve_options(
+        args,
+        stdin_is_tty=True,
+        input_fn=answers,
+        output_fn=lambda _text: None,
+    )
+
+    assert options.intent == "open_pr"
+    assert options.base_ref == base
+
+
 def test_interactive_main_prints_human_summary_and_optional_json(tmp_path: Path):
     repo = make_repo(tmp_path)
     answers = ScriptedInput(
