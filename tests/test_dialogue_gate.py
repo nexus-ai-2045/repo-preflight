@@ -148,6 +148,38 @@ def test_cli_intent_open_pr_includes_scan(tmp_path: Path):
     assert code in {0, 1}
 
 
+def test_cli_open_pr_target_diff_uses_explicit_base(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "target.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "target.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "target"], cwd=repo, check=True)
+    console = StringIO()
+    stdout = StringIO()
+
+    code = SCAN.main(
+        [
+            "--repo",
+            str(repo),
+            "--intent",
+            "open_pr",
+            "--base-ref",
+            base,
+        ],
+        stdin_is_tty=False,
+        console=console,
+        stdout=stdout,
+    )
+
+    dialogue = json.loads(stdout.getvalue())
+    assert dialogue["scan"]["status"] == "pass"
+    assert dialogue["scan"]["scan_scope"]["mode"] == "target_diff"
+    assert dialogue["scan"]["options"]["base_ref"] == base
+    assert code == 0
+
+
 def test_format_dialogue_lists_numbered_proposals():
     dialogue = DIALOGUE.build_dialogue(intent="create_repo", scan=None)
     text = DIALOGUE.format_dialogue_for_agent(dialogue)
