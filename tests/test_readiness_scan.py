@@ -204,6 +204,7 @@ def test_target_diff_does_not_follow_changed_symlink(tmp_path: Path):
     ).stdout.strip()
     (repo / "outside-link").write_text("../outside.txt", encoding="utf-8")
     git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},outside-link")
+    git(repo, "checkout-index", "--force", "--", "outside-link")
     git(repo, "commit", "-m", "add safe symlink")
 
     report = MODULE.scan(repo, base_ref=base)
