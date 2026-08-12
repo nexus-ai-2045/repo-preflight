@@ -313,8 +313,27 @@ def changed_working_tree_files(
     for raw_name in result.stdout.split(b"\0"):
         if not raw_name:
             continue
-        path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        rel = raw_name.decode("utf-8", errors="surrogateescape")
+        path = repo / rel
         if path.exists():
+            mode_probe = subprocess.run(
+                ["git", "ls-files", "--stage", "--", rel],
+                cwd=repo,
+                text=True,
+                encoding="utf-8",
+                errors="backslashreplace",
+                capture_output=True,
+            )
+            if mode_probe.returncode:
+                raise RuntimeError("git_target_diff_inventory_failed")
+            entries = [line for line in mode_probe.stdout.splitlines() if line]
+            if len(entries) != 1:
+                raise RuntimeError("git_target_diff_inventory_failed")
+            mode = entries[0].split(maxsplit=1)[0]
+            if mode in {"120000", "160000"}:
+                continue
+            if not mode.startswith("100"):
+                raise RuntimeError("git_target_diff_inventory_failed")
             paths.append(path)
         else:
             deleted.add(path)
@@ -371,14 +390,20 @@ def scan(
     }
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
+        symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
         ancestor_probe = run(
             repo, "git", "merge-base", "--is-ancestor", base_ref, "HEAD"
         )
-        if base_probe[0] or ancestor_probe[0]:
+        if (
+            base_probe[0]
+            or symbolic_probe[0]
+            or not symbolic_probe[1].startswith("refs/remotes/origin/")
+            or ancestor_probe[0]
+        ):
             return {
                 "status": "tool_error",
                 "repo": repository_evidence_label(repo),
-                "issues": ["invalid_or_non_ancestor_base_ref"],
+                "issues": ["invalid_non_remote_or_non_ancestor_base_ref"],
             }
         identity_range = f"{base_ref}..HEAD"
         probes["identities"] = run(
@@ -397,6 +422,11 @@ def scan(
     head = probes["head"][1]
     dirty = probes["dirty"][1]
     identities = probes["identities"][1]
+    resolved_base_ref: str | None = None
+    base_oid: str | None = None
+    if base_ref:
+        resolved_base_ref = symbolic_probe[1]
+        base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
     missing = (
         [] if base_ref else [name for name in REQUIRED if not (repo / name).is_file()]
@@ -619,7 +649,12 @@ def scan(
         "repo": repository_evidence_label(repo),
         "head": head,
         "scan_scope": (
-            {"mode": "target_diff", "base_ref": base_ref}
+            {
+                "mode": "target_diff",
+                "base_ref": base_ref,
+                "resolved_base_ref": resolved_base_ref,
+                "base_oid": base_oid,
+            }
             if base_ref
             else {"mode": "repository"}
         ),

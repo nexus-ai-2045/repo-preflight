@@ -139,6 +139,8 @@ secret や個人 path の検出時は **「無視して進む」選択肢を出�
 `base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、
 今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
 公開・releaseでは使えず、必須文書と全履歴を含むrepo全体検査が必要です。
+確認packetにはbase ref / base SHA / head SHAが入り、実際のpush / PRは同じbaseへ固定します。
+baseまたはHEADが変わった場合は、古い結果を使わず再検査します。
 
 #### 次から出さない (dismiss / snooze)
 

@@ -39,6 +39,18 @@ def make_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def set_remote_base(repo: Path, name: str = "main") -> str:
+    oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git(repo, "update-ref", f"refs/remotes/origin/{name}", oid)
+    return f"origin/{name}"
+
+
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
     """出力は常にJSON。formatを選ぶflagは受け付けない。
 
@@ -120,13 +132,7 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     )
     git(repo, "add", ".")
     git(repo, "commit", "-m", "legacy baseline")
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    base = set_remote_base(repo)
     (repo / "safe.txt").write_text("safe target change\n", encoding="utf-8")
     git(repo, "add", "safe.txt")
     git(repo, "commit", "-m", "safe target")
@@ -134,7 +140,10 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     report = MODULE.scan(repo, base_ref=base)
 
     assert report["status"] == "pass"
-    assert report["scan_scope"] == {"mode": "target_diff", "base_ref": base}
+    assert report["scan_scope"]["mode"] == "target_diff"
+    assert report["scan_scope"]["base_ref"] == base
+    assert report["scan_scope"]["resolved_base_ref"] == "refs/remotes/origin/main"
+    assert report["scan_scope"]["base_oid"]
     assert report["checks"]["required_documents"]["status"] == "not_evaluated"
     assert report["checks"]["secret_scan"]["status"] == "pass"
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
@@ -142,13 +151,7 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
 
 def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    base = set_remote_base(repo)
     leaked = repo / "temporary-secret.txt"
     leaked.write_text("github_pat_" + "B" * 30, encoding="utf-8")
     git(repo, "add", leaked.name)
@@ -170,7 +173,43 @@ def test_target_diff_rejects_non_ancestor_base(tmp_path: Path):
     report = MODULE.scan(repo, base_ref="refs/heads/missing")
 
     assert report["status"] == "tool_error"
-    assert report["issues"] == ["invalid_or_non_ancestor_base_ref"]
+    assert report["issues"] == ["invalid_non_remote_or_non_ancestor_base_ref"]
+
+
+def test_target_diff_rejects_local_ancestor_ref(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "branch", "narrow-local-base")
+    (repo / "safe.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "safe.txt")
+    git(repo, "commit", "-m", "safe target")
+
+    report = MODULE.scan(repo, base_ref="narrow-local-base")
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["invalid_non_remote_or_non_ancestor_base_ref"]
+
+
+def test_target_diff_does_not_follow_changed_symlink(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("github_pat_" + "C" * 30, encoding="utf-8")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="../outside.txt",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / "outside-link").write_text("../outside.txt", encoding="utf-8")
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},outside-link")
+    git(repo, "commit", "-m", "add safe symlink")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "pass"
+    assert report["checks"]["secret_scan"]["status"] == "pass"
 
 
 def test_release_mode_autoruns_readme_design_gate(tmp_path: Path):
