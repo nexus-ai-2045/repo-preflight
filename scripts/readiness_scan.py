@@ -298,7 +298,9 @@ def deleted_working_tree_files(repo: Path) -> set[Path]:
     }
 
 
-def changed_working_tree_files(repo: Path, base_ref: str) -> tuple[list[Path], set[Path]]:
+def changed_working_tree_files(
+    repo: Path, base_ref: str
+) -> tuple[list[Path], set[Path]]:
     result = subprocess.run(
         ["git", "diff", "--name-only", "-z", f"{base_ref}...HEAD"],
         cwd=repo,
@@ -369,7 +371,9 @@ def scan(
     }
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
-        ancestor_probe = run(repo, "git", "merge-base", "--is-ancestor", base_ref, "HEAD")
+        ancestor_probe = run(
+            repo, "git", "merge-base", "--is-ancestor", base_ref, "HEAD"
+        )
         if base_probe[0] or ancestor_probe[0]:
             return {
                 "status": "tool_error",
