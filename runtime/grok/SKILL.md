@@ -21,7 +21,7 @@ This file is a runtime adapter. Canonical steps live in the clone root `SKILL.md
 
 ```bash
 # existing target repo
-python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --human
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --base-ref origin/<BASE> --human
 
 # before creating a repo: omit --repo
 python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
@@ -31,6 +31,8 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
+Use `--base-ref` only for target-diff checks before `push` / `open_pr` in an existing private repo.
+The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` / `release`.
 
 ## MUST
 

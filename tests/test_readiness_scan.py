@@ -110,6 +110,61 @@ def test_clean_complete_repo_passes(tmp_path: Path):
     assert MODULE.scan(make_repo(tmp_path))["status"] == "pass"
 
 
+def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    for name in MODULE.REQUIRED:
+        (repo / name).unlink()
+    (repo / "legacy.txt").write_text(
+        "sk-" + "A" * 30 + "\nC:/Us" + "ers/legacy-user/project\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "legacy baseline")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    (repo / "safe.txt").write_text("safe target change\n", encoding="utf-8")
+    git(repo, "add", "safe.txt")
+    git(repo, "commit", "-m", "safe target")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "pass"
+    assert report["scan_scope"] == {"mode": "target_diff", "base_ref": base}
+    assert report["checks"]["required_documents"]["status"] == "not_evaluated"
+    assert report["checks"]["secret_scan"]["status"] == "pass"
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    leaked = repo / "temporary-secret.txt"
+    leaked.write_text("github_pat_" + "B" * 30, encoding="utf-8")
+    git(repo, "add", leaked.name)
+    git(repo, "commit", "-m", "introduce transient secret")
+    leaked.unlink()
+    git(repo, "add", "-u")
+    git(repo, "commit", "-m", "remove transient secret")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+    assert report["checks"]["secret_scan"]["finding_count"] >= 1
+
+
+def test_target_diff_rejects_non_ancestor_base(tmp_path: Path):
+    repo = make_repo(tmp_path)
+
+    report = MODULE.scan(repo, base_ref="refs/heads/missing")
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["invalid_or_non_ancestor_base_ref"]
+
+
 def test_release_mode_autoruns_readme_design_gate(tmp_path: Path):
     report = MODULE.scan(make_repo(tmp_path), release=True)
     assert report["status"] == "blocked"

@@ -87,8 +87,8 @@ cd repo-preflight
 | これからやること | コマンド |
 |---|---|
 | リポジトリ新規作成 | `python scripts/readiness_scan.py --intent create_repo --human` |
-| push | `python scripts/readiness_scan.py --repo PATH --intent push --human` |
-| PR 作成 | `python scripts/readiness_scan.py --repo PATH --intent open_pr --human` |
+| push | `python scripts/readiness_scan.py --repo PATH --intent push --base-ref origin/BASE --human` |
+| PR 作成 | `python scripts/readiness_scan.py --repo PATH --intent open_pr --base-ref origin/BASE --human` |
 | merge | `python scripts/readiness_scan.py --repo PATH --intent merge --human` |
 | 公開 / 共有 / 納品 | `python scripts/readiness_scan.py --repo PATH --intent publish --audience public --human` |
 | release 準備 | `python scripts/readiness_scan.py --repo PATH --intent release --human` |
@@ -134,6 +134,11 @@ cd repo-preflight
 - 「未コミットの変更があります。コミットしてから進めますか？」
 
 secret や個人 path の検出時は **「無視して進む」選択肢を出しません**。
+
+既存private repoのpush / PRでは `--base-ref` を指定すると、今回の変更fileと
+`base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、
+今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
+公開・releaseでは使えず、必須文書と全履歴を含むrepo全体検査が必要です。
 
 #### 次から出さない (dismiss / snooze)
 
