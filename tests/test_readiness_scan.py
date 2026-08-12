@@ -121,7 +121,11 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     git(repo, "add", ".")
     git(repo, "commit", "-m", "legacy baseline")
     base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     (repo / "safe.txt").write_text("safe target change\n", encoding="utf-8")
     git(repo, "add", "safe.txt")
@@ -139,7 +143,11 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
 def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     leaked = repo / "temporary-secret.txt"
     leaked.write_text("github_pat_" + "B" * 30, encoding="utf-8")
