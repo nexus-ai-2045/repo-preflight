@@ -179,6 +179,10 @@ def history_hits(
                 oid, raw_name.decode("utf-8", errors="surrogateescape")
             )
     inventory = list(inventory_by_id.items())
+    # 空range (base == HEAD 等) は検査対象ゼロの成功。空入力をcat-fileへ
+    # 渡すと出力行数が合わず inventory 失敗と誤判定するため、ここで返す
+    if not inventory:
+        return [], []
     object_ids = [object_id for object_id, _ in inventory]
     check = subprocess.run(
         ["git", "cat-file", "--batch-check"],
