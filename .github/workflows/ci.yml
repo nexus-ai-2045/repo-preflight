@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches: [main]
 
@@ -21,6 +22,7 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -28,6 +30,12 @@ jobs:
       - run: python -m pip install -e ".[test]"
       - run: python -m black --check scripts/readiness_scan.py scripts/consistency_gate.py tests/test_readiness_scan.py tests/test_consistency_gate.py
       - run: python -m pytest -q
+      - name: README readability gate
+        run: python scripts/readme_release_gate.py --repo . --json
+      - name: Documentation consistency gate
+        env:
+          CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: python scripts/consistency_gate.py --repo . --base-ref "$CONSISTENCY_BASE" --require-config --require-mode enforce --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -43,12 +51,19 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade "pip>=26.1.2"
       - run: python -m pip install -e ".[test]"
       - run: python -m pytest -q
+      - name: README readability gate
+        run: python scripts/readme_release_gate.py --repo . --json
+      - name: Documentation consistency gate
+        env:
+          CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: python scripts/consistency_gate.py --repo . --base-ref "$CONSISTENCY_BASE" --require-config --require-mode enforce --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -59,11 +74,18 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade "pip>=26.1.2"
       - run: python -m pip install -e ".[test]"
       - run: python -m pytest -q
+      - name: README readability gate
+        run: python scripts/readme_release_gate.py --repo . --json
+      - name: Documentation consistency gate
+        env:
+          CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: python scripts/consistency_gate.py --repo . --base-ref "$env:CONSISTENCY_BASE" --require-config --require-mode enforce --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
