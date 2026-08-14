@@ -148,6 +148,48 @@ def test_cli_intent_open_pr_includes_scan(tmp_path: Path):
     assert code in {0, 1}
 
 
+def test_cli_open_pr_target_diff_uses_explicit_base(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo,
+        check=True,
+    )
+    base = "origin/main"
+    (repo / "target.txt").write_text("safe\n", encoding="utf-8")
+    subprocess.run(["git", "add", "target.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "target"], cwd=repo, check=True)
+    console = StringIO()
+    stdout = StringIO()
+
+    code = SCAN.main(
+        [
+            "--repo",
+            str(repo),
+            "--intent",
+            "open_pr",
+            "--base-ref",
+            base,
+        ],
+        stdin_is_tty=False,
+        console=console,
+        stdout=stdout,
+    )
+
+    dialogue = json.loads(stdout.getvalue())
+    assert dialogue["scan"]["status"] == "pass"
+    assert dialogue["scan"]["scan_scope"]["mode"] == "target_diff"
+    assert dialogue["scan"]["options"]["base_ref"] == base
+    confirmation = dialogue["confirmations"][0]
+    assert f"base={base}@" in confirmation["question"]
+    binding = confirmation["proposed"]["operation_binding"]
+    assert binding["base_ref"] == base
+    assert binding["base_oid"] == dialogue["scan"]["scan_scope"]["base_oid"]
+    assert binding["head_oid"] == dialogue["scan"]["head"]
+    assert binding["rerun_if_base_or_head_changes"] is True
+    assert code == 0
+
+
 def test_format_dialogue_lists_numbered_proposals():
     dialogue = DIALOGUE.build_dialogue(intent="create_repo", scan=None)
     text = DIALOGUE.format_dialogue_for_agent(dialogue)

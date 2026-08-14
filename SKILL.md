@@ -33,8 +33,8 @@ public化は到達点のひとつであり、唯一の終点ではない。priva
 | release / tag / 告知準備 | `release` | MUST |
 
 ```bash
-# 例: PR を作る直前
-python scripts/readiness_scan.py --repo <path> --intent open_pr --human
+# 例: 既存private repoで、今回のPR差分を検査する
+python scripts/readiness_scan.py --repo <path> --intent open_pr --base-ref origin/<base> --human
 
 # 例: リポジトリ新規作成の直前 (path 未作成でも可)
 python scripts/readiness_scan.py --intent create_repo --human
@@ -44,6 +44,12 @@ python scripts/readiness_scan.py --repo <path> --intent publish --audience publi
 ```
 
 stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stderr に番号付きの質問文も出る。
+
+`--base-ref` は `push` / `open_pr` 専用。指定したbaseからHEADまでの変更fileとcommit範囲を検査し、
+既存repoのbaseline問題と今回差分を分離する。baseはHEADの祖先でなければfail-closed。
+`publish` / `release` では使用できず、repo全体modeを通す。
+確認packetはbase ref / base SHA / head SHAを固定する。実際のpush / PRも同じbaseを使い、
+baseまたはHEADが動いた場合は再検査する。
 
 ## 対話パケットの使い方 (エージェント手順)
 
