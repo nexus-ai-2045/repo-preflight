@@ -496,12 +496,14 @@ def main() -> int:
             "findings": ["required_consistency_config_missing"],
         }
     elif args.require_mode and report.get("mode") != args.require_mode:
+        findings = sorted(
+            set(report.get("findings", [])) | {"required_consistency_mode_mismatch"}
+        )
         report = {
             **report,
             "status": "tool_error",
-            "findings": sorted(
-                set(report.get("findings", [])) | {"required_consistency_mode_mismatch"}
-            ),
+            "finding_count": len(findings),
+            "findings": findings,
         }
     print(
         # Windows CIの非UTF-8 pipeでもJSON契約を壊さない。

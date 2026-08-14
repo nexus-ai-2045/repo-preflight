@@ -708,3 +708,29 @@ def test_merge_intent_accepts_remote_base_ref(tmp_path: Path):
     assert report["intent"] == "merge"
     assert report["scan"]["options"]["mode"] == "target_diff"
     assert report["scan"]["options"]["base_ref"] == "origin/main"
+
+
+def test_publish_keeps_repo_scan_with_separate_consistency_base(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "enforce",
+                "impact_map": [{"change": ["README.md"], "requires_any": ["tests/**"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (repo / "README.md").write_text("# Repo\n\n## 目的\n\ntext\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_docs.py").write_text("# evidence\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "change docs contract")
+
+    report = MODULE.scan(repo, consistency_base_ref="origin/main")
+
+    assert report["checks"]["required_documents"]["status"] == "pass"
+    assert report["checks"]["repository_consistency"]["status"] == "pass"
+    assert report["scan_scope"]["mode"] == "repository"

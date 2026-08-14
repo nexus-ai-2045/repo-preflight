@@ -139,8 +139,8 @@ cd repo-preflight
 | push | `python scripts/readiness_scan.py --repo PATH --intent push --base-ref origin/BASE --human` |
 | PR 作成 | `python scripts/readiness_scan.py --repo PATH --intent open_pr --base-ref origin/BASE --human` |
 | merge | `python scripts/readiness_scan.py --repo PATH --intent merge --base-ref origin/BASE --human` |
-| 公開 / 共有 / 納品 | `python scripts/readiness_scan.py --repo PATH --intent publish --audience public --human` |
-| release 準備 | `python scripts/readiness_scan.py --repo PATH --intent release --human` |
+| 公開 / 共有 / 納品 | `python scripts/readiness_scan.py --repo PATH --intent publish --audience public --consistency-base-ref origin/BASE --human` |
+| release 準備 | `python scripts/readiness_scan.py --repo PATH --intent release --consistency-base-ref origin/BASE --human` |
 
 返ってくるのは `repo-preflight.dialogue/v3` の「質問パケット」です。エージェントは `proposals` と `confirmations` を人間へ番号付きで転記し、回答があるまで外部操作しません。
 
@@ -156,7 +156,7 @@ secret や個人 path の検出時は **「無視して進む」選択肢を出�
 既存private repoのpush / PR / mergeでは `--base-ref` を指定すると、今回の変更fileと
 `base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、
 今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
-公開・releaseでは使えず、必須文書と全履歴を含むrepo全体検査が必要です。
+公開・releaseでは `--base-ref` を使わず、必須文書と全履歴を含むrepo全体検査が必要です。change-sensitiveな整合性検査だけにbaseが必要なら `--consistency-base-ref` を使います。secret・個人path・必須文書のscopeはrepo全体のままです。
 確認packetにはbase ref / base SHA / head SHAが入り、実際のpush / PRは同じbaseへ固定します。
 baseまたはHEADが変わった場合は、古い結果を使わず再検査します。
 
@@ -219,6 +219,8 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 |---|---|
 | `--intent <name>` | AI操作直前ゲート。create_repo / push / open_pr / merge / publish / release |
 | `--repo <path>` | 検査対象。create_repo 以外では必須 |
+| `--base-ref <ref>` | push / open_pr / mergeの検査全体を今回差分へ限定 |
+| `--consistency-base-ref <ref>` | publish / releaseの全体scanを保ち、整合性差分だけを指定 |
 | `--release` | README情報設計ゲートも同時に実行する |
 | `--expected-identity "<Name> <mail>"` | 全commitの作者/committerが指定の名義かを検査する |
 | `--audience <key>` | 見せる相手 (public/team/client/collaborator/local) |
