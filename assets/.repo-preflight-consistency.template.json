@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nexus-ai-2045/repo-preflight/main/schemas/repository-consistency.schema.json",
+  "schema": "repo-preflight.consistency/v1",
+  "mode": "shadow",
+  "markdown": {"include": ["README.md", "docs/**/*.md"]},
+  "readme_contracts": {
+    "required_paths": ["scripts/example.py"],
+    "commands": [{"text": "python scripts/example.py --help", "paths": ["scripts/example.py"]}]
+  },
+  "impact_map": [
+    {"change": ["src/**", "scripts/**"], "requires_any": ["README.md", "docs/**"]},
+    {"change": ["config/**", "*.toml"], "requires_any": ["README.md", "docs/configuration.md", "tests/**"]}
+  ],
+  "generated_artifacts": [
+    {"path": "generated/example.txt", "sources": ["schema/**"], "sha256": "0000000000000000000000000000000000000000000000000000000000000000"}
+  ]
+}
