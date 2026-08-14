@@ -792,3 +792,8 @@ def test_base_ref_and_consistency_base_ref_are_exclusive(tmp_path: Path):
 
     assert result.returncode == 2
     assert "are exclusive" in result.stderr
+
+
+def test_history_hits_with_empty_revision_range_returns_no_hits(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    assert MODULE.history_hits(repo, ("HEAD..HEAD",)) == ([], [])
