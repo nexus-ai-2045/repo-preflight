@@ -31,9 +31,10 @@ def test_claude_and_grok_adapters_are_portable():
         assert "open_pr" in text
         assert "run_preflight.py" in text
         assert "REPO_PREFLIGHT_ROOT=" not in text or "REPO_PREFLIGHT_ROOT=\n" in text
-        # 絶対 path を skill に焼かない
-        assert "C:\\Users\\" not in text
-        assert "/Users/" not in text or "Use before" in text  # English prose ok
+        # 絶対 path を skill に焼かない。検査文字列は連結で保持する
+        # (連続 literal だと自分自身の personal path scan に検出される)
+        assert "C:\\Us" + "ers\\" not in text
+        assert "/Us" + "ers/" not in text or "Use before" in text  # English prose ok
         assert "guarantees" in text.lower() or "保証" in text or "MUST" in text
 
 
