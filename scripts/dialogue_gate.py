@@ -479,6 +479,9 @@ def build_confirmations(
     scan_scope = (scan or {}).get("scan_scope") or {}
     base_ref = scan_scope.get("base_ref")
     base_oid = scan_scope.get("base_oid")
+    consistency_scope = (scan or {}).get("consistency_scope") or {}
+    consistency_base_ref = consistency_scope.get("base_ref")
+    consistency_base_oid = consistency_scope.get("base_oid")
     base = {
         "id": f"confirm_{intent}",
         "kind": "intent_confirmation",
@@ -488,6 +491,11 @@ def build_confirmations(
             + (f" / repo={repo}" if repo else "")
             + (f" / head={head}" if head else "")
             + (f" / base={base_ref}@{base_oid}" if base_ref and base_oid else "")
+            + (
+                f" / consistency_base={consistency_base_ref}@{consistency_base_oid}"
+                if consistency_base_ref and consistency_base_oid
+                else ""
+            )
             + (f" / audience={audience}" if intent == "publish" else "")
             + "。実行内容を再掲したうえで yes が必要です。"
         ),
@@ -522,6 +530,14 @@ def build_confirmations(
                 "require_exact_base_for_push_or_pr": True,
                 "rerun_if_base_or_head_changes": True,
             }
+    if consistency_base_ref and consistency_base_oid:
+        base["proposed"]["consistency_binding"] = {
+            "base_ref": consistency_base_ref,
+            "base_oid": consistency_base_oid,
+            "head_oid": head,
+            "scope": "repository_consistency_only",
+            "rerun_if_base_or_head_changes": True,
+        }
     return [base]
 
 
