@@ -1,0 +1,44 @@
+{
+  "$schema": "./schemas/repository-consistency.schema.json",
+  "schema": "repo-preflight.consistency/v1",
+  "mode": "enforce",
+  "markdown": {
+    "include": ["README.md", "SKILL.md", "docs/**/*.md", "references/**/*.md"]
+  },
+  "readme_contracts": {
+    "required_paths": [
+      "scripts/readiness_scan.py",
+      "scripts/readme_release_gate.py",
+      "scripts/consistency_gate.py",
+      "docs/repository-consistency-gate.md"
+    ],
+    "commands": [
+      {
+        "text": "python scripts/readiness_scan.py --repo /path/to/your-repo",
+        "paths": ["scripts/readiness_scan.py"]
+      },
+      {
+        "text": "python scripts/runtime_smoke.py --repo .",
+        "paths": ["scripts/runtime_smoke.py"]
+      }
+    ]
+  },
+  "impact_map": [
+    {
+      "change": ["scripts/readiness_scan.py", "scripts/dialogue_gate.py"],
+      "requires_any": ["README.md", "docs/**/*.md", "tests/**"]
+    },
+    {
+      "change": ["scripts/readme_release_gate.py"],
+      "requires_any": ["README.md", "tests/test_readme_release_gate.py"]
+    },
+    {
+      "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json", ".github/workflows/documentation-contract.yml"],
+      "requires_any": ["docs/repository-consistency-gate.md", "tests/test_consistency_gate.py"]
+    },
+    {
+      "change": ["assets/**", "runtime/**", "SKILL.md"],
+      "requires_any": ["README.md", "docs/runtime-support.md", "tests/**"]
+    }
+  ]
+}

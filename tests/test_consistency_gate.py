@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,84 @@ def make_repo(tmp_path: Path) -> tuple[Path, str]:
 def test_passes_complete_contract(tmp_path: Path):
     repo, base = make_repo(tmp_path)
     assert MODULE.check(repo, base_ref=base)["status"] == "pass"
+
+
+def test_cli_returns_nonzero_for_enforced_findings(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mode"] = "enforce"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    (repo / "docs" / "guide.md").unlink()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            base,
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["status"] == "fail"
+
+
+def test_cli_required_config_cannot_be_removed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / ".repo-preflight-consistency.json").unlink()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            base,
+            "--require-config",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["findings"] == [
+        "required_consistency_config_missing"
+    ]
+
+
+def test_cli_required_mode_cannot_be_weakened(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            base,
+            "--require-mode",
+            "enforce",
+            "--json",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["findings"] == ["required_consistency_mode_mismatch"]
+    assert report["finding_count"] == 1
 
 
 def test_broken_markdown_link_is_reported(tmp_path: Path):
