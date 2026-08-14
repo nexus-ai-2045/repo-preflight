@@ -53,7 +53,15 @@ CAPABILITY_ROUTES = (
 
 def _matches(path: str, patterns: list[str]) -> bool:
     return any(
-        fnmatch.fnmatchcase(path, pattern) or PurePosixPath(path).match(pattern)
+        fnmatch.fnmatchcase(path, pattern)
+        or PurePosixPath(path).match(pattern)
+        or (
+            "**/" in pattern
+            and (
+                fnmatch.fnmatchcase(path, pattern.replace("**/", "", 1))
+                or PurePosixPath(path).match(pattern.replace("**/", "", 1))
+            )
+        )
         for pattern in patterns
     )
 
@@ -161,14 +169,15 @@ def _validate_config(config: object) -> None:
             or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
         ):
             raise ValueError("invalid_consistency_config")
-    ratchet = config.get("ratchet", {})
-    if not _exact_keys(ratchet, {"baseline"}) or not _string_list(
-        ratchet.get("baseline", [])
-    ):
-        raise ValueError("invalid_consistency_config")
-    baseline = ratchet.get("baseline", [])
-    if len(baseline) != len(set(baseline)):
-        raise ValueError("invalid_consistency_config")
+    if "ratchet" in config:
+        ratchet = config["ratchet"]
+        if not _exact_keys(ratchet, {"baseline"}, {"baseline"}) or not _string_list(
+            ratchet["baseline"]
+        ):
+            raise ValueError("invalid_consistency_config")
+        baseline = ratchet["baseline"]
+        if len(baseline) != len(set(baseline)):
+            raise ValueError("invalid_consistency_config")
 
 
 def _capability_recommendations(changed: list[str]) -> list[dict]:
@@ -233,20 +242,39 @@ def _changed_files(repo: Path, base_ref: str | None) -> list[str]:
     if not base_ref:
         return []
     result = subprocess.run(
-        ["git", "diff", "--name-only", "-z", base_ref, "--"],
+        ["git", "diff", "--name-status", "-z", base_ref, "--"],
         cwd=repo,
         capture_output=True,
     )
     if result.returncode:
         raise RuntimeError("git_consistency_diff_failed")
-    return [
-        item.decode("utf-8", errors="surrogateescape")
-        for item in result.stdout.split(b"\0")
-        if item
-    ]
+    fields = [item for item in result.stdout.split(b"\0") if item]
+    changed: list[str] = []
+    cursor = 0
+    while cursor < len(fields):
+        status = fields[cursor].decode("ascii", errors="strict")
+        cursor += 1
+        if status[:1] in {"R", "C"}:
+            if cursor + 1 >= len(fields):
+                raise RuntimeError("git_consistency_diff_failed")
+            changed.extend(
+                [
+                    fields[cursor].decode("utf-8", errors="surrogateescape"),
+                    fields[cursor + 1].decode("utf-8", errors="surrogateescape"),
+                ]
+            )
+            cursor += 2
+        else:
+            if cursor >= len(fields):
+                raise RuntimeError("git_consistency_diff_failed")
+            changed.append(fields[cursor].decode("utf-8", errors="surrogateescape"))
+            cursor += 1
+    return changed
 
 
-def _markdown_findings(repo: Path, files: list[str], patterns: list[str]) -> list[str]:
+def _markdown_findings(
+    repo: Path, files: list[str], tracked_files: set[str], patterns: list[str]
+) -> list[str]:
     findings: list[str] = []
     for rel in files:
         if not _matches(rel, patterns):
@@ -273,14 +301,17 @@ def _markdown_findings(repo: Path, files: list[str], patterns: list[str]) -> lis
             except ValueError:
                 findings.append(f"markdown_link_outside_repo:{rel}:{decoded}")
                 continue
-            if not resolved.exists():
+            target_rel = resolved.relative_to(repo).as_posix()
+            if not resolved.exists() or target_rel not in tracked_files:
                 findings.append(f"markdown_link_missing:{rel}:{decoded}")
     return findings
 
 
-def _readme_findings(repo: Path, contracts: dict) -> list[str]:
+def _readme_findings(repo: Path, contracts: dict, tracked_files: set[str]) -> list[str]:
     findings: list[str] = []
     readme = repo / "README.md"
+    if "README.md" not in tracked_files:
+        return ["readme_unreadable:README.md"]
     try:
         body = readme.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -292,12 +323,13 @@ def _readme_findings(repo: Path, contracts: dict) -> list[str]:
     for rel in required_paths:
         if not _repo_path(repo, rel).exists():
             findings.append(f"readme_path_missing:{rel}")
-    for command in commands:
+    for index, command in enumerate(commands, start=1):
         if not isinstance(command, dict) or not isinstance(command.get("text"), str):
             raise ValueError("invalid_consistency_config")
         text = command["text"]
         if text not in body:
-            findings.append(f"readme_command_missing:{text}")
+            command_id = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+            findings.append(f"readme_command_missing:command-{index}-{command_id}")
         paths = command.get("paths", [])
         if not isinstance(paths, list):
             raise ValueError("invalid_consistency_config")
@@ -314,7 +346,7 @@ def _impact_results(
 ) -> tuple[list[dict], list[str]]:
     results: list[dict] = []
     findings: list[str] = []
-    for rule in rules:
+    for index, rule in enumerate(rules, start=1):
         if not isinstance(rule, dict):
             raise ValueError("invalid_consistency_config")
         change = rule.get("change")
@@ -331,7 +363,7 @@ def _impact_results(
         status = "pass" if not affected or satisfied else "fail"
         results.append({"change": change, "requires_any": required, "status": status})
         if status == "fail":
-            findings.append(f"related_docs_update_missing:{change[0]}")
+            findings.append(f"related_docs_update_missing:impact-{index}")
     return results, findings
 
 
@@ -351,9 +383,7 @@ def _artifact_findings(
         sources = artifact.get("sources", [])
         if not isinstance(sources, list):
             raise ValueError("invalid_consistency_config")
-        if any(_matches(item, sources) for item in changed) and not any(
-            item in {rel, CONFIG_NAME} for item in changed
-        ):
+        if any(_matches(item, sources) for item in changed) and rel not in changed:
             findings.append(f"generated_artifact_update_missing:{rel}")
         try:
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -373,27 +403,46 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
             return {"status": "not_configured", "mode": None, "findings": []}
         files = _tracked_files(repo)
         changed = _changed_files(repo, base_ref)
+        impact_rules = config.get("impact_map", [])
+        artifacts = config.get("generated_artifacts", [])
+        change_sensitive = bool(impact_rules) or any(
+            artifact.get("sources") for artifact in artifacts
+        )
+        if change_sensitive and base_ref is None:
+            return {
+                "status": "tool_error",
+                "mode": None,
+                "findings": ["change_sensitive_scope_unavailable"],
+            }
         findings: list[str] = []
+        tracked_files = set(files)
         markdown = config.get("markdown", {})
         if not isinstance(markdown, dict):
             raise ValueError("invalid_consistency_config")
         patterns = markdown.get("include", ["README.md", "docs/**/*.md"])
         if not isinstance(patterns, list):
             raise ValueError("invalid_consistency_config")
-        findings.extend(_markdown_findings(repo, files, patterns))
-        contracts = config.get("readme_contracts", {})
-        if not isinstance(contracts, dict):
-            raise ValueError("invalid_consistency_config")
-        findings.extend(_readme_findings(repo, contracts))
-        impact, impact_findings = _impact_results(changed, config.get("impact_map", []))
+        if "readme_contracts" not in config:
+            patterns = [
+                pattern for pattern in patterns if not _matches("README.md", [pattern])
+            ]
+        findings.extend(_markdown_findings(repo, files, tracked_files, patterns))
+        if "readme_contracts" in config:
+            contracts = config["readme_contracts"]
+            findings.extend(_readme_findings(repo, contracts, tracked_files))
+        impact, impact_findings = _impact_results(changed, impact_rules)
         findings.extend(impact_findings)
-        findings.extend(
-            _artifact_findings(repo, config.get("generated_artifacts", []), changed)
-        )
+        findings.extend(_artifact_findings(repo, artifacts, changed))
         findings = sorted(set(findings))
         mode = config["mode"]
         ratchet = _ratchet_result(config, findings) if mode == "ratchet" else None
-        if mode == "ratchet":
+        unreadable_markdown = any(
+            finding.startswith(("markdown_unreadable:", "readme_unreadable:"))
+            for finding in findings
+        )
+        if unreadable_markdown:
+            status = "tool_error"
+        elif mode == "ratchet":
             status = "fail" if ratchet["new"] or ratchet["resolved"] else "pass"
         else:
             status = (

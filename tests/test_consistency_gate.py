@@ -78,7 +78,11 @@ def test_readme_declared_command_must_be_present_and_paths_exist(tmp_path: Path)
     (repo / "README.md").write_text("# Demo\n", encoding="utf-8")
     (repo / "src" / "app.py").unlink()
     report = MODULE.check(repo, base_ref=base)
-    assert "readme_command_missing:python src/app.py" in report["findings"]
+    assert any(
+        finding.startswith("readme_command_missing:command-1-")
+        for finding in report["findings"]
+    )
+    assert "python src/app.py" not in str(report)
     assert "readme_path_missing:src/app.py" in report["findings"]
 
 
@@ -87,7 +91,7 @@ def test_impact_map_requires_related_docs_change(tmp_path: Path):
     (repo / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
     report = MODULE.check(repo, base_ref=base)
     assert report["impact"][0]["status"] == "fail"
-    assert "related_docs_update_missing:src/**" in report["findings"]
+    assert "related_docs_update_missing:impact-1" in report["findings"]
 
 
 def test_generated_hash_drift_is_reported(tmp_path: Path):
@@ -265,3 +269,123 @@ def test_gitlink_markdown_like_path_is_not_read(tmp_path: Path):
     git(repo, "update-index", "--add", "--cacheinfo", "160000", head, "docs/vendor.md")
     report = MODULE.check(repo, base_ref=base)
     assert not any("docs/vendor.md" in finding for finding in report["findings"])
+
+
+def test_change_sensitive_checks_require_base_ref(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    report = MODULE.check(repo)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["change_sensitive_scope_unavailable"]
+
+
+def test_config_edit_alone_does_not_refresh_generated_artifact(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["ratchet"] = {"baseline": []}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert "generated_artifact_update_missing:generated.txt" in report["findings"]
+
+
+def test_invalid_utf8_markdown_is_tool_error_even_in_shadow(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "docs" / "guide.md").write_bytes(b"\xff\xfe")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert "markdown_unreadable:docs/guide.md" in report["findings"]
+
+
+def test_globstar_matches_file_directly_under_docs(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "docs" / "guide.md").write_text("updated\n", encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "pass"
+
+
+def test_readme_symlink_is_not_followed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    outside = tmp_path / "outside.md"
+    secret = "github_pat_" + "S" * 30
+    outside.write_text(secret, encoding="utf-8")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=str(outside),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},README.md")
+    (repo / "README.md").write_text(str(outside), encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert secret not in str(report)
+
+
+def test_rename_exposes_old_and_new_paths(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    git(repo, "mv", "docs/guide.md", "docs/renamed.md")
+    changed = MODULE._changed_files(repo, base)
+    assert "docs/guide.md" in changed
+    assert "docs/renamed.md" in changed
+
+
+def test_markdown_target_must_be_tracked(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "untracked.md").write_text("not committed\n", encoding="utf-8")
+    (repo / "README.md").write_text("[untracked](untracked.md)\n", encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert "markdown_link_missing:README.md:untracked.md" in report["findings"]
+
+
+def test_secret_command_text_is_never_exposed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    secret = "github_pat_" + "T" * 30
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["readme_contracts"]["commands"] = [{"text": secret, "paths": []}]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert secret not in str(report)
+
+
+def test_each_impact_rule_has_distinct_finding_id(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["impact_map"].append({"change": ["src/**"], "requires_any": ["tests/**"]})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    (repo / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    ids = [
+        finding
+        for finding in report["findings"]
+        if finding.startswith("related_docs_update_missing:")
+    ]
+    assert ids == [
+        "related_docs_update_missing:impact-1",
+        "related_docs_update_missing:impact-2",
+    ]
+
+
+def test_without_readme_contracts_readme_is_not_loaded(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.pop("readme_contracts")
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    (repo / "README.md").write_bytes(b"\xff\xfe")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "pass"
+
+
+def test_empty_ratchet_object_requires_baseline(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["ratchet"] = {}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
