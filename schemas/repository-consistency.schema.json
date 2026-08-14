@@ -8,7 +8,13 @@
   "properties": {
     "$schema": {"type": "string"},
     "schema": {"const": "repo-preflight.consistency/v1"},
-    "mode": {"enum": ["shadow", "enforce"]},
+    "mode": {"enum": ["shadow", "ratchet", "enforce"]},
+    "ratchet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseline"],
+      "properties": {"baseline": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}}
+    },
     "markdown": {"type": "object", "additionalProperties": false, "properties": {"include": {"$ref": "#/$defs/patterns"}}},
     "readme_contracts": {
       "type": "object", "additionalProperties": false,
