@@ -140,7 +140,9 @@ def test_cli_required_mode_cannot_be_weakened(tmp_path: Path):
     )
 
     assert result.returncode == 1
-    assert "required_consistency_mode_mismatch" in json.loads(result.stdout)["findings"]
+    report = json.loads(result.stdout)
+    assert report["findings"] == ["required_consistency_mode_mismatch"]
+    assert report["finding_count"] == 1
 
 
 def test_broken_markdown_link_is_reported(tmp_path: Path):

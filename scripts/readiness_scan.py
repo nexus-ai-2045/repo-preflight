@@ -388,6 +388,7 @@ def scan(
     *,
     release: bool = False,
     base_ref: str | None = None,
+    consistency_base_ref: str | None = None,
 ) -> dict:
     repo = repo.resolve()
     if not repo.is_dir():
@@ -400,6 +401,23 @@ def scan(
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
     }
+    if consistency_base_ref and not base_ref:
+        consistency_probe = run(
+            repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
+        )
+        consistency_symbolic = run(
+            repo, "git", "rev-parse", "--symbolic-full-name", consistency_base_ref
+        )
+        consistency_ancestor = run(
+            repo, "git", "merge-base", "--is-ancestor", consistency_base_ref, "HEAD"
+        )
+        if (
+            consistency_probe[0]
+            or consistency_symbolic[0]
+            or not consistency_symbolic[1].startswith("refs/remotes/origin/")
+            or consistency_ancestor[0]
+        ):
+            return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
         symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
@@ -613,7 +631,9 @@ def scan(
             "url": redact_remote(remote),
         },
     }
-    checks["repository_consistency"] = run_consistency_gate(repo, base_ref)
+    checks["repository_consistency"] = run_consistency_gate(
+        repo, consistency_base_ref or base_ref
+    )
     if release:
         if (repo / "README.md").is_file():
             readme_report = run_readme_release_gate(repo)
@@ -694,6 +714,7 @@ class ScanOptions:
         show_json: bool = True,
         intent: str | None = None,
         base_ref: str | None = None,
+        consistency_base_ref: str | None = None,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -703,6 +724,7 @@ class ScanOptions:
         self.show_json = show_json
         self.intent = intent
         self.base_ref = base_ref
+        self.consistency_base_ref = consistency_base_ref
 
 
 def boundary_sections() -> dict[str, list[str]]:
@@ -740,6 +762,11 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         "base_ref": (
             sanitized_evidence_label(options.base_ref) if options.base_ref else None
         ),
+        "consistency_base_ref": (
+            sanitized_evidence_label(options.consistency_base_ref)
+            if options.consistency_base_ref
+            else None
+        ),
     }
     enriched.update(boundary_sections())
     return enriched
@@ -759,6 +786,8 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
         }
         if options.base_ref:
             scan_kwargs["base_ref"] = options.base_ref
+        if options.consistency_base_ref:
+            scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
         scan_report = scan(options.repo, **scan_kwargs)
         scan_report = enrich_report(
             scan_report,
@@ -771,6 +800,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 show_json=options.show_json,
                 intent=options.intent,
                 base_ref=options.base_ref,
+                consistency_base_ref=options.consistency_base_ref,
             ),
         )
     elif needs_scan and options.repo is None:
@@ -1080,6 +1110,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--consistency-base-ref",
+        help=(
+            "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
+            "publish/release向け"
+        ),
+    )
+    parser.add_argument(
         "--interactive",
         "-i",
         action="store_true",
@@ -1135,6 +1172,7 @@ def resolve_options(
 ) -> ScanOptions:
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
+    consistency_base_ref = getattr(args, "consistency_base_ref", None)
     if base_ref and intent not in {"push", "open_pr", "merge"}:
         raise SystemExit("error: --base-ref requires --intent push, open_pr, or merge")
     # intent モードはエージェント対話が本体。TTYメニューは使わない
@@ -1151,6 +1189,7 @@ def resolve_options(
         )
         options.intent = intent
         options.base_ref = base_ref
+        options.consistency_base_ref = consistency_base_ref
         return options
 
     gate = load_dialogue_gate()
@@ -1164,6 +1203,7 @@ def resolve_options(
             show_json=True,
             intent=intent,
             base_ref=base_ref,
+            consistency_base_ref=consistency_base_ref,
         )
     if args.repo is None:
         raise SystemExit(
@@ -1179,6 +1219,7 @@ def resolve_options(
         show_json=True,
         intent=intent,
         base_ref=base_ref,
+        consistency_base_ref=consistency_base_ref,
     )
 
 
@@ -1298,6 +1339,8 @@ def main(
         }
         if options.base_ref:
             scan_kwargs["base_ref"] = options.base_ref
+        if options.consistency_base_ref:
+            scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
         report = scan(options.repo, **scan_kwargs)
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す

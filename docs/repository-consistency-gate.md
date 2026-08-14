@@ -47,7 +47,7 @@ Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160
 - run: python scripts/consistency_gate.py --repo . --base-ref refs/remotes/origin/${{ github.base_ref }} --require-config --require-mode enforce --json
 ```
 
-`consistency_gate.py` は `pass` / `not_configured` だけを終了コード0とし、`fail` / `tool_error` / `shadow_findings` は終了コード1にします。`--require-config --require-mode enforce` を付けると設定削除やmode弱体化も失敗します。repo-preflight自身はこの指定をLinux、macOS、WindowsのPR、merge queue、main pushで実行します。READMEの情報設計も既存の `readme_release_gate.py` で検査し、300行超過、必須節欠落、見出し階層の飛びをblockします。
+`consistency_gate.py` は `pass` / `not_configured` だけを終了コード0とし、`fail` / `tool_error` / `shadow_findings` は終了コード1にします。`--require-config --require-mode enforce` を付けると設定削除やmode弱体化も失敗します。repo-preflight自身は独立した `documentation-contract` checkをPR、merge queue、main pushで実行します。READMEの情報設計も既存の `readme_release_gate.py` で検査し、300行超過、必須節欠落、見出し階層の飛びをblockします。このcheck名をGitHub rulesetのrequired status checkへ登録すると、workflowを削除するPRはcheck不足のままmergeできません。
 
 このゲートが保証するのは宣言済みリンク、コマンド、path、変更連鎖、hash、README構造です。文章同士が意味的に完全一致することや、無関係なdocs/tests更新でないことの判定には人間レビューが残ります。またCI定義そのものの削除を防ぐには、GitHub rulesetでこのcheckを必須化してください。
 

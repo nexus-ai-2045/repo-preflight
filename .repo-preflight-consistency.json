@@ -3,7 +3,7 @@
   "schema": "repo-preflight.consistency/v1",
   "mode": "enforce",
   "markdown": {
-    "include": ["README.md", "docs/**/*.md", "references/**/*.md"]
+    "include": ["README.md", "SKILL.md", "docs/**/*.md", "references/**/*.md"]
   },
   "readme_contracts": {
     "required_paths": [
@@ -33,7 +33,7 @@
       "requires_any": ["README.md", "tests/test_readme_release_gate.py"]
     },
     {
-      "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json"],
+      "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json", ".github/workflows/documentation-contract.yml"],
       "requires_any": ["docs/repository-consistency-gate.md", "tests/test_consistency_gate.py"]
     },
     {
