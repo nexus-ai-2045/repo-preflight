@@ -401,6 +401,8 @@ def scan(
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
     }
+    resolved_consistency_base_ref: str | None = None
+    consistency_base_oid: str | None = None
     if consistency_base_ref and not base_ref:
         consistency_probe = run(
             repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
@@ -418,6 +420,8 @@ def scan(
             or consistency_ancestor[0]
         ):
             return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
+        resolved_consistency_base_ref = consistency_symbolic[1]
+        consistency_base_oid = consistency_probe[1]
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
         symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
@@ -696,6 +700,18 @@ def scan(
             }
             if base_ref
             else {"mode": "repository"}
+        ),
+        "consistency_scope": (
+            {
+                "mode": "target_diff",
+                "base_ref": sanitized_evidence_label(consistency_base_ref),
+                "resolved_base_ref": sanitized_evidence_label(
+                    resolved_consistency_base_ref
+                ),
+                "base_oid": consistency_base_oid,
+            }
+            if consistency_base_ref
+            else {"mode": "same_as_scan"}
         ),
         "checks": checks,
     }
@@ -1173,8 +1189,16 @@ def resolve_options(
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
     consistency_base_ref = getattr(args, "consistency_base_ref", None)
+    if base_ref and consistency_base_ref:
+        raise SystemExit("error: --base-ref and --consistency-base-ref are exclusive")
     if base_ref and intent not in {"push", "open_pr", "merge"}:
         raise SystemExit("error: --base-ref requires --intent push, open_pr, or merge")
+    if consistency_base_ref and not (
+        intent in {"publish", "release"} or (intent is None and bool(args.release))
+    ):
+        raise SystemExit(
+            "error: --consistency-base-ref requires publish/release intent or --release"
+        )
     # intent モードはエージェント対話が本体。TTYメニューは使わない
     want_console = bool(
         args.interactive or (args.repo is None and stdin_is_tty and not intent)

@@ -712,7 +712,12 @@ def test_merge_intent_accepts_remote_base_ref(tmp_path: Path):
 
 def test_publish_keeps_repo_scan_with_separate_consistency_base(tmp_path: Path):
     repo = make_repo(tmp_path)
+    token = "github_pat_" + "Q" * 30
+    (repo / "legacy-secret.txt").write_text(token, encoding="utf-8")
+    git(repo, "add", "legacy-secret.txt")
+    git(repo, "commit", "-m", "legacy secret")
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "legacy-secret.txt").unlink()
     (repo / ".repo-preflight-consistency.json").write_text(
         json.dumps(
             {
@@ -732,5 +737,58 @@ def test_publish_keeps_repo_scan_with_separate_consistency_base(tmp_path: Path):
     report = MODULE.scan(repo, consistency_base_ref="origin/main")
 
     assert report["checks"]["required_documents"]["status"] == "pass"
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+    assert token not in str(report)
     assert report["checks"]["repository_consistency"]["status"] == "pass"
     assert report["scan_scope"]["mode"] == "repository"
+    assert report["consistency_scope"]["mode"] == "target_diff"
+    assert report["consistency_scope"]["base_ref"] == "origin/main"
+    assert report["consistency_scope"]["base_oid"]
+
+
+def test_consistency_base_ref_is_restricted_to_repository_wide_intents(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--intent",
+            "push",
+            "--consistency-base-ref",
+            "origin/main",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "requires publish/release" in result.stderr
+
+
+def test_base_ref_and_consistency_base_ref_are_exclusive(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--intent",
+            "release",
+            "--base-ref",
+            "origin/main",
+            "--consistency-base-ref",
+            "origin/main",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "are exclusive" in result.stderr
