@@ -77,6 +77,24 @@ public化専用ではありません。見せる相手が増える直前に使�
 
 機械が確認できた事実と、人間が判断すべき公開・共有の可否を分離します。`status` は自動検査の結果だけを表し、`publication_decision` は常に人間レビューを要求します。
 
+```mermaid
+flowchart LR
+    R[対象リポジトリ] --> S["readiness_scan.py<br/>read-only"]
+    S --> A["status<br/><i>機械が判定できる範囲</i>"]
+    S --> H["publication_decision<br/><i>人間の判断が要る範囲</i>"]
+    A --> A1[pass]
+    A --> A2[blocked]
+    A --> A3[tool_error]
+    H --> H1["常に<br/>blocked_human_review_required"]
+
+    style A1 fill:#4A7550,color:#fff,stroke:none
+    style A2 fill:#B8862B,color:#fff,stroke:none
+    style A3 fill:#BE3D2C,color:#fff,stroke:none
+    style H1 fill:#2F6B8A,color:#fff,stroke:none
+```
+
+`pass` だけを根拠に公開しないでください。
+
 ## PR マージ前の整合性ゲート
 
 `.repo-preflight-consistency.json` を置くと、既存の `readiness_scan.py` が Markdown リンク、README の宣言済みコマンドと file、変更コードに対する docs / tests 更新、SSOT・生成物の SHA-256 ドリフトを追加検査します。repo 固有側は宣言だけで、共通ロジックは `repo-preflight` に残ります。
@@ -247,7 +265,31 @@ CLIは既定で読み取り専用です。リポジトリ作成、push、PR、me
 
 ## 見せる相手を広げる流れ
 
-public、team、client、collaboratorでは必要な証拠が異なります。どの場合も承認 → 実測 → 再確認の順に進め、private保存、PRまで、mergeまでも正規の完了地点として扱います。詳しい状態遷移と証拠は [状態一覧](references/lifecycle.md) を参照してください。
+public、team、client、collaboratorでは必要な証拠が異なります。どの場合も承認 → 実測 → 再確認の順に進め、private保存、PRまで、mergeまでも正規の完了地点として扱います。
+
+```mermaid
+flowchart TD
+    M[merged] --> AA[audience_expansion_approved]
+    AA --> AE[audience_expanded]
+    AE --> EC[expansion_checks_passed]
+    EC --> CU[cleanup_complete]
+
+    AA -.広げる相手を明示.-> AUD
+
+    subgraph AUD["audience の例"]
+      direction LR
+      W["Web全体<br/><i>= public化</i>"]
+      T["team /<br/>organization"]
+      C["客先<br/><i>納品</i>"]
+      X["外部協力者<br/><i>期限付き</i>"]
+    end
+
+    style AA fill:#2F6B8A,color:#fff,stroke:none
+    style AE fill:#2F6B8A,color:#fff,stroke:none
+    style EC fill:#4A7550,color:#fff,stroke:none
+```
+
+詳しい状態遷移と証拠は [状態一覧](references/lifecycle.md) を参照してください。
 
 ## v0.1.x からの移行
 
