@@ -69,7 +69,7 @@ public化専用ではありません。見せる相手が増える直前に使�
 - まず試す: [クイックスタート](#クイックスタート)
 - AIエージェントへ組み込む: [AI 実装フロー](#ai-実装フロー--intent-対話-本体)
 - PRごとの文書整合性を検査する: [PR マージ前の整合性ゲート](#pr-マージ前の整合性ゲート)
-- 判定の境界を確認する: [保証すること / 保証しないこと](#保証すること--保証しないこと)
+- 判定の境界を確認する: [保証すること / 保証しないこと](docs/guarantees-and-limits.md)
 - Claude Code / Grok / Codexで使う: [Skill](#skill-claude-code--grok--codex)
 - v0.1.xから移行する: [v0.1.x からの移行](#v01x-からの移行)
 
@@ -107,35 +107,17 @@ repo-preflight自身は設定を `enforce` に固定し、README可読性と文�
 
 ## 保証すること / 保証しないこと
 
-対話モードでも非対話モードでも、次の境界は同じです。JSON report にも `guarantees` / `non_guarantees` として入ります。
-
 ### できること — 保証する範囲
 
-| 対象 | 内容 |
-|---|---|
-| 読み取り専用検査 | ローカルGitの現在treeと履歴を変更せず読む |
-| 自動判定項目 | 必須文書・secret候補・個人path・作者名義・CI設定の最低限の構造 |
-| status の意味 | pass / blocked / tool_error はCLI担当分の結果だけ |
-| 公開判定の分離 | `publication_decision` は常に人間レビュー要求。自動承認しない |
-| 秘密値の非出力 | 検出結果に秘密値そのものを載せない |
+読み取り専用検査、機械判定できる項目 (必須文書・secret候補・個人path・作者名義・CI設定の構造)、`publication_decision` を自動承認しないこと、秘密値を出力しないこと。削除済みのファイルも履歴に残っていれば検出します。
 
-削除済みのファイルも履歴に残っていれば検出します。
+### 制約 — 保証しない範囲
 
-### 制約 — 保証しない範囲 (別証拠・人間判断が要る)
+「秘密情報が存在しない」完全保証、依存ライブラリの脆弱性、第三者素材の公開権利、GitHub側のbranch保護など現在状態、remote CIの実行結果、そして公開・push・merge・visibility変更の実行そのもの。
 
-| 対象 | なぜCLIで判定しないか |
-|---|---|
-| 秘密情報が「存在しない」ことの完全保証 | 独自形式・符号化・大容量blob・バイナリ内は見逃し得る |
-| 依存ライブラリの既知脆弱性 | エコシステム固有の最新監査が要る |
-| 第三者素材を公開する権利 | 法的判断 |
-| branch保護・review必須設定 | GitHub側の現在状態 |
-| CIが実際に成功したか | remoteの実行結果 |
-| 障害の通知先、復旧手順 | 実際に試した記録が要る |
-| README・個人情報・公開範囲の目視 | 人間の確認 |
-| 公開・push・merge・visibility変更 | 実行機能を持たない |
+JSON report にも `guarantees` / `non_guarantees` として入ります。項目ごとの理由は [保証すること / 保証しないこと](docs/guarantees-and-limits.md) を参照してください。
 
-内蔵の正規表現は代表的な秘密情報の形式を検出する補助機能です。
-専門のsecret scanner、依存関係の監査、人間レビューを必ず併用してください。
+内蔵の正規表現は代表的な秘密情報の形式を検出する補助機能です。専門のsecret scanner、依存関係の監査、人間レビューを必ず併用してください。
 
 ## クイックスタート
 
@@ -171,40 +153,7 @@ cd repo-preflight
 
 secret や個人 path の検出時は **「無視して進む」選択肢を出しません**。
 
-既存private repoのpush / PR / mergeでは `--base-ref` を指定すると、今回の変更fileと
-`base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、
-今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
-公開・releaseでは `--base-ref` を使わず、必須文書と全履歴を含むrepo全体検査が必要です。change-sensitiveな整合性検査だけにbaseが必要なら `--consistency-base-ref` を使います。secret・個人path・必須文書のscopeはrepo全体のままです。
-確認packetにはbase ref / base SHA / head SHAが入り、実際のpush / PRは同じbaseへ固定します。
-baseまたはHEADが変わった場合は、古い結果を使わず再検査します。
-
-#### 次から出さない (dismiss / snooze)
-
-完璧な設定でなくても運用できるよう、**推奨・任意の再質問**には次の選択肢が付きます。
-
-- `dismiss_30d` — 30日間この項目を出さない
-- `dismiss_90d` — 90日間この項目を出さない
-- `dismiss_forever` — 次からこの項目は出さない
-
-記録先は採用先リポジトリの `.repo-preflight.json` です。
-
-```bash
-python scripts/readiness_scan.py --repo /path/to/your-repo \
-  --record-dismissal configure_expected_identity \
-  --dismissal-mode forever \
-  --dismissal-reason "private only for now"
-```
-
-抑止**できない**もの: secret / 個人 path / 必須文書欠落 / dirty worktree / 危険操作の最終確認 など。
-
-#### GitHub 更新の反映保証
-
-| 保証すること | 保証しないこと |
-|---|---|
-| 同梱 `references/github-settings.md` の `last_reviewed` 期限切れを検知し、「ガイドを更新しますか？」を出す | GitHub 製品変更をリアルタイムで自動追従することそのもの |
-| 更新手順と公式 docs 入口を文書に持つ | 「常に最新の GitHub 公式と完全一致」という永久保証 |
-
-期限切れ時は intent 対話に `refresh_github_settings_baseline` が出ます。更新後は marker の日付を進めます。
+push / PR / merge では `--base-ref` で検査scopeを今回差分へ限定でき、公開・releaseでは全体検査を保ったまま `--consistency-base-ref` で整合性差分だけを指定します。dismiss / snooze による再質問の抑止、GitHub設定ガイドの鮮度保証とあわせて、[intent 対話の運用オプション](docs/intent-dialogue-options.md) にまとめています。
 
 ### 素の検査 (CI / 現状把握)
 
