@@ -136,3 +136,133 @@ def test_invalid_config_fails_closed(tmp_path: Path):
     report = MODULE.check(repo, base_ref=base)
     assert report["status"] == "tool_error"
     assert report["findings"] == ["invalid_consistency_config"]
+
+
+def test_ratchet_accepts_only_current_baseline_findings(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "docs" / "guide.md").unlink()
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mode"] = "ratchet"
+    config["ratchet"] = {"baseline": ["markdown_link_missing:README.md:docs/guide.md"]}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert report["status"] == "pass"
+    assert report["ratchet"]["accepted"] == [
+        "markdown_link_missing:README.md:docs/guide.md"
+    ]
+    assert report["ratchet"]["new"] == []
+
+
+def test_ratchet_blocks_new_regression(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "docs" / "guide.md").unlink()
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mode"] = "ratchet"
+    config["ratchet"] = {"baseline": []}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert report["status"] == "fail"
+    assert report["ratchet"]["new"] == ["markdown_link_missing:README.md:docs/guide.md"]
+
+
+def test_ratchet_blocks_stale_baseline_after_improvement(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mode"] = "ratchet"
+    config["ratchet"] = {"baseline": ["old:finding"]}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert report["status"] == "fail"
+    assert report["ratchet"]["resolved"] == ["old:finding"]
+
+
+def test_capability_routes_recommend_only_relevant_plugins(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    (repo / "README.md").write_text("# Improved\n", encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    ids = {item["id"] for item in report["capability_recommendations"]}
+    assert "readability-template" in ids
+    assert "product-design-audit" in ids
+    assert "security-guidance" not in ids
+
+
+def test_unknown_config_key_fails_closed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["unknown"] = True
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    assert MODULE.check(repo, base_ref=base) == {
+        "status": "tool_error",
+        "mode": None,
+        "findings": ["invalid_consistency_config"],
+    }
+
+
+def test_bool_is_not_accepted_as_string_or_array(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["markdown"]["include"] = [True]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    assert MODULE.check(repo, base_ref=base)["status"] == "tool_error"
+
+
+def test_nested_unknown_key_and_wrong_array_item_fail_closed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["impact_map"][0]["extra"] = "no"
+    config["generated_artifacts"][0]["sources"] = [1]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    assert MODULE.check(repo, base_ref=base)["findings"] == [
+        "invalid_consistency_config"
+    ]
+
+
+def test_type_error_in_config_never_escapes(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["readme_contracts"]["commands"] = [{"text": True, "paths": []}]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["invalid_consistency_config"]
+
+
+def test_markdown_symlink_is_not_followed(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    outside = tmp_path / "outside.md"
+    outside.write_text("[missing](secret.md)\n", encoding="utf-8")
+    blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=str(outside),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    git(repo, "update-index", "--add", "--cacheinfo", f"120000,{blob},docs/link.md")
+    (repo / "docs" / "link.md").write_text(str(outside), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert not any("docs/link.md" in finding for finding in report["findings"])
+
+
+def test_gitlink_markdown_like_path_is_not_read(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--add", "--cacheinfo", "160000", head, "docs/vendor.md")
+    report = MODULE.check(repo, base_ref=base)
+    assert not any("docs/vendor.md" in finding for finding in report["findings"])

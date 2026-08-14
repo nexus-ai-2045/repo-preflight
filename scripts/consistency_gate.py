@@ -12,6 +12,44 @@ from urllib.parse import unquote, urlsplit
 SCHEMA = "repo-preflight.consistency/v1"
 CONFIG_NAME = ".repo-preflight-consistency.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+CAPABILITY_ROUTES = (
+    {
+        "id": "readability-template",
+        "patterns": ["README.md", "docs/**"],
+        "plugins": ["template-creator"],
+        "reason": "文書構造を再利用可能な参照付きテンプレートとして整える候補",
+    },
+    {
+        "id": "product-design-audit",
+        "patterns": ["README.md", "docs/**", "web/**", "ui/**"],
+        "plugins": ["product-design"],
+        "reason": "情報設計・視認性・アクセシビリティを具体的な画面または文書に結び付けて確認する候補",
+    },
+    {
+        "id": "security-guidance",
+        "patterns": ["SECURITY.md", "**/auth/**", "**/security/**", "*.pem"],
+        "plugins": ["security-guidance"],
+        "reason": "認証・秘密情報・security境界の追加レビュー候補",
+    },
+    {
+        "id": "creative-production",
+        "patterns": ["assets/**", "images/**", "**/*.png", "**/*.svg", "**/*.mp4"],
+        "plugins": ["creative-production"],
+        "reason": "視覚素材の一貫性と制作工程を確認する候補",
+    },
+    {
+        "id": "openai-developers",
+        "patterns": ["**/openai/**", "**/*openai*", "**/*chatgpt*"],
+        "plugins": ["openai-developers"],
+        "reason": "OpenAI API・Agents SDK・ChatGPT Appの公式実装ガイダンス確認候補",
+    },
+    {
+        "id": "github-workflow",
+        "patterns": [".github/**"],
+        "plugins": ["github"],
+        "reason": "GitHub Actions・PR表示・repository設定の確認候補",
+    },
+)
 
 
 def _matches(path: str, patterns: list[str]) -> bool:
@@ -40,27 +78,156 @@ def _load_config(repo: Path) -> dict | None:
         config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         raise ValueError("invalid_consistency_config")
-    if (
-        not isinstance(config, dict)
-        or config.get("schema") != SCHEMA
-        or config.get("mode") not in {"shadow", "enforce"}
-    ):
-        raise ValueError("invalid_consistency_config")
-    for key in ("impact_map", "generated_artifacts"):
-        if key in config and not isinstance(config[key], list):
-            raise ValueError("invalid_consistency_config")
+    _validate_config(config)
     return config
 
 
+def _string_list(value: object, *, nonempty: bool = False) -> bool:
+    return (
+        isinstance(value, list)
+        and (not nonempty or bool(value))
+        and all(type(item) is str and bool(item) for item in value)
+    )
+
+
+def _exact_keys(value: object, allowed: set[str], required: set[str] = set()) -> bool:
+    return isinstance(value, dict) and required <= set(value) and set(value) <= allowed
+
+
+def _validate_config(config: object) -> None:
+    top_keys = {
+        "$schema",
+        "schema",
+        "mode",
+        "markdown",
+        "readme_contracts",
+        "impact_map",
+        "generated_artifacts",
+        "ratchet",
+    }
+    if not _exact_keys(config, top_keys, {"schema", "mode"}):
+        raise ValueError("invalid_consistency_config")
+    assert isinstance(config, dict)
+    if config["schema"] != SCHEMA or config["mode"] not in {
+        "shadow",
+        "ratchet",
+        "enforce",
+    }:
+        raise ValueError("invalid_consistency_config")
+    if "$schema" in config and type(config["$schema"]) is not str:
+        raise ValueError("invalid_consistency_config")
+    markdown = config.get("markdown", {})
+    if not _exact_keys(markdown, {"include"}) or not _string_list(
+        markdown.get("include", [])
+    ):
+        raise ValueError("invalid_consistency_config")
+    contracts = config.get("readme_contracts", {})
+    if not _exact_keys(contracts, {"required_paths", "commands"}) or not _string_list(
+        contracts.get("required_paths", [])
+    ):
+        raise ValueError("invalid_consistency_config")
+    commands = contracts.get("commands", [])
+    if not isinstance(commands, list):
+        raise ValueError("invalid_consistency_config")
+    for command in commands:
+        if (
+            not _exact_keys(command, {"text", "paths"}, {"text"})
+            or type(command["text"]) is not str
+            or not command["text"]
+            or not _string_list(command.get("paths", []))
+        ):
+            raise ValueError("invalid_consistency_config")
+    impact_map = config.get("impact_map", [])
+    if not isinstance(impact_map, list):
+        raise ValueError("invalid_consistency_config")
+    for rule in impact_map:
+        if (
+            not _exact_keys(
+                rule, {"change", "requires_any"}, {"change", "requires_any"}
+            )
+            or not _string_list(rule["change"], nonempty=True)
+            or not _string_list(rule["requires_any"], nonempty=True)
+        ):
+            raise ValueError("invalid_consistency_config")
+    artifacts = config.get("generated_artifacts", [])
+    if not isinstance(artifacts, list):
+        raise ValueError("invalid_consistency_config")
+    for artifact in artifacts:
+        if (
+            not _exact_keys(artifact, {"path", "sources", "sha256"}, {"path", "sha256"})
+            or type(artifact["path"]) is not str
+            or not artifact["path"]
+            or not _string_list(artifact.get("sources", []))
+            or type(artifact["sha256"]) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"])
+        ):
+            raise ValueError("invalid_consistency_config")
+    ratchet = config.get("ratchet", {})
+    if not _exact_keys(ratchet, {"baseline"}) or not _string_list(
+        ratchet.get("baseline", [])
+    ):
+        raise ValueError("invalid_consistency_config")
+    baseline = ratchet.get("baseline", [])
+    if len(baseline) != len(set(baseline)):
+        raise ValueError("invalid_consistency_config")
+
+
+def _capability_recommendations(changed: list[str]) -> list[dict]:
+    recommendations: list[dict] = []
+    for route in CAPABILITY_ROUTES:
+        evidence = sorted(path for path in changed if _matches(path, route["patterns"]))
+        if evidence:
+            recommendations.append(
+                {
+                    "id": route["id"],
+                    "plugins": route["plugins"],
+                    "reason": route["reason"],
+                    "evidence_paths": evidence,
+                    "execution": "human_review_required",
+                }
+            )
+    return recommendations
+
+
+def _ratchet_result(config: dict, findings: list[str]) -> dict:
+    ratchet = config.get("ratchet", {})
+    if not isinstance(ratchet, dict):
+        raise ValueError("invalid_consistency_config")
+    baseline = ratchet.get("baseline", [])
+    if not isinstance(baseline, list) or any(
+        not isinstance(item, str) or not item for item in baseline
+    ):
+        raise ValueError("invalid_consistency_config")
+    baseline_set = set(baseline)
+    finding_set = set(findings)
+    return {
+        "accepted": sorted(finding_set & baseline_set),
+        "new": sorted(finding_set - baseline_set),
+        "resolved": sorted(baseline_set - finding_set),
+    }
+
+
 def _tracked_files(repo: Path) -> list[str]:
-    result = subprocess.run(["git", "ls-files", "-z"], cwd=repo, capture_output=True)
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--stage"], cwd=repo, capture_output=True
+    )
     if result.returncode:
         raise RuntimeError("git_consistency_inventory_failed")
-    return [
-        item.decode("utf-8", errors="surrogateescape")
-        for item in result.stdout.split(b"\0")
-        if item
-    ]
+    files: list[str] = []
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
+            continue
+        metadata, separator, raw_name = entry.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3 or fields[2] != b"0":
+            raise RuntimeError("git_consistency_inventory_failed")
+        mode = fields[0]
+        if mode in {b"120000", b"160000"}:
+            continue
+        if not mode.startswith(b"100"):
+            raise RuntimeError("git_consistency_inventory_failed")
+        files.append(raw_name.decode("utf-8", errors="surrogateescape"))
+    return files
 
 
 def _changed_files(repo: Path, base_ref: str | None) -> list[str]:
@@ -226,19 +393,25 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
         )
         findings = sorted(set(findings))
         mode = config["mode"]
-        status = (
-            "pass"
-            if not findings
-            else ("fail" if mode == "enforce" else "shadow_findings")
-        )
+        ratchet = _ratchet_result(config, findings) if mode == "ratchet" else None
+        if mode == "ratchet":
+            status = "fail" if ratchet["new"] or ratchet["resolved"] else "pass"
+        else:
+            status = (
+                "pass"
+                if not findings
+                else ("fail" if mode == "enforce" else "shadow_findings")
+            )
         return {
             "status": status,
             "mode": mode,
             "finding_count": len(findings),
             "findings": findings,
             "impact": impact,
+            "ratchet": ratchet,
+            "capability_recommendations": _capability_recommendations(changed),
         }
-    except ValueError:
+    except (TypeError, ValueError):
         return {
             "status": "tool_error",
             "mode": None,
