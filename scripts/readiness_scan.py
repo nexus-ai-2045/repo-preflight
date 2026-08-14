@@ -21,6 +21,7 @@ GUARANTEES = (
     "検出結果に秘密値そのものを出力しない",
     "推奨質問の dismiss/snooze を採用先 .repo-preflight.json に記録し、次回から抑止する",
     "同梱 GitHub 設定ガイドの last_reviewed 期限切れを検知し、更新確認の質問を出す",
+    "宣言設定がある repo では Markdown・README契約・影響マップ・SSOT生成物の整合性を検査する",
 )
 
 NON_GUARANTEES = (
@@ -32,6 +33,7 @@ NON_GUARANTEES = (
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
     "README・個人情報・公開範囲の目視確認",
+    "repo 固有の影響マップが宣言していない docs 更新要否の推測",
     "公開・push・merge・visibility変更・投稿の実行",
     "dismiss した推奨項目が将来も安全であること (期限切れ snooze や再発火があり得る)",
 )
@@ -370,6 +372,16 @@ def load_preferences_module():
     return module
 
 
+def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
+    script = Path(__file__).with_name("consistency_gate.py")
+    spec = importlib.util.spec_from_file_location("consistency_gate", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.check(repo, base_ref=base_ref)
+
+
 def scan(
     repo: Path,
     expected_identity: str | None = None,
@@ -601,6 +613,7 @@ def scan(
             "url": redact_remote(remote),
         },
     }
+    checks["repository_consistency"] = run_consistency_gate(repo, base_ref)
     if release:
         if (repo / "README.md").is_file():
             readme_report = run_readme_release_gate(repo)
@@ -641,10 +654,16 @@ def scan(
         )
     if release:
         automated_check_names.add("readme_release_design")
+    automated_check_names.add("repository_consistency")
+    tool_error = any(
+        checks[name]["status"] == "tool_error" for name in automated_check_names
+    )
     blocking = any(checks[name]["status"] == "fail" for name in automated_check_names)
     unknown = any(checks[name]["status"] == "unknown" for name in automated_check_names)
     return {
-        "status": "blocked" if blocking or unknown else "pass",
+        "status": (
+            "tool_error" if tool_error else "blocked" if blocking or unknown else "pass"
+        ),
         "publication_decision": "blocked_human_review_required",
         "repo": repository_evidence_label(repo),
         "head": head,
