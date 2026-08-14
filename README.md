@@ -138,7 +138,7 @@ cd repo-preflight
 | リポジトリ新規作成 | `python scripts/readiness_scan.py --intent create_repo --human` |
 | push | `python scripts/readiness_scan.py --repo PATH --intent push --base-ref origin/BASE --human` |
 | PR 作成 | `python scripts/readiness_scan.py --repo PATH --intent open_pr --base-ref origin/BASE --human` |
-| merge | `python scripts/readiness_scan.py --repo PATH --intent merge --human` |
+| merge | `python scripts/readiness_scan.py --repo PATH --intent merge --base-ref origin/BASE --human` |
 | 公開 / 共有 / 納品 | `python scripts/readiness_scan.py --repo PATH --intent publish --audience public --human` |
 | release 準備 | `python scripts/readiness_scan.py --repo PATH --intent release --human` |
 
@@ -153,7 +153,7 @@ cd repo-preflight
 
 secret や個人 path の検出時は **「無視して進む」選択肢を出しません**。
 
-既存private repoのpush / PRでは `--base-ref` を指定すると、今回の変更fileと
+既存private repoのpush / PR / mergeでは `--base-ref` を指定すると、今回の変更fileと
 `base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、
 今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
 公開・releaseでは使えず、必須文書と全履歴を含むrepo全体検査が必要です。
@@ -192,7 +192,7 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 `--repo` だけなら従来どおり検査JSONです。
 
-対象repoの整合設定に `impact_map` やsource付き生成物がある場合、変更差分の判定には `push` / `open_pr` intentと `--base-ref` が必要です。baseなしでは `change_sensitive_scope_unavailable` としてfail-closedになります。
+対象repoの整合設定に `impact_map` やsource付き生成物がある場合、変更差分の判定には `push` / `open_pr` / `merge` intentと `--base-ref` が必要です。baseなしでは `change_sensitive_scope_unavailable` としてfail-closedになります。
 
 ```bash
 python scripts/readiness_scan.py --repo /path/to/your-repo

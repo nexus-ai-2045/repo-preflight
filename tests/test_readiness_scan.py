@@ -682,3 +682,29 @@ def test_empty_ci_workflow_fails_configuration_check(tmp_path: Path):
 
     assert report["status"] == "blocked"
     assert report["checks"]["ci_configuration"]["status"] == "fail"
+
+
+def test_merge_intent_accepts_remote_base_ref(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--intent",
+            "merge",
+            "--base-ref",
+            "origin/main",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    report = json.loads(result.stdout)
+    assert report["intent"] == "merge"
+    assert report["scan"]["options"]["mode"] == "target_diff"
+    assert report["scan"]["options"]["base_ref"] == "origin/main"

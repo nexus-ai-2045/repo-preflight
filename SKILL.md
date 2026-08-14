@@ -45,7 +45,7 @@ python scripts/readiness_scan.py --repo <path> --intent publish --audience publi
 
 stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stderr に番号付きの質問文も出る。
 
-`--base-ref` は `push` / `open_pr` 専用。指定したbaseからHEADまでの変更fileとcommit範囲を検査し、
+`--base-ref` は `push` / `open_pr` / `merge` 専用。指定したbaseからHEADまでの変更fileとcommit範囲を検査し、
 既存repoのbaseline問題と今回差分を分離する。baseはHEADの祖先でなければfail-closed。
 `publish` / `release` では使用できず、repo全体modeを通す。
 確認packetはbase ref / base SHA / head SHAを固定する。実際のpush / PRも同じbaseを使い、
