@@ -38,6 +38,14 @@ flowchart LR
 `publication_decision` は常に人間レビューを要求し、自動で `approved` にはなりません。
 **`pass` だけを根拠に公開しないでください。**
 
+## PR マージ前の整合性ゲート
+
+`.repo-preflight-consistency.json` を置くと、既存の `readiness_scan.py` が Markdown リンク、README の宣言済みコマンドと file、変更コードに対する docs / tests 更新、SSOT・生成物の SHA-256 ドリフトを追加検査します。repo 固有側は宣言だけで、共通ロジックは `repo-preflight` に残ります。
+
+導入は `shadow` から始め、観測した誤検知を影響マップで調整し、`ratchet` で新規悪化を止めてから `enforce` に切り替えます。変更内容に応じた可読性・security・GitHub等の capability 推薦も、人間レビュー要求付きでレポートします。設定例と運用境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md) を参照してください。
+
+設定は未知キーや型違いをfail-closedで拒否し、Gitのsymlink・gitlinkを追跡してrepo外を読まない境界を持ちます。
+
 ## 保証すること / 保証しないこと
 
 対話モードでも非対話モードでも、次の境界は同じです。JSON report にも `guarantees` / `non_guarantees` として入ります。
