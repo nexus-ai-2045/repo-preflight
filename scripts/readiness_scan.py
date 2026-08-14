@@ -15,7 +15,7 @@ SCHEMA = "repo-preflight.scan/v3"
 # CLIが担当する範囲の境界。対話・非対話のどちらでも同じ文言を出す。
 GUARANTEES = (
     "ローカルGitの現在treeと履歴を読み取り専用で検査する",
-    "必須文書・secret候補・個人path・作者名義・CI設定の最低限の構造を機械判定する",
+    "選択した検査scopeでsecret候補・個人path・作者名義を機械判定し、repo全体modeでは必須文書とCI設定も確認する",
     "status は CLI が担当する自動検査の結果だけを表す (pass / blocked / tool_error)",
     "publication_decision は常に人間レビュー要求とし、自動で公開承認しない",
     "検出結果に秘密値そのものを出力しない",
@@ -155,9 +155,11 @@ def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
 
-def history_hits(repo: Path) -> tuple[list[str], list[str]]:
+def history_hits(
+    repo: Path, rev_args: tuple[str, ...] = ("--all",)
+) -> tuple[list[str], list[str]]:
     objects = subprocess.run(
-        ["git", "rev-list", "--objects", "--all"],
+        ["git", "rev-list", "--objects", *rev_args],
         cwd=repo,
         capture_output=True,
     )
@@ -296,6 +298,48 @@ def deleted_working_tree_files(repo: Path) -> set[Path]:
     }
 
 
+def changed_working_tree_files(
+    repo: Path, base_ref: str
+) -> tuple[list[Path], set[Path]]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "-z", f"{base_ref}...HEAD"],
+        cwd=repo,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    paths: list[Path] = []
+    deleted: set[Path] = set()
+    for raw_name in result.stdout.split(b"\0"):
+        if not raw_name:
+            continue
+        rel = raw_name.decode("utf-8", errors="surrogateescape")
+        path = repo / rel
+        if path.exists():
+            mode_probe = subprocess.run(
+                ["git", "ls-files", "--stage", "--", rel],
+                cwd=repo,
+                text=True,
+                encoding="utf-8",
+                errors="backslashreplace",
+                capture_output=True,
+            )
+            if mode_probe.returncode:
+                raise RuntimeError("git_target_diff_inventory_failed")
+            entries = [line for line in mode_probe.stdout.splitlines() if line]
+            if len(entries) != 1:
+                raise RuntimeError("git_target_diff_inventory_failed")
+            mode = entries[0].split(maxsplit=1)[0]
+            if mode in {"120000", "160000"}:
+                continue
+            if not mode.startswith("100"):
+                raise RuntimeError("git_target_diff_inventory_failed")
+            paths.append(path)
+        else:
+            deleted.add(path)
+    return paths, deleted
+
+
 def run_readme_release_gate(repo: Path) -> dict:
     script = Path(__file__).with_name("readme_release_gate.py")
     spec = importlib.util.spec_from_file_location("readme_release_gate", script)
@@ -331,6 +375,7 @@ def scan(
     expected_identity: str | None = None,
     *,
     release: bool = False,
+    base_ref: str | None = None,
 ) -> dict:
     repo = repo.resolve()
     if not repo.is_dir():
@@ -342,8 +387,32 @@ def scan(
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
-        "identities": run(repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"),
     }
+    if base_ref:
+        base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
+        symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
+        ancestor_probe = run(
+            repo, "git", "merge-base", "--is-ancestor", base_ref, "HEAD"
+        )
+        if (
+            base_probe[0]
+            or symbolic_probe[0]
+            or not symbolic_probe[1].startswith("refs/remotes/origin/")
+            or ancestor_probe[0]
+        ):
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["invalid_non_remote_or_non_ancestor_base_ref"],
+            }
+        identity_range = f"{base_ref}..HEAD"
+        probes["identities"] = run(
+            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", identity_range
+        )
+    else:
+        probes["identities"] = run(
+            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"
+        )
     if any(code for code, _ in probes.values()):
         return {
             "status": "tool_error",
@@ -353,11 +422,18 @@ def scan(
     head = probes["head"][1]
     dirty = probes["dirty"][1]
     identities = probes["identities"][1]
+    resolved_base_ref: str | None = None
+    base_oid: str | None = None
+    if base_ref:
+        resolved_base_ref = symbolic_probe[1]
+        base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
-    missing = [name for name in REQUIRED if not (repo / name).is_file()]
+    missing = (
+        [] if base_ref else [name for name in REQUIRED if not (repo / name).is_file()]
+    )
     invalid_documents: list[str] = []
     review_record = repo / REVIEW_RECORD
-    if REVIEW_RECORD not in missing:
+    if not base_ref and REVIEW_RECORD not in missing:
         try:
             record_text = review_record.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
@@ -369,8 +445,11 @@ def scan(
     credential_finding_count = 0
     path_hits: list[str] = []
     try:
-        paths = working_tree_files(repo)
-        deleted_paths = deleted_working_tree_files(repo)
+        if base_ref:
+            paths, deleted_paths = changed_working_tree_files(repo, base_ref)
+        else:
+            paths = working_tree_files(repo)
+            deleted_paths = deleted_working_tree_files(repo)
     except RuntimeError:
         return {
             "status": "tool_error",
@@ -400,7 +479,9 @@ def scan(
         if text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
     try:
-        history_credential_findings, history_path_hits = history_hits(repo)
+        history_credential_findings, history_path_hits = history_hits(
+            repo, (f"{base_ref}..HEAD",) if base_ref else ("--all",)
+        )
         credential_finding_count += len(history_credential_findings)
         path_hits.extend(history_path_hits)
     except RuntimeError:
@@ -464,7 +545,11 @@ def scan(
     checks = {
         "clean_worktree": {"status": "pass" if not dirty else "fail"},
         "required_documents": {
-            "status": "pass" if not missing and not invalid_documents else "fail",
+            "status": (
+                "not_evaluated"
+                if base_ref
+                else "pass" if not missing and not invalid_documents else "fail"
+            ),
             "missing": missing,
             "invalid": invalid_documents,
         },
@@ -545,14 +630,15 @@ def scan(
             }
     automated_check_names = {
         "clean_worktree",
-        "required_documents",
         "secret_scan",
         "personal_path_scan",
         "commit_identity",
-        "dependency_configuration",
-        "ci_configuration",
         "origin",
     }
+    if not base_ref:
+        automated_check_names.update(
+            {"required_documents", "dependency_configuration", "ci_configuration"}
+        )
     if release:
         automated_check_names.add("readme_release_design")
     blocking = any(checks[name]["status"] == "fail" for name in automated_check_names)
@@ -562,6 +648,16 @@ def scan(
         "publication_decision": "blocked_human_review_required",
         "repo": repository_evidence_label(repo),
         "head": head,
+        "scan_scope": (
+            {
+                "mode": "target_diff",
+                "base_ref": sanitized_evidence_label(base_ref),
+                "resolved_base_ref": sanitized_evidence_label(resolved_base_ref),
+                "base_oid": base_oid,
+            }
+            if base_ref
+            else {"mode": "repository"}
+        ),
         "checks": checks,
     }
 
@@ -578,6 +674,7 @@ class ScanOptions:
         interactive: bool = False,
         show_json: bool = True,
         intent: str | None = None,
+        base_ref: str | None = None,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -586,6 +683,7 @@ class ScanOptions:
         self.interactive = interactive
         self.show_json = show_json
         self.intent = intent
+        self.base_ref = base_ref
 
 
 def boundary_sections() -> dict[str, list[str]]:
@@ -612,10 +710,17 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
     enriched["schema"] = SCHEMA
     enriched["options"] = {
         "audience": options.audience,
-        "mode": "release" if options.release else "standard",
+        "mode": (
+            "target_diff"
+            if options.base_ref
+            else "release" if options.release else "standard"
+        ),
         "expected_identity_configured": bool(options.expected_identity),
         "interactive": options.interactive,
         "intent": options.intent,
+        "base_ref": (
+            sanitized_evidence_label(options.base_ref) if options.base_ref else None
+        ),
     }
     enriched.update(boundary_sections())
     return enriched
@@ -629,11 +734,13 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
     needs_scan = gate.intent_needs_scan(options.intent) or options.repo is not None
     if needs_scan and options.repo is not None:
         release = options.release or gate.intent_uses_release_gate(options.intent)
-        scan_report = scan(
-            options.repo,
-            expected_identity=options.expected_identity,
-            release=release,
-        )
+        scan_kwargs = {
+            "expected_identity": options.expected_identity,
+            "release": release,
+        }
+        if options.base_ref:
+            scan_kwargs["base_ref"] = options.base_ref
+        scan_report = scan(options.repo, **scan_kwargs)
         scan_report = enrich_report(
             scan_report,
             ScanOptions(
@@ -644,6 +751,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 interactive=options.interactive,
                 show_json=options.show_json,
                 intent=options.intent,
+                base_ref=options.base_ref,
             ),
         )
     elif needs_scan and options.repo is None:
@@ -946,6 +1054,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--base-ref",
+        help=(
+            "既存repoの今回差分だけを検査するbase ref。"
+            "--intent push/open_pr専用で、baseはHEADの祖先でなければならない"
+        ),
+    )
+    parser.add_argument(
         "--interactive",
         "-i",
         action="store_true",
@@ -1000,6 +1115,9 @@ def resolve_options(
     output_fn: Callable[[str], None] | None = None,
 ) -> ScanOptions:
     intent = getattr(args, "intent", None)
+    base_ref = getattr(args, "base_ref", None)
+    if base_ref and intent not in {"push", "open_pr"}:
+        raise SystemExit("error: --base-ref requires --intent push or open_pr")
     # intent モードはエージェント対話が本体。TTYメニューは使わない
     want_console = bool(
         args.interactive or (args.repo is None and stdin_is_tty and not intent)
@@ -1013,6 +1131,7 @@ def resolve_options(
             output_fn=output_fn,
         )
         options.intent = intent
+        options.base_ref = base_ref
         return options
 
     gate = load_dialogue_gate()
@@ -1025,6 +1144,7 @@ def resolve_options(
             interactive=False,
             show_json=True,
             intent=intent,
+            base_ref=base_ref,
         )
     if args.repo is None:
         raise SystemExit(
@@ -1039,6 +1159,7 @@ def resolve_options(
         interactive=False,
         show_json=True,
         intent=intent,
+        base_ref=base_ref,
     )
 
 
@@ -1152,11 +1273,13 @@ def main(
         return dialogue_exit_code(dialogue)
 
     try:
-        report = scan(
-            options.repo,
-            expected_identity=options.expected_identity,
-            release=options.release,
-        )
+        scan_kwargs = {
+            "expected_identity": options.expected_identity,
+            "release": options.release,
+        }
+        if options.base_ref:
+            scan_kwargs["base_ref"] = options.base_ref
+        report = scan(options.repo, **scan_kwargs)
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す
         report = {
