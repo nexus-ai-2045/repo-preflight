@@ -504,7 +504,8 @@ def main() -> int:
             ),
         }
     print(
-        json.dumps(report, ensure_ascii=False, indent=2)
+        # Windows CIの非UTF-8 pipeでもJSON契約を壊さない。
+        json.dumps(report, ensure_ascii=True, indent=2)
         if args.json
         else report["status"]
     )

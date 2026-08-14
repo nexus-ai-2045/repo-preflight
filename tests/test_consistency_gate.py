@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -87,6 +88,7 @@ def test_cli_returns_nonzero_for_enforced_findings(tmp_path: Path):
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
     )
 
     assert result.returncode == 1
