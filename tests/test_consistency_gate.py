@@ -7,7 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).parents[1] / "scripts" / "consistency_gate.py"
 SPEC = importlib.util.spec_from_file_location("consistency_gate", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
