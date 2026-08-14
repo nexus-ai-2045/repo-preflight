@@ -1076,7 +1076,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-ref",
         help=(
             "既存repoの今回差分だけを検査するbase ref。"
-            "--intent push/open_pr専用で、baseはHEADの祖先でなければならない"
+            "--intent push/open_pr/merge専用で、baseはHEADの祖先でなければならない"
         ),
     )
     parser.add_argument(
@@ -1135,8 +1135,8 @@ def resolve_options(
 ) -> ScanOptions:
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
-    if base_ref and intent not in {"push", "open_pr"}:
-        raise SystemExit("error: --base-ref requires --intent push or open_pr")
+    if base_ref and intent not in {"push", "open_pr", "merge"}:
+        raise SystemExit("error: --base-ref requires --intent push, open_pr, or merge")
     # intent モードはエージェント対話が本体。TTYメニューは使わない
     want_console = bool(
         args.interactive or (args.repo is None and stdin_is_tty and not intent)
