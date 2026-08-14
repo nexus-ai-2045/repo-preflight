@@ -40,4 +40,17 @@ Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160
 - run: python scripts/readiness_scan.py --repo . --intent open_pr --base-ref refs/remotes/origin/${{ github.base_ref }}
 ```
 
+整合性検査だけをCIで必須化する場合は、同じ共通実装を直接呼びます。`checkout` は `fetch-depth: 0` にし、PRのbaseを取得してください。
+
+```yaml
+- run: python scripts/readme_release_gate.py --repo . --json
+- run: python scripts/consistency_gate.py --repo . --base-ref refs/remotes/origin/${{ github.base_ref }} --require-config --require-mode enforce --json
+```
+
+`consistency_gate.py` は `pass` / `not_configured` だけを終了コード0とし、`fail` / `tool_error` / `shadow_findings` は終了コード1にします。`--require-config --require-mode enforce` を付けると設定削除やmode弱体化も失敗します。repo-preflight自身は独立した `documentation-contract` checkをPR、merge queue、main pushで実行します。READMEの情報設計も既存の `readme_release_gate.py` で検査し、300行超過、必須節欠落、見出し階層の飛びをblockします。
+
+workflow自身の削除・改変を防ぐ境界には、通常のrequired status checkだけでなく、GitHub rulesetのrequired workflows ruleでmain上の `.github/workflows/documentation-contract.yml` と信頼済みSHAを固定します。PR checkout側のテストだけでは、そのテストやworkflowを同じPRで削除できるため、自己防衛の完全な境界にはなりません。
+
+このゲートが保証するのは宣言済みリンク、コマンド、path、変更連鎖、hash、README構造です。文章同士が意味的に完全一致することや、無関係なdocs/tests更新でないことの判定には人間レビューが残ります。またCI定義そのものの削除を防ぐには、GitHub rulesetでこのcheckを必須化してください。
+
 push、PR 作成、merge、公開はそれぞれ別の承認境界です。このゲートのローカル成功だけで、いずれも自動承認されません。

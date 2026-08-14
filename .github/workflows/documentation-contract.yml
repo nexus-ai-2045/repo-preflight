@@ -1,0 +1,29 @@
+name: Documentation contract
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  documentation-contract:
+    name: documentation-contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.13"
+      - name: README readability gate
+        run: python scripts/readme_release_gate.py --repo . --json
+      - name: Documentation consistency gate
+        env:
+          CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+        run: python scripts/consistency_gate.py --repo . --base-ref "$CONSISTENCY_BASE" --require-config --require-mode enforce --json
