@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import hashlib
 import json
@@ -467,3 +468,48 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
         }
     except RuntimeError as exc:
         return {"status": "tool_error", "mode": None, "findings": [str(exc)]}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="README・docs・実装・テストの宣言済み整合性を検査する"
+    )
+    parser.add_argument("--repo", type=Path, default=Path.cwd())
+    parser.add_argument("--base-ref")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--require-config",
+        action="store_true",
+        help="設定なしを成功扱いにせず、CIの自己防衛に使う",
+    )
+    parser.add_argument(
+        "--require-mode",
+        choices=("shadow", "ratchet", "enforce"),
+        help="設定modeの弱体化を拒否する",
+    )
+    args = parser.parse_args()
+    report = check(args.repo, base_ref=args.base_ref)
+    if args.require_config and report["status"] == "not_configured":
+        report = {
+            "status": "tool_error",
+            "mode": None,
+            "findings": ["required_consistency_config_missing"],
+        }
+    elif args.require_mode and report.get("mode") != args.require_mode:
+        report = {
+            **report,
+            "status": "tool_error",
+            "findings": sorted(
+                set(report.get("findings", [])) | {"required_consistency_mode_mismatch"}
+            ),
+        }
+    print(
+        json.dumps(report, ensure_ascii=False, indent=2)
+        if args.json
+        else report["status"]
+    )
+    return 0 if report["status"] in {"pass", "not_configured"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
