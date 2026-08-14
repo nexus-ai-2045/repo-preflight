@@ -614,6 +614,49 @@ def test_report_separates_automated_checks_from_publication_decision(tmp_path: P
     assert report["publication_decision"] == "blocked_human_review_required"
     assert report["checks"]["human_visual_review"]["status"] == "unknown"
     assert report["checks"]["ci_runtime_result"]["status"] == "unknown"
+    assert report["checks"]["repository_consistency"]["status"] == "not_configured"
+
+
+def test_consistency_enforce_blocks_readiness_scan(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "enforce",
+                "readme_contracts": {"required_paths": ["missing.py"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    git(repo, "add", ".repo-preflight-consistency.json")
+    git(repo, "commit", "-m", "add consistency config")
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["repository_consistency"]["status"] == "fail"
+
+
+def test_consistency_shadow_does_not_block_readiness_scan(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "shadow",
+                "readme_contracts": {"required_paths": ["missing.py"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    git(repo, "add", ".repo-preflight-consistency.json")
+    git(repo, "commit", "-m", "add consistency config")
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "pass"
+    assert report["checks"]["repository_consistency"]["status"] == "shadow_findings"
 
 
 def test_dependency_manifest_is_reported(tmp_path: Path):
