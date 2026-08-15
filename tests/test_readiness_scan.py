@@ -288,9 +288,7 @@ def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Pat
             )
             return CompletedProcess(args, 0, stdout=output, stderr=b"")
         if args[:3] == ["git", "cat-file", "--batch-check"]:
-            return CompletedProcess(
-                args, 0, stdout=f"{object_id} blob 8\n", stderr=""
-            )
+            return CompletedProcess(args, 0, stdout=f"{object_id} blob 8\n", stderr="")
         if args[:3] == ["git", "cat-file", "--batch"]:
             return CompletedProcess(
                 args, 0, stdout=f"{object_id} blob 8\nordinary\n".encode(), stderr=b""
