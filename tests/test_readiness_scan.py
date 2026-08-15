@@ -273,6 +273,36 @@ def test_deleted_history_secret_blocks_without_echoing_value(tmp_path: Path):
     assert token not in str(report)
 
 
+def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Path):
+    """履歴pathのCR/LF断片をobject IDとして誤解しない。"""
+    object_id = "a" * 40
+    commands: list[list[str]] = []
+
+    def fake_run(args, **kwargs):
+        commands.append(args)
+        if args[:3] == ["git", "rev-list", "--objects"]:
+            output = (
+                f"{object_id}\n".encode()
+                if "--no-object-names" in args
+                else f"{object_id} historical\r/path-fragment\n".encode()
+            )
+            return CompletedProcess(args, 0, stdout=output, stderr=b"")
+        if args[:3] == ["git", "cat-file", "--batch-check"]:
+            return CompletedProcess(
+                args, 0, stdout=f"{object_id} blob 8\n", stderr=""
+            )
+        if args[:3] == ["git", "cat-file", "--batch"]:
+            return CompletedProcess(
+                args, 0, stdout=f"{object_id} blob 8\nordinary\n".encode(), stderr=b""
+            )
+        raise AssertionError(args)
+
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+
+    assert MODULE.history_hits(tmp_path) == ([], [])
+    assert "--no-object-names" in commands[0]
+
+
 def test_cli_json_never_echoes_matched_secret(tmp_path: Path):
     repo = make_repo(tmp_path)
     token = "github_pat_" + "Z" * 30
@@ -354,6 +384,20 @@ def test_ignored_virtual_environment_is_not_scanned(tmp_path: Path):
 
     assert report["checks"]["secret_scan"]["status"] == "pass"
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_sparse_checkout_skips_non_materialized_tracked_files(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    excluded = repo / "excluded" / "historical.txt"
+    excluded.parent.mkdir()
+    excluded.write_text("tracked but not materialized", encoding="utf-8")
+    git(repo, "add", "excluded/historical.txt")
+    git(repo, "commit", "-m", "add excluded path")
+    git(repo, "sparse-checkout", "init", "--no-cone")
+    git(repo, "sparse-checkout", "set", "--no-cone", "/*", "!/excluded/")
+
+    assert not excluded.exists()
+    assert MODULE.scan(repo)["status"] == "pass"
 
 
 def test_non_ascii_untracked_filename_is_scanned(tmp_path: Path):
