@@ -23,7 +23,9 @@ JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
 TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
 TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 CODE_SPAN_RE = re.compile(r"`[^`]+`")
-MERMAID_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}|]{2,})[\])\"}]")
+MERMAID_NODE_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}|]{2,})[\])\"}]")
+MERMAID_EDGE_LABEL_RE = re.compile(r"\|([^|]{2,})\|")
+MERMAID_MESSAGE_LABEL_RE = re.compile(r"(?:-{1,2}>>?|--?[x)])[^:]*:\s*(.+)$")
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -95,7 +97,7 @@ def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
 
 
 def _mermaid_labels(lines: list[str]) -> list[str]:
-    """mermaid図のラベル文字列。矢印や属性行は拾わない。"""
+    """mermaid図のノード、矢印、sequence message のラベルを返す。"""
     labels: list[str] = []
     in_diagram = False
     for line in lines:
@@ -105,7 +107,11 @@ def _mermaid_labels(lines: list[str]) -> list[str]:
             continue
         if not in_diagram or stripped.startswith(("style ", "classDef ", "%%")):
             continue
-        labels.extend(match.strip() for match in MERMAID_LABEL_RE.findall(line))
+        labels.extend(match.strip() for match in MERMAID_NODE_LABEL_RE.findall(line))
+        labels.extend(match.strip() for match in MERMAID_EDGE_LABEL_RE.findall(line))
+        message = MERMAID_MESSAGE_LABEL_RE.search(line)
+        if message:
+            labels.append(message.group(1).strip())
     return [label for label in labels if label]
 
 

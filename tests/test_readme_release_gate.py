@@ -261,6 +261,34 @@ def test_diagram_with_japanese_labels_passes(tmp_path: Path):
     assert report["status"] == "pass"
 
 
+def test_diagram_with_english_edge_label_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n## 流れ\n\n```mermaid\nflowchart LR\n"
+        + "    A -->|English decision| B\n```\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "diagram_labels_not_localized" in _codes(report)
+    assert report["metrics"]["diagram_label_count"] == 1
+
+
+def test_sequence_diagram_with_english_message_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n## 流れ\n\n```mermaid\nsequenceDiagram\n"
+        + "    User->>Gate: Check repository\n```\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "diagram_labels_not_localized" in _codes(report)
+    assert report["metrics"]["diagram_label_count"] == 1
+
+
 def test_this_repository_readme_meets_japanese_readability():
     # 自分自身が模範であることを固定する。劣化したらここが落ちる
     readme = Path(__file__).resolve().parents[1] / "README.md"
