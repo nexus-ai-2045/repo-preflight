@@ -5,7 +5,6 @@ import json
 import re
 from pathlib import Path
 
-
 SECTION_ALIASES = {
     "purpose": ("目的", "why", "overview", "概要"),
     "capabilities": ("できること", "what", "features", "機能"),
@@ -14,6 +13,17 @@ SECTION_ALIASES = {
 }
 MAX_LINES = 300
 MAX_SUMMARY_CHARS = 240
+# 日本語READMEの可読性。閾値は既存repoの実測 (2026-08-15, 14種) に合わせる。
+# 表セルはコードを含むものだけを見る。Markdownリンクはfile名を2度書くため
+# 長くなりやすく、読みにくさとは別問題なので対象にしない。
+MAX_TABLE_COMMAND_CELL_CHARS = 100
+JAPANESE_MIN_CHARS = 20
+JAPANESE_MIN_RATIO = 0.1
+JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
+TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+CODE_SPAN_RE = re.compile(r"`[^`]+`")
+MERMAID_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}|]{2,})[\])\"}]")
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -46,6 +56,57 @@ def _first_summary(lines: list[str]) -> str:
         elif paragraph:
             break
     return " ".join(paragraph)
+
+
+def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
+    """コードブロックの外にある行だけを (行番号, 本文) で返す。"""
+    result: list[tuple[int, str]] = []
+    in_fence = False
+    for number, line in enumerate(lines, start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if not in_fence:
+            result.append((number, line))
+    return result
+
+
+def _is_japanese_document(lines: list[str]) -> bool:
+    """日本語で書かれたREADMEか。英語READMEへ日本語向けの基準を当てないための判定。"""
+    body = "".join(line for _, line in _outside_fences(lines))
+    japanese = len(JAPANESE_RE.findall(body))
+    letters = len("".join(body.split()))
+    if japanese < JAPANESE_MIN_CHARS or not letters:
+        return False
+    return japanese / letters >= JAPANESE_MIN_RATIO
+
+
+def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
+    """表のセルのうちコードを含むものを (行番号, セル) で返す。"""
+    cells: list[tuple[int, str]] = []
+    for number, line in _outside_fences(lines):
+        if not TABLE_ROW_RE.match(line) or TABLE_DIVIDER_RE.match(line):
+            continue
+        for cell in line.strip().strip("|").split("|"):
+            text = cell.strip()
+            if CODE_SPAN_RE.search(text):
+                cells.append((number, text))
+    return cells
+
+
+def _mermaid_labels(lines: list[str]) -> list[str]:
+    """mermaid図のラベル文字列。矢印や属性行は拾わない。"""
+    labels: list[str] = []
+    in_diagram = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            in_diagram = stripped.casefold().startswith("```mermaid")
+            continue
+        if not in_diagram or stripped.startswith(("style ", "classDef ", "%%")):
+            continue
+        labels.extend(match.strip() for match in MERMAID_LABEL_RE.findall(line))
+    return [label for label in labels if label]
 
 
 def review(readme: Path) -> dict[str, object]:
@@ -112,6 +173,32 @@ def review(readme: Path) -> dict[str, object]:
             f"READMEは{MAX_LINES}行以内を目安にし、詳細をdocsへ分離してください。",
         )
 
+    japanese_document = _is_japanese_document(lines)
+    command_cells = _table_command_cells(lines)
+    widest_command_cell = max((len(cell) for _, cell in command_cells), default=0)
+    diagram_labels = _mermaid_labels(lines)
+    if japanese_document:
+        # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる
+        for line_number, cell in command_cells:
+            if len(cell) > MAX_TABLE_COMMAND_CELL_CHARS:
+                add(
+                    "table_command_cell_too_wide",
+                    f"表のセルが長すぎます。共通部分を表の外へ出すか、"
+                    f"{MAX_TABLE_COMMAND_CELL_CHARS}文字以内へ分割してください。",
+                    line=line_number,
+                )
+                recommendations.add("Template Creator")
+                break
+        # 本文が日本語なのに図のラベルだけ英語の識別子だと、図から意味が取れない
+        if diagram_labels and not any(
+            JAPANESE_RE.search(label) for label in diagram_labels
+        ):
+            add(
+                "diagram_labels_not_localized",
+                "図のラベルを本文と同じ言語にしてください。識別子のままだと図から意味が読めません。",
+            )
+            recommendations.add("Visualize")
+
     emoji_heading = re.compile(r"^#{1,6}\s+[^\w\s`#]", re.UNICODE)
     if any(emoji_heading.match(line) for line in lines):
         add(
@@ -156,6 +243,9 @@ def review(readme: Path) -> dict[str, object]:
             "line_count": len(lines),
             "heading_count": len(headings),
             "lead_summary_chars": len(summary),
+            "japanese_document": japanese_document,
+            "widest_table_command_cell": widest_command_cell,
+            "diagram_label_count": len(diagram_labels),
         },
         "findings": findings,
         "recommended_capabilities": sorted(recommendations),
