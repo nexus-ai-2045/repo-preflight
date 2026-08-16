@@ -278,8 +278,6 @@ def working_tree_files(repo: Path) -> list[Path]:
         tag, marker, entry = entry.partition(b" ")
         if not marker or len(tag) != 1:
             raise RuntimeError("git_worktree_inventory_failed")
-        if tag.upper() == b"S":
-            continue
         metadata, separator, raw_name = entry.partition(b"\t")
         fields = metadata.split()
         if not separator or len(fields) != 3:
@@ -289,7 +287,10 @@ def working_tree_files(repo: Path) -> list[Path]:
             continue
         if not mode.startswith(b"100"):
             raise RuntimeError("git_worktree_inventory_failed")
-        paths.append(repo / raw_name.decode("utf-8", errors="surrogateescape"))
+        path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        if tag.upper() == b"S" and not path.exists():
+            continue
+        paths.append(path)
     for raw_name in untracked.stdout.split(b"\0"):
         if raw_name:
             paths.append(repo / raw_name.decode("utf-8", errors="surrogateescape"))
