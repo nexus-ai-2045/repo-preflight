@@ -245,6 +245,9 @@ def _japanese_readability_findings(
     metrics: dict[str, object] = {
         "japanese_document": japanese_document,
         "widest_table_command_cell": widest_command_cell,
+        # 図の有無は review() の "Visualize" 抑止でも使う。判定規則を
+        # ここ (FENCE_RE) に一本化し、文字列一致と食い違わせない (review 第 3 巡)
+        "diagram_count": len(mermaid_diagrams),
         "diagram_label_count": len(diagram_labels),
     }
     if not japanese_document:
@@ -389,7 +392,10 @@ def review(readme: Path) -> dict[str, object]:
         )
 
     ordered_steps = len(re.findall(r"(?m)^\s*\d+[.)]\s+", text))
-    has_mermaid = "```mermaid" in text.casefold()
+    # 図の検出は _mermaid_diagrams と同じ規則 (~~~ fence / 空白入り info string /
+    # 入れ子 fence 内の例は除外)。"```mermaid" の部分一致だと Localize Diagram と
+    # Visualize が同時に出て F10 の分離が破れる
+    has_mermaid = int(ja_metrics["diagram_count"]) > 0
     if ordered_steps >= 4 and not has_mermaid:
         recommendations.add("Visualize")
 

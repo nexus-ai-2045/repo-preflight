@@ -488,3 +488,60 @@ def test_every_wide_command_cell_is_reported(tmp_path: Path):
 
     assert len(wide) == 2
     assert [f["line"] for f in wide] == sorted(f["line"] for f in wide)
+
+
+# --- 2026-08-16 code review 第 3 巡 (P2 1 件) を固定する ---
+
+# "Visualize" は順序リスト 4 件以上で図が無い時だけ出る
+ORDERED_STEPS = "\n## 手順\n\n1. 調べる\n2. 直す\n3. 確かめる\n4. 出す\n"
+
+
+def test_tilde_fenced_mermaid_suppresses_visualize(tmp_path: Path):
+    # 図の有無の判定を _mermaid_diagrams (FENCE_RE) と一本化する。
+    # "```mermaid" の部分一致だと ~~~ fence の図が見えず、
+    # Localize Diagram と Visualize が同時に出て F10 の分離が破れる
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + ORDERED_STEPS
+        + "\n~~~mermaid\nflowchart LR\nA[English] --> B[Only]\n~~~\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "Localize Diagram" in report["recommended_capabilities"]
+    assert "Visualize" not in report["recommended_capabilities"]
+    assert report["metrics"]["diagram_count"] == 1
+
+
+def test_space_after_fence_mermaid_suppresses_visualize(tmp_path: Path):
+    # "``` mermaid" (info string の前に空白) も同じ図として扱う
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + ORDERED_STEPS
+        + "\n``` mermaid\nflowchart LR\nA[English] --> B[Only]\n```\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "Localize Diagram" in report["recommended_capabilities"]
+    assert "Visualize" not in report["recommended_capabilities"]
+    assert report["metrics"]["diagram_count"] == 1
+
+
+def test_mermaid_example_inside_markdown_fence_is_not_a_diagram(tmp_path: Path):
+    # ````markdown ブロック内に例として書かれた "```mermaid" は実図ではない。
+    # 実図ゼロなら Visualize を抑止しない
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + ORDERED_STEPS
+        + "\n````markdown\n```mermaid\nflowchart LR\nA[例] --> B[例]\n```\n````\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "Visualize" in report["recommended_capabilities"]
+    assert "Localize Diagram" not in report["recommended_capabilities"]
+    assert report["metrics"]["diagram_count"] == 0
