@@ -20,11 +20,13 @@ MAX_TABLE_COMMAND_CELL_CHARS = 100
 JAPANESE_MIN_CHARS = 20
 JAPANESE_MIN_RATIO = 0.1
 JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
-TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
-TABLE_DIVIDER_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 CODE_SPAN_RE = re.compile(r"`[^`]+`")
+LINK_DESTINATION_RE = re.compile(r"(?<=\])\([^)]*\)")
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})([^`]*)$")
 MERMAID_NODE_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}|]{2,})[\])\"}]")
-MERMAID_EDGE_LABEL_RE = re.compile(r"\|([^|]{2,})\|")
+MERMAID_ASYMMETRIC_NODE_RE = re.compile(r"\b\w+>([^]\n]{2,})\]")
+MERMAID_PIPE_EDGE_LABEL_RE = re.compile(r"(?:-->|---|-.->|==>)\s*\|([^|]{2,})\|")
+MERMAID_TEXT_EDGE_LABEL_RE = re.compile(r"--\s+(.+?)\s+-->")
 MERMAID_MESSAGE_LABEL_RE = re.compile(r"(?:-{1,2}>>?|--?[x)])[^:]*:\s*(.+)$")
 
 
@@ -63,12 +65,18 @@ def _first_summary(lines: list[str]) -> str:
 def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
     """コードブロックの外にある行だけを (行番号, 本文) で返す。"""
     result: list[tuple[int, str]] = []
-    in_fence = False
+    fence_marker: str | None = None
     for number, line in enumerate(lines, start=1):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
+        match = FENCE_RE.match(line)
+        if match and fence_marker is None:
+            fence_marker = match.group(1)
             continue
-        if not in_fence:
+        if fence_marker and line.lstrip().startswith(
+            fence_marker[0] * len(fence_marker)
+        ):
+            fence_marker = None
+            continue
+        if fence_marker is None:
             result.append((number, line))
     return result
 
@@ -76,6 +84,8 @@ def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
 def _is_japanese_document(lines: list[str]) -> bool:
     """日本語で書かれたREADMEか。英語READMEへ日本語向けの基準を当てないための判定。"""
     body = "".join(line for _, line in _outside_fences(lines))
+    body = CODE_SPAN_RE.sub("", body)
+    body = LINK_DESTINATION_RE.sub("", body)
     japanese = len(JAPANESE_RE.findall(body))
     letters = len("".join(body.split()))
     if japanese < JAPANESE_MIN_CHARS or not letters:
@@ -83,36 +93,103 @@ def _is_japanese_document(lines: list[str]) -> bool:
     return japanese / letters >= JAPANESE_MIN_RATIO
 
 
+def _split_markdown_row(line: str) -> list[str]:
+    """Markdown表の区切りだけを分割し、escape・code span内のpipeは保持する。"""
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    in_code = False
+    for char in line.strip():
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            current.append(char)
+            escaped = True
+        elif char == "`":
+            current.append(char)
+            in_code = not in_code
+        elif char == "|" and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    cells.append("".join(current).strip())
+    if cells and not cells[0]:
+        cells.pop(0)
+    if cells and not cells[-1]:
+        cells.pop()
+    return cells
+
+
+def _is_table_divider(cells: list[str]) -> bool:
+    return len(cells) >= 2 and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
 def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
     """表のセルのうちコードを含むものを (行番号, セル) で返す。"""
     cells: list[tuple[int, str]] = []
-    for number, line in _outside_fences(lines):
-        if not TABLE_ROW_RE.match(line) or TABLE_DIVIDER_RE.match(line):
-            continue
-        for cell in line.strip().strip("|").split("|"):
-            text = cell.strip()
+    outside = _outside_fences(lines)
+    divider_indexes = {
+        index
+        for index, (_, line) in enumerate(outside)
+        if _is_table_divider(_split_markdown_row(line))
+    }
+    table_indexes: set[int] = set()
+    for divider in divider_indexes:
+        if divider > 0 and len(_split_markdown_row(outside[divider - 1][1])) >= 2:
+            table_indexes.add(divider - 1)
+        cursor = divider + 1
+        while cursor < len(outside):
+            row = _split_markdown_row(outside[cursor][1])
+            if len(row) < 2:
+                break
+            table_indexes.add(cursor)
+            cursor += 1
+    for index in sorted(table_indexes):
+        number, line = outside[index]
+        for text in _split_markdown_row(line):
             if CODE_SPAN_RE.search(text):
                 cells.append((number, text))
     return cells
 
 
-def _mermaid_labels(lines: list[str]) -> list[str]:
-    """mermaid図のノード、矢印、sequence message のラベルを返す。"""
-    labels: list[str] = []
-    in_diagram = False
+def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
+    """mermaid図ごとにノード、矢印、message のラベルを返す。"""
+    diagrams: list[list[str]] = []
+    labels: list[str] | None = None
+    fence_marker: str | None = None
     for line in lines:
         stripped = line.lstrip()
-        if stripped.startswith("```"):
-            in_diagram = stripped.casefold().startswith("```mermaid")
+        match = FENCE_RE.match(line)
+        if match and fence_marker is None:
+            fence_marker = match.group(1)
+            labels = [] if match.group(2).strip().casefold() == "mermaid" else None
             continue
-        if not in_diagram or stripped.startswith(("style ", "classDef ", "%%")):
+        if fence_marker and stripped.startswith(fence_marker[0] * len(fence_marker)):
+            if labels is not None:
+                diagrams.append([label for label in labels if label])
+            fence_marker = None
+            labels = None
+            continue
+        if labels is None or stripped.startswith(("style ", "classDef ", "%%")):
             continue
         labels.extend(match.strip() for match in MERMAID_NODE_LABEL_RE.findall(line))
-        labels.extend(match.strip() for match in MERMAID_EDGE_LABEL_RE.findall(line))
+        labels.extend(
+            match.strip() for match in MERMAID_ASYMMETRIC_NODE_RE.findall(line)
+        )
+        labels.extend(
+            match.strip() for match in MERMAID_PIPE_EDGE_LABEL_RE.findall(line)
+        )
+        labels.extend(
+            match.strip() for match in MERMAID_TEXT_EDGE_LABEL_RE.findall(line)
+        )
         message = MERMAID_MESSAGE_LABEL_RE.search(line)
         if message:
             labels.append(message.group(1).strip())
-    return [label for label in labels if label]
+        elif ":" in line and re.search(r"(?:--|->|<-|\|\||o[|{]|[}|]o)", line):
+            labels.append(line.rsplit(":", 1)[1].strip())
+    return diagrams
 
 
 def review(readme: Path) -> dict[str, object]:
@@ -182,7 +259,8 @@ def review(readme: Path) -> dict[str, object]:
     japanese_document = _is_japanese_document(lines)
     command_cells = _table_command_cells(lines)
     widest_command_cell = max((len(cell) for _, cell in command_cells), default=0)
-    diagram_labels = _mermaid_labels(lines)
+    mermaid_diagrams = _mermaid_diagrams(lines)
+    diagram_labels = [label for diagram in mermaid_diagrams for label in diagram]
     if japanese_document:
         # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる
         for line_number, cell in command_cells:
@@ -196,8 +274,9 @@ def review(readme: Path) -> dict[str, object]:
                 recommendations.add("Template Creator")
                 break
         # 本文が日本語なのに図のラベルだけ英語の識別子だと、図から意味が取れない
-        if diagram_labels and not any(
-            JAPANESE_RE.search(label) for label in diagram_labels
+        if any(
+            diagram and not any(JAPANESE_RE.search(label) for label in diagram)
+            for diagram in mermaid_diagrams
         ):
             add(
                 "diagram_labels_not_localized",
