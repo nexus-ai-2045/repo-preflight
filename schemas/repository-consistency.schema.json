@@ -23,7 +23,7 @@
         "commands": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"text": {"type": "string", "minLength": 1}, "paths": {"$ref": "#/$defs/patterns"}}}}
       }
     },
-    "impact_map": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["change", "requires_any"], "properties": {"change": {"$ref": "#/$defs/nonEmptyPatterns"}, "requires_any": {"$ref": "#/$defs/nonEmptyPatterns"}}}},
+    "impact_map": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["change", "requires_any"], "properties": {"change": {"$ref": "#/$defs/nonEmptyPatterns"}, "requires_any": {"$ref": "#/$defs/nonEmptyPatterns"}, "allow_github_action_ref_updates": {"type": "boolean"}}}},
     "generated_artifacts": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": "string", "minLength": 1}, "sources": {"$ref": "#/$defs/patterns"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}}
   },
   "$defs": {
