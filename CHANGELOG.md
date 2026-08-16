@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 - 2026-08-16
+
+### 追加
+
+- `--target-diff` により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。
+- repository 全体の文書・設定・実装の食い違いを検出する consistency gate を追加 (#15)。
+- README の理解順序、表の幅、Mermaid 図のラベルを含む日本語可読性ゲートを追加 (#16, #19)。
+
+### 修正 / 改善
+
+- README を日本語で読みやすい構成へ整理し、詳細説明を `docs/` へ分離 (#13, #17, #18)。
+- 空 diff、改行を含む path、浅い・特殊な Git 履歴でも history inventory が安全に完了するよう修正 (#17, #20)。
+- sparse checkout では、実際に materialize された `skip-worktree` file を検査対象に含めるよう修正 (#20)。
+- consistency JSON と symlink fixture を Windows / Linux / macOS 間で再現可能にした (#14, #15)。
+
+### 保証境界
+
+- 保証: 対象差分と repository 全体の検査範囲を分離し、read-only の scan / consistency / README gate を CI で検証する。
+- 非保証: GitHub 設定の自動変更、公開・merge・release の自動承認、依存関係の脆弱性が存在しないこと。
+
 ## 0.3.2 - 2026-08-06
 
 ### 修正 / 改善
