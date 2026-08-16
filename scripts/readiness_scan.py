@@ -161,7 +161,7 @@ def history_hits(
     repo: Path, rev_args: tuple[str, ...] = ("--all",)
 ) -> tuple[list[str], list[str]]:
     objects = subprocess.run(
-        ["git", "rev-list", "--objects", *rev_args],
+        ["git", "rev-list", "--objects", "--no-object-names", *rev_args],
         cwd=repo,
         capture_output=True,
     )
@@ -260,7 +260,7 @@ def history_hits(
 
 def working_tree_files(repo: Path) -> list[Path]:
     tracked = subprocess.run(
-        ["git", "ls-files", "-z", "--stage"],
+        ["git", "ls-files", "-z", "-v", "--stage"],
         cwd=repo,
         capture_output=True,
     )
@@ -275,6 +275,9 @@ def working_tree_files(repo: Path) -> list[Path]:
     for entry in tracked.stdout.split(b"\0"):
         if not entry:
             continue
+        tag, marker, entry = entry.partition(b" ")
+        if not marker or len(tag) != 1:
+            raise RuntimeError("git_worktree_inventory_failed")
         metadata, separator, raw_name = entry.partition(b"\t")
         fields = metadata.split()
         if not separator or len(fields) != 3:
@@ -284,7 +287,10 @@ def working_tree_files(repo: Path) -> list[Path]:
             continue
         if not mode.startswith(b"100"):
             raise RuntimeError("git_worktree_inventory_failed")
-        paths.append(repo / raw_name.decode("utf-8", errors="surrogateescape"))
+        path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        if tag.upper() == b"S" and not path.exists():
+            continue
+        paths.append(path)
     for raw_name in untracked.stdout.split(b"\0"):
         if raw_name:
             paths.append(repo / raw_name.decode("utf-8", errors="surrogateescape"))
