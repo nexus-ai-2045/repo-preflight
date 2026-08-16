@@ -214,6 +214,50 @@ def test_impact_map_allows_only_same_action_full_sha_update(tmp_path: Path):
     assert report["impact"][0]["github_action_ref_update_only"] is True
 
 
+def test_impact_map_allows_sha_update_on_named_step(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    workflow.write_text(
+        "steps:\n  - name: Checkout\n    uses: actions/checkout@"
+        + "1" * 40
+        + " # v5\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "use named action step")
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(
+        "steps:\n  - name: Checkout\n    uses: actions/checkout@"
+        + "2" * 40
+        + " # v7\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert report["impact"][0]["status"] == "pass"
+    assert report["impact"][0]["github_action_ref_update_only"] is True
+
+
+def test_impact_map_does_not_exempt_workflow_mode_change(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(
+        "steps:\n  - uses: actions/checkout@"
+        + "2" * 40
+        + " # v7\n  - run: python -m pytest\n",
+        encoding="utf-8",
+    )
+    workflow_rel = workflow.relative_to(repo).as_posix()
+    git(repo, "add", workflow_rel)
+    git(repo, "update-index", "--chmod=+x", workflow_rel)
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
 def test_impact_map_does_not_exempt_action_identity_change(tmp_path: Path):
     repo, _ = make_repo(tmp_path)
     workflow = configure_workflow_impact(repo)
