@@ -47,7 +47,7 @@ Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160
 - run: python scripts/consistency_gate.py --repo . --base-ref refs/remotes/origin/${{ github.base_ref }} --require-config --require-mode enforce --json
 ```
 
-`consistency_gate.py` は `pass` / `not_configured` だけを終了コード0とし、`fail` / `tool_error` / `shadow_findings` は終了コード1にします。`--require-config --require-mode enforce` を付けると設定削除やmode弱体化も失敗します。repo-preflight自身は独立した `documentation-contract` checkをPR、merge queue、main pushで実行します。READMEの情報設計も既存の `readme_release_gate.py` で検査し、300行超過、必須節欠落、見出し階層の飛びをblockします。
+`consistency_gate.py` は `pass` / `not_configured` だけを終了コード0とし、`fail` / `tool_error` / `shadow_findings` は終了コード1にします。`--require-config --require-mode enforce` を付けると設定削除やmode弱体化も失敗します。repo-preflight自身は独立した `documentation-contract` checkをPR、merge queue、main pushで実行します。READMEの情報設計も既存の `readme_release_gate.py` で検査し、300行超過、必須節欠落、見出し階層の飛びをblockします。日本語READMEの表の幅と図のラベル言語は初期は警告に留め、運用で誤検知がないことを確認してからエラーへ上げます。推薦語は「図が無い」が `Visualize`、「図のラベルが本文と別言語」が `Localize Diagram` で、別の作業を指します。
 
 workflow自身の削除・改変を防ぐ境界には、通常のrequired status checkだけでなく、GitHub rulesetのrequired workflows ruleでmain上の `.github/workflows/documentation-contract.yml` と信頼済みSHAを固定します。PR checkout側のテストだけでは、そのテストやworkflowを同じPRで削除できるため、自己防衛の完全な境界にはなりません。
 
