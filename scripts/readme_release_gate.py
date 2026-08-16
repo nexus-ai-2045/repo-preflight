@@ -23,11 +23,28 @@ JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
 CODE_SPAN_RE = re.compile(r"`[^`]+`")
 LINK_DESTINATION_RE = re.compile(r"(?<=\])\([^)]*\)")
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})([^`]*)$")
-MERMAID_NODE_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}|]{2,})[\])\"}]")
+# mermaid のラベル抽出。行を先に「図の種類」と「行の種類」で分類してから
+# 抽出する (2026-08-16 review F4/F5/F8: regex 継ぎ足しで境界が壊れていた)。
+# node ラベルは | を含んでよい ({Yes|No})。edge ラベルは矢印の直後の |..| だけ。
+MERMAID_NODE_LABEL_RE = re.compile(r"[\[(\"{]([^\[\]()\"{}]{2,}?)[\])\"}]")
 MERMAID_ASYMMETRIC_NODE_RE = re.compile(r"\b\w+>([^]\n]{2,})\]")
-MERMAID_PIPE_EDGE_LABEL_RE = re.compile(r"(?:-->|---|-.->|==>)\s*\|([^|]{2,})\|")
+MERMAID_PIPE_EDGE_LABEL_RE = re.compile(r"(?:-->|---|-\.->|==>)\s*\|([^|]{2,})\|")
 MERMAID_TEXT_EDGE_LABEL_RE = re.compile(r"--\s+(.+?)\s+-->")
 MERMAID_MESSAGE_LABEL_RE = re.compile(r"(?:-{1,2}>>?|--?[x)])[^:]*:\s*(.+)$")
+# 図の中身ではなく装飾・操作・構造を書く行。ラベルとして数えない
+MERMAID_DIRECTIVE_PREFIXES = (
+    "style ",
+    "classDef ",
+    "class ",
+    "linkStyle ",
+    "click ",
+    "subgraph",
+    "end",
+    "direction ",
+    "%%",
+)
+# message 抽出を当ててよい図。flowchart 系に当てると「A[読込: x]」の : でゴミが出る
+MERMAID_MESSAGE_DIAGRAMS = ("sequencediagram",)
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -40,15 +57,11 @@ def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
 
 
 def _first_summary(lines: list[str]) -> str:
+    # fence の判定は _outside_fences に一本化する。ここだけ別規則だと
+    # インデントされた fence の中身が要約に混ざる (2026-08-16 review F6)
     after_title = False
     paragraph: list[str] = []
-    in_fence = False
-    for line in lines:
-        if line.startswith("```"):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
+    for _, line in _outside_fences(lines):
         if not after_title:
             if line.startswith("# "):
                 after_title = True
@@ -126,6 +139,12 @@ def _is_table_divider(cells: list[str]) -> bool:
     return len(cells) >= 2 and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
 
 
+def _code_span_width(cell: str) -> int:
+    """セル内の code span だけを足した幅。散文は折り返せるので幅の実因にしない
+    (2026-08-16 review F2)。"""
+    return sum(len(span) for span in CODE_SPAN_RE.findall(cell))
+
+
 def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
     """表のセルのうちコードを含むものを (行番号, セル) で返す。"""
     cells: list[tuple[int, str]] = []
@@ -154,10 +173,34 @@ def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
     return cells
 
 
+def _mermaid_line_labels(line: str, diagram_type: str) -> list[str]:
+    """mermaid の 1 行からラベルを取り出す。行の種類と図の種類で抽出器を選ぶ。"""
+    stripped = line.strip()
+    if not stripped or stripped.startswith(MERMAID_DIRECTIVE_PREFIXES):
+        return []
+    labels: list[str] = []
+    if diagram_type in MERMAID_MESSAGE_DIAGRAMS:
+        # sequenceDiagram: 「A->>B: message」の message が本文
+        message = MERMAID_MESSAGE_LABEL_RE.search(stripped)
+        if message:
+            labels.append(message.group(1))
+        return [label.strip() for label in labels if label.strip()]
+    # flowchart / graph / stateDiagram / erDiagram 等: 括弧内と edge ラベル
+    labels.extend(MERMAID_NODE_LABEL_RE.findall(stripped))
+    labels.extend(MERMAID_ASYMMETRIC_NODE_RE.findall(stripped))
+    labels.extend(MERMAID_PIPE_EDGE_LABEL_RE.findall(stripped))
+    labels.extend(MERMAID_TEXT_EDGE_LABEL_RE.findall(stripped))
+    if ":" in stripped and re.search(r"(?:\|\||o[|{]|[}|]o)", stripped):
+        # erDiagram の「A ||--|| B : 所有」の関係ラベル
+        labels.append(stripped.rsplit(":", 1)[1])
+    return [label.strip() for label in labels if label.strip()]
+
+
 def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
     """mermaid図ごとにノード、矢印、message のラベルを返す。"""
     diagrams: list[list[str]] = []
     labels: list[str] | None = None
+    diagram_type = ""
     fence_marker: str | None = None
     for line in lines:
         stripped = line.lstrip()
@@ -165,31 +208,87 @@ def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
         if match and fence_marker is None:
             fence_marker = match.group(1)
             labels = [] if match.group(2).strip().casefold() == "mermaid" else None
+            diagram_type = ""
             continue
         if fence_marker and stripped.startswith(fence_marker[0] * len(fence_marker)):
             if labels is not None:
-                diagrams.append([label for label in labels if label])
+                diagrams.append(labels)
             fence_marker = None
             labels = None
             continue
-        if labels is None or stripped.startswith(("style ", "classDef ", "%%")):
+        if labels is None:
             continue
-        labels.extend(match.strip() for match in MERMAID_NODE_LABEL_RE.findall(line))
-        labels.extend(
-            match.strip() for match in MERMAID_ASYMMETRIC_NODE_RE.findall(line)
-        )
-        labels.extend(
-            match.strip() for match in MERMAID_PIPE_EDGE_LABEL_RE.findall(line)
-        )
-        labels.extend(
-            match.strip() for match in MERMAID_TEXT_EDGE_LABEL_RE.findall(line)
-        )
-        message = MERMAID_MESSAGE_LABEL_RE.search(line)
-        if message:
-            labels.append(message.group(1).strip())
-        elif ":" in line and re.search(r"(?:--|->|<-|\|\||o[|{]|[}|]o)", line):
-            labels.append(line.rsplit(":", 1)[1].strip())
+        if not diagram_type and stripped.strip():
+            # 図の 1 行目が種類 (flowchart TD / sequenceDiagram / erDiagram ...)
+            diagram_type = stripped.split()[0].casefold()
+            continue
+        labels.extend(_mermaid_line_labels(line, diagram_type))
     return diagrams
+
+
+def _japanese_readability_findings(
+    lines: list[str],
+) -> tuple[list[dict[str, object]], set[str], dict[str, object]]:
+    """日本語READMEの可読性検査。(findings, recommendations, metrics) を返す。
+
+    英語READMEには適用しない。metrics は言語に関係なく常に埋める。
+    """
+    findings: list[dict[str, object]] = []
+    recommendations: set[str] = set()
+    japanese_document = _is_japanese_document(lines)
+    command_cells = _table_command_cells(lines)
+    widest_command_cell = max(
+        (_code_span_width(cell) for _, cell in command_cells), default=0
+    )
+    mermaid_diagrams = _mermaid_diagrams(lines)
+    diagram_labels = [label for diagram in mermaid_diagrams for label in diagram]
+    metrics: dict[str, object] = {
+        "japanese_document": japanese_document,
+        "widest_table_command_cell": widest_command_cell,
+        "diagram_label_count": len(diagram_labels),
+    }
+    if not japanese_document:
+        return findings, recommendations, metrics
+    # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる。
+    # 違反は全行を返す。1 件目で止めると修正→再実行が違反数だけ往復する (review F9)
+    wide_lines = sorted(
+        {
+            line_number
+            for line_number, cell in command_cells
+            if _code_span_width(cell) > MAX_TABLE_COMMAND_CELL_CHARS
+        }
+    )
+    for line_number in wide_lines:
+        findings.append(
+            {
+                "code": "table_command_cell_too_wide",
+                "severity": "error",
+                "message": (
+                    "表のセルのコマンドが長すぎます。共通部分を表の外へ出すか、"
+                    f"{MAX_TABLE_COMMAND_CELL_CHARS}文字以内へ分割してください。"
+                ),
+                "line": line_number,
+            }
+        )
+    if wide_lines:
+        recommendations.add("Template Creator")
+    # 本文が日本語なのに図のラベルだけ英語の識別子だと、図から意味が取れない
+    if any(
+        diagram and not any(JAPANESE_RE.search(label) for label in diagram)
+        for diagram in mermaid_diagrams
+    ):
+        findings.append(
+            {
+                "code": "diagram_labels_not_localized",
+                "severity": "error",
+                "message": (
+                    "図のラベルを本文と同じ言語にしてください。"
+                    "識別子のままだと図から意味が読めません。"
+                ),
+            }
+        )
+        recommendations.add("Visualize")
+    return findings, recommendations, metrics
 
 
 def review(readme: Path) -> dict[str, object]:
@@ -256,33 +355,9 @@ def review(readme: Path) -> dict[str, object]:
             f"READMEは{MAX_LINES}行以内を目安にし、詳細をdocsへ分離してください。",
         )
 
-    japanese_document = _is_japanese_document(lines)
-    command_cells = _table_command_cells(lines)
-    widest_command_cell = max((len(cell) for _, cell in command_cells), default=0)
-    mermaid_diagrams = _mermaid_diagrams(lines)
-    diagram_labels = [label for diagram in mermaid_diagrams for label in diagram]
-    if japanese_document:
-        # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる
-        for line_number, cell in command_cells:
-            if len(cell) > MAX_TABLE_COMMAND_CELL_CHARS:
-                add(
-                    "table_command_cell_too_wide",
-                    f"表のセルが長すぎます。共通部分を表の外へ出すか、"
-                    f"{MAX_TABLE_COMMAND_CELL_CHARS}文字以内へ分割してください。",
-                    line=line_number,
-                )
-                recommendations.add("Template Creator")
-                break
-        # 本文が日本語なのに図のラベルだけ英語の識別子だと、図から意味が取れない
-        if any(
-            diagram and not any(JAPANESE_RE.search(label) for label in diagram)
-            for diagram in mermaid_diagrams
-        ):
-            add(
-                "diagram_labels_not_localized",
-                "図のラベルを本文と同じ言語にしてください。識別子のままだと図から意味が読めません。",
-            )
-            recommendations.add("Visualize")
+    ja_findings, ja_recommendations, ja_metrics = _japanese_readability_findings(lines)
+    findings.extend(ja_findings)
+    recommendations |= ja_recommendations
 
     emoji_heading = re.compile(r"^#{1,6}\s+[^\w\s`#]", re.UNICODE)
     if any(emoji_heading.match(line) for line in lines):
@@ -328,9 +403,7 @@ def review(readme: Path) -> dict[str, object]:
             "line_count": len(lines),
             "heading_count": len(headings),
             "lead_summary_chars": len(summary),
-            "japanese_document": japanese_document,
-            "widest_table_command_cell": widest_command_cell,
-            "diagram_label_count": len(diagram_labels),
+            **ja_metrics,
         },
         "findings": findings,
         "recommended_capabilities": sorted(recommendations),
