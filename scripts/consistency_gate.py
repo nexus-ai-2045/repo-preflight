@@ -13,7 +13,7 @@ SCHEMA = "repo-preflight.consistency/v1"
 CONFIG_NAME = ".repo-preflight-consistency.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 ACTION_USES_RE = re.compile(
-    rb"^(\s*-\s+uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)@([0-9a-f]{40})(\s*(?:#.*)?)$"
+    rb"^(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)@([0-9a-f]{40})(\s*(?:#.*)?)$"
 )
 CAPABILITY_ROUTES = (
     {
@@ -353,6 +353,26 @@ def _readme_findings(repo: Path, contracts: dict, tracked_files: set[str]) -> li
 
 def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
     if not _matches(rel, [".github/workflows/*.yml", ".github/workflows/*.yaml"]):
+        return False
+    base_entry = subprocess.run(
+        ["git", "ls-tree", "-z", base_ref, "--", rel],
+        cwd=repo,
+        capture_output=True,
+    )
+    current_entry = subprocess.run(
+        ["git", "ls-files", "-s", "-z", "--", rel],
+        cwd=repo,
+        capture_output=True,
+    )
+    if base_entry.returncode or current_entry.returncode:
+        return False
+    base_mode = base_entry.stdout.partition(b" ")[0]
+    current_mode = current_entry.stdout.partition(b" ")[0]
+    if (
+        base_mode not in {b"100644", b"100755"}
+        or current_mode != base_mode
+        or (repo / rel).is_symlink()
+    ):
         return False
     result = subprocess.run(
         ["git", "show", f"{base_ref}:{rel}"], cwd=repo, capture_output=True
