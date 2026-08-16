@@ -398,6 +398,20 @@ def test_sparse_checkout_skips_non_materialized_tracked_files(tmp_path: Path):
     assert MODULE.scan(repo)["status"] == "pass"
 
 
+def test_materialized_skip_worktree_file_is_still_scanned(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    hidden = repo / "hidden.txt"
+    hidden.write_text("safe", encoding="utf-8")
+    git(repo, "add", hidden.name)
+    git(repo, "commit", "-m", "add hidden path")
+    git(repo, "update-index", "--skip-worktree", hidden.name)
+    hidden.write_text("sk-" + "S" * 30, encoding="utf-8")
+
+    report = MODULE.scan(repo)
+
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
 def test_non_ascii_untracked_filename_is_scanned(tmp_path: Path):
     repo = make_repo(tmp_path)
     (repo / "日本語.txt").write_text("sk-" + "D" * 30, encoding="utf-8")
