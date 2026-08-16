@@ -179,6 +179,20 @@ def test_wide_command_cell_in_japanese_table_is_flagged(tmp_path: Path):
     assert report["status"] == "blocked"
 
 
+def test_table_without_outer_pipes_and_escaped_pipe_is_flagged(tmp_path: Path):
+    command = LONG_COMMAND + r" --filter left\|right"
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n## 使う場面\n\nこれからすること | コマンド\n--- | ---\n"
+        + f"公開する | `{command}`\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "table_command_cell_too_wide" in _codes(report)
+
+
 def test_long_link_cell_is_not_flagged(tmp_path: Path):
     # 誤検知の防止。Markdownリンクはfile名を2度書くため長くなるが、読みにくさとは別
     path = write_readme(
@@ -287,6 +301,67 @@ def test_sequence_diagram_with_english_message_is_flagged(tmp_path: Path):
 
     assert "diagram_labels_not_localized" in _codes(report)
     assert report["metrics"]["diagram_label_count"] == 1
+
+
+def test_each_mermaid_diagram_is_localized_independently(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n```mermaid\nflowchart LR\nA[日本語] --> B[確認]\n```\n"
+        + "\n```mermaid\nflowchart LR\nC[English] --> D[Only]\n```\n",
+    )
+
+    assert "diagram_labels_not_localized" in _codes(MODULE.review(path))
+
+
+def test_text_edge_and_asymmetric_node_labels_are_detected(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n```mermaid\nflowchart LR\nA>English node] -- English edge --> B\n```\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "diagram_labels_not_localized" in _codes(report)
+    assert report["metrics"]["diagram_label_count"] == 2
+
+
+def test_er_cardinality_is_not_treated_as_an_english_label(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY + "\n```mermaid\nerDiagram\nA ||--|| B : 所有\n```\n",
+    )
+
+    assert "diagram_labels_not_localized" not in _codes(MODULE.review(path))
+
+
+def test_inline_code_does_not_hide_japanese_document_classification(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n## 実行\n\n"
+        + "説明です。 `"
+        + ("x" * 600)
+        + "`\n"
+        + f"\n| 種別 | コマンド |\n|---|---|\n| 公開 | `{LONG_COMMAND}` |\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert report["metrics"]["japanese_document"] is True
+    assert "table_command_cell_too_wide" in _codes(report)
+
+
+def test_tilde_fenced_table_example_is_ignored(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n~~~markdown\n| 種別 | コマンド |\n|---|---|\n"
+        + f"| 公開 | `{LONG_COMMAND}` |\n~~~\n",
+    )
+
+    assert "table_command_cell_too_wide" not in _codes(MODULE.review(path))
 
 
 def test_this_repository_readme_meets_japanese_readability():
