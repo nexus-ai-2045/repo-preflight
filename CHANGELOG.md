@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0 - 2026-08-17
+
+### 追加
+
+- README可読性ゲートの判定を、公開を止めるエラーと人間確認へ回す警告に分離した。
+- Mermaid図の日本語化候補を `Localize Diagram` として、図の追加候補とは別に提示するようにした。
+- GitHub Actionsの完全SHA更新だけを限定的に免除するconsistency gateと、判断根拠を記録するADR-0001を追加した。
+- DependabotのGitHub Actions向けversion updates設定を追加した。
+
+### 修正 / 改善
+
+- 名前付きstep、reusable workflow、版コメントを伴うAction SHA更新を構造的に判定するよう改善した。
+- file mode変更、symlink化、`env`・`run`内の疑似`uses`、YAML flow collection・property・複数行scalar、workflow配下のtemplateを免除しないfail-closed判定へ強化した。
+- READMEの表幅、Mermaid label抽出、fence判定、全件報告を改善し、修正と再検査の往復を減らした。
+- CIで利用する`actions/checkout`を7.0.1、`actions/setup-python`を7.0.0へ更新し、参照は完全SHAで固定した。
+
+### 保証境界
+
+- 保証: 通常のworkflow構造にある同一Actionまたはreusable workflowの完全SHAだけが変わる場合に限り、明示opt-inされた関連文書・テスト要件を免除する。
+- 非保証: 任意のYAML構文を完全解析すること、Action更新の安全性そのもの、GitHub設定・merge・releaseを自動承認すること。
+
 ## 0.4.0 - 2026-08-16
 
 ### 追加
