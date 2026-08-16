@@ -136,7 +136,7 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 
 `ratchet` は「締める方向にしか進めない」やり方です。問題が減ったときは、見逃す枠も一緒に縮めるよう求めます。
 
-このリポジトリ自身は `enforce` に固定し、Linux・macOS・Windows で毎回検査しています。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md) を参照してください。
+このリポジトリ自身は `enforce` に固定し、Linux・macOS・Windows で毎回検査しています。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md)、長く維持する設計判断は [ADR一覧](docs/adr/README.md) を参照してください。
 
 ## そのまま調べる（CIや現状把握）
 

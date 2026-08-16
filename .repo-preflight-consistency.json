@@ -10,7 +10,8 @@
       "scripts/readiness_scan.py",
       "scripts/readme_release_gate.py",
       "scripts/consistency_gate.py",
-      "docs/repository-consistency-gate.md"
+      "docs/repository-consistency-gate.md",
+      "docs/adr/README.md"
     ],
     "commands": [
       {
@@ -34,7 +35,7 @@
     },
     {
       "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json", ".github/workflows/documentation-contract.yml"],
-      "requires_any": ["docs/repository-consistency-gate.md", "tests/test_consistency_gate.py"],
+      "requires_any": ["docs/repository-consistency-gate.md", "docs/adr/**", "tests/test_consistency_gate.py"],
       "allow_github_action_ref_updates": true
     },
     {

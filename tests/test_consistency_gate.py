@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).parents[1] / "scripts" / "consistency_gate.py"
 SPEC = importlib.util.spec_from_file_location("consistency_gate", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -177,9 +179,9 @@ def configure_workflow_impact(repo: Path) -> Path:
     workflow = repo / ".github" / "workflows" / "ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text(
-        "steps:\n  - uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
         + "1" * 40
-        + " # v5\n  - run: python -m pytest\n",
+        + " # v5\n      - run: python -m pytest\n",
         encoding="utf-8",
     )
     config_path = repo / ".repo-preflight-consistency.json"
@@ -202,9 +204,9 @@ def test_impact_map_allows_only_same_action_full_sha_update(tmp_path: Path):
     workflow = configure_workflow_impact(repo)
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
         + "2" * 40
-        + " # v7\n  - run: python -m pytest\n",
+        + " # v7\n      - run: python -m pytest\n",
         encoding="utf-8",
     )
 
@@ -218,7 +220,8 @@ def test_impact_map_allows_sha_update_on_named_step(tmp_path: Path):
     repo, _ = make_repo(tmp_path)
     workflow = configure_workflow_impact(repo)
     workflow.write_text(
-        "steps:\n  - name: Checkout\n    uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - name: Checkout\n        uses: actions/checkout@"
         + "1" * 40
         + " # v5\n",
         encoding="utf-8",
@@ -227,7 +230,8 @@ def test_impact_map_allows_sha_update_on_named_step(tmp_path: Path):
     git(repo, "commit", "-m", "use named action step")
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - name: Checkout\n    uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+        "      - name: Checkout\n        uses: actions/checkout@"
         + "2" * 40
         + " # v7\n",
         encoding="utf-8",
@@ -244,9 +248,9 @@ def test_impact_map_does_not_exempt_workflow_mode_change(tmp_path: Path):
     workflow = configure_workflow_impact(repo)
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
         + "2" * 40
-        + " # v7\n  - run: python -m pytest\n",
+        + " # v7\n      - run: python -m pytest\n",
         encoding="utf-8",
     )
     workflow_rel = workflow.relative_to(repo).as_posix()
@@ -258,14 +262,177 @@ def test_impact_map_does_not_exempt_workflow_mode_change(tmp_path: Path):
     assert "related_docs_update_missing:impact-1" in report["findings"]
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not expose Git executable bits"
+)
+def test_impact_map_does_not_exempt_unstaged_workflow_mode_change(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+        + "2" * 40
+        + " # v7\n      - run: python -m pytest\n",
+        encoding="utf-8",
+    )
+    workflow.chmod(workflow.stat().st_mode | 0o100)
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+def test_impact_map_requires_whitespace_before_version_comment(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
+        + "2" * 40
+        + "#not-a-yaml-comment\n      - run: python -m pytest\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+@pytest.mark.parametrize(
+    "workflow_body",
+    [
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    env:\n      uses: actions/checkout@{sha}\n    steps:\n      - run: echo ok\n",
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          uses: actions/checkout@{sha}\n",
+    ],
+)
+def test_impact_map_does_not_exempt_uses_outside_action_key(
+    tmp_path: Path, workflow_body: str
+):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    workflow.write_text(workflow_body.format(sha="1" * 40), encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add non-action uses value")
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(workflow_body.format(sha="2" * 40), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+def test_impact_map_does_not_exempt_uses_inside_multiline_flow_mapping(
+    tmp_path: Path,
+):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    workflow_body = (
+        "jobs:\n"
+        "  test:\n"
+        "    env: {{\n"
+        "      FOO: bar,\n"
+        "      uses: actions/checkout@{sha}\n"
+        "    }}\n"
+        "    steps:\n"
+        "      - run: echo ok\n"
+    )
+    workflow.write_text(workflow_body.format(sha="1" * 40), encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add flow mapping")
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(workflow_body.format(sha="2" * 40), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+@pytest.mark.parametrize(
+    "workflow_body",
+    [
+        "jobs:\n  test:\n    env: &values {{\n      uses: actions/checkout@{sha}\n    }}\n    steps:\n      - run: echo ok\n",
+        "jobs:\n  test:\n    steps:\n      - run: &script |\n          uses: actions/checkout@{sha}\n",
+        'jobs:\n  test:\n    steps:\n      - run: "echo\n        uses: actions/checkout@{sha}\n"\n',
+    ],
+)
+def test_impact_map_does_not_exempt_ambiguous_yaml_scalar_context(
+    tmp_path: Path, workflow_body: str
+):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    workflow.write_text(workflow_body.format(sha="1" * 40), encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add ambiguous scalar context")
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(workflow_body.format(sha="2" * 40), encoding="utf-8")
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+def test_impact_map_does_not_exempt_nested_workflow_template(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    configure_workflow_impact(repo)
+    config_path = repo / ".repo-preflight-consistency.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["impact_map"][0]["change"] = [".github/workflows/*.yml"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    template = repo / ".github" / "workflows" / "templates" / "ci.yml"
+    template.parent.mkdir()
+    template.write_text(
+        "jobs:\n  test:\n    uses: owner/workflows/.github/workflows/test.yml@"
+        + "1" * 40
+        + "\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add nested workflow template")
+    base = git(repo, "rev-parse", "HEAD")
+    template.write_text(
+        "jobs:\n  test:\n    uses: owner/workflows/.github/workflows/test.yml@"
+        + "2" * 40
+        + "\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert "related_docs_update_missing:impact-1" in report["findings"]
+
+
+def test_impact_map_allows_reusable_workflow_sha_update(tmp_path: Path):
+    repo, _ = make_repo(tmp_path)
+    workflow = configure_workflow_impact(repo)
+    workflow.write_text(
+        "jobs:\n  reusable:\n    uses: owner/workflows/.github/workflows/test.yml@"
+        + "1" * 40
+        + " # v1\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "use reusable workflow")
+    base = git(repo, "rev-parse", "HEAD")
+    workflow.write_text(
+        "jobs:\n  reusable:\n    uses: owner/workflows/.github/workflows/test.yml@"
+        + "2" * 40
+        + " # v2\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.check(repo, base_ref=base)
+
+    assert report["impact"][0]["github_action_ref_update_only"] is True
+
+
 def test_impact_map_does_not_exempt_action_identity_change(tmp_path: Path):
     repo, _ = make_repo(tmp_path)
     workflow = configure_workflow_impact(repo)
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - uses: evil/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: evil/checkout@"
         + "2" * 40
-        + " # v7\n  - run: python -m pytest\n",
+        + " # v7\n      - run: python -m pytest\n",
         encoding="utf-8",
     )
 
@@ -279,9 +446,9 @@ def test_impact_map_does_not_exempt_workflow_logic_change(tmp_path: Path):
     workflow = configure_workflow_impact(repo)
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
         + "2" * 40
-        + " # v7\n  - run: python -m unittest\n",
+        + " # v7\n      - run: python -m unittest\n",
         encoding="utf-8",
     )
 
@@ -295,9 +462,9 @@ def test_impact_map_does_not_exempt_mixed_affected_files(tmp_path: Path):
     workflow = configure_workflow_impact(repo)
     base = git(repo, "rev-parse", "HEAD")
     workflow.write_text(
-        "steps:\n  - uses: actions/checkout@"
+        "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@"
         + "2" * 40
-        + " # v7\n  - run: python -m pytest\n",
+        + " # v7\n      - run: python -m pytest\n",
         encoding="utf-8",
     )
     (repo / "src" / "app.py").write_text("print('changed')\n", encoding="utf-8")
