@@ -23,6 +23,8 @@ README の自由文からコマンドを推測すると誤検知が増えるた�
 
 設定は同梱 JSON Schema と同じキー・型を runtime でも検証します。未知キー、未知の入れ子キー、文字列配列内の `bool` / 数値、重複した ratchet baseline は `invalid_consistency_config` です。
 
+`impact_map` に `"allow_github_action_ref_updates": true` を明示した規則では、対象差分が `.github/workflows/*.yml` または `.yaml` 内の `uses: owner/action@<40桁SHA>` 更新だけなら、関連 docs / tests の同時更新を免除できます。`- uses:` と、名前付きstep内の `uses:` の両方に対応します。同じ Action の完全 SHA と行末コメント以外が変わる場合、Action 名の変更、workflow ロジックの変更、行の追加・削除、Git file modeの変更、symlink化、対象となる別 file との混在は免除せず、従来どおり失敗します。実行者名や Dependabot branch 名には依存しないため、人手による同形の依存更新にも同じ検査を適用します。
+
 Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160000`) を検査対象から除外します。Markdown symlinkや、解決後にrepo外へ出るpathの内容は読み取りません。
 
 ## 可読性と専門 capability の推薦

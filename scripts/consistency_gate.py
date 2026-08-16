@@ -12,6 +12,9 @@ from urllib.parse import unquote, urlsplit
 SCHEMA = "repo-preflight.consistency/v1"
 CONFIG_NAME = ".repo-preflight-consistency.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
+ACTION_USES_RE = re.compile(
+    rb"^(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)@([0-9a-f]{40})(\s*(?:#.*)?)$"
+)
 CAPABILITY_ROUTES = (
     {
         "id": "readability-template",
@@ -151,10 +154,16 @@ def _validate_config(config: object) -> None:
     for rule in impact_map:
         if (
             not _exact_keys(
-                rule, {"change", "requires_any"}, {"change", "requires_any"}
+                rule,
+                {"change", "requires_any", "allow_github_action_ref_updates"},
+                {"change", "requires_any"},
             )
             or not _string_list(rule["change"], nonempty=True)
             or not _string_list(rule["requires_any"], nonempty=True)
+            or (
+                "allow_github_action_ref_updates" in rule
+                and type(rule["allow_github_action_ref_updates"]) is not bool
+            )
         ):
             raise ValueError("invalid_consistency_config")
     artifacts = config.get("generated_artifacts", [])
@@ -342,8 +351,61 @@ def _readme_findings(repo: Path, contracts: dict, tracked_files: set[str]) -> li
     return findings
 
 
+def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
+    if not _matches(rel, [".github/workflows/*.yml", ".github/workflows/*.yaml"]):
+        return False
+    base_entry = subprocess.run(
+        ["git", "ls-tree", "-z", base_ref, "--", rel],
+        cwd=repo,
+        capture_output=True,
+    )
+    current_entry = subprocess.run(
+        ["git", "ls-files", "-s", "-z", "--", rel],
+        cwd=repo,
+        capture_output=True,
+    )
+    if base_entry.returncode or current_entry.returncode:
+        return False
+    base_mode = base_entry.stdout.partition(b" ")[0]
+    current_mode = current_entry.stdout.partition(b" ")[0]
+    if (
+        base_mode not in {b"100644", b"100755"}
+        or current_mode != base_mode
+        or (repo / rel).is_symlink()
+    ):
+        return False
+    result = subprocess.run(
+        ["git", "show", f"{base_ref}:{rel}"], cwd=repo, capture_output=True
+    )
+    if result.returncode:
+        return False
+    try:
+        current = (repo / rel).read_bytes()
+    except OSError:
+        return False
+    before_lines = result.stdout.splitlines()
+    after_lines = current.splitlines()
+    if len(before_lines) != len(after_lines):
+        return False
+    found_update = False
+    for before, after in zip(before_lines, after_lines):
+        if before == after:
+            continue
+        before_match = ACTION_USES_RE.fullmatch(before)
+        after_match = ACTION_USES_RE.fullmatch(after)
+        if (
+            before_match is None
+            or after_match is None
+            or before_match.group(1) != after_match.group(1)
+            or before_match.group(2) != after_match.group(2)
+        ):
+            return False
+        found_update = True
+    return found_update
+
+
 def _impact_results(
-    changed: list[str], rules: list[dict]
+    repo: Path, base_ref: str, changed: list[str], rules: list[dict]
 ) -> tuple[list[dict], list[str]]:
     results: list[dict] = []
     findings: list[str] = []
@@ -359,10 +421,26 @@ def _impact_results(
             or not required
         ):
             raise ValueError("invalid_consistency_config")
-        affected = any(_matches(path, change) for path in changed)
+        affected_paths = [path for path in changed if _matches(path, change)]
+        action_ref_update_only = (
+            bool(affected_paths)
+            and bool(rule.get("allow_github_action_ref_updates", False))
+            and all(
+                _github_action_ref_update_only(repo, base_ref, path)
+                for path in affected_paths
+            )
+        )
+        affected = bool(affected_paths) and not action_ref_update_only
         satisfied = any(_matches(path, required) for path in changed)
         status = "pass" if not affected or satisfied else "fail"
-        results.append({"change": change, "requires_any": required, "status": status})
+        results.append(
+            {
+                "change": change,
+                "requires_any": required,
+                "status": status,
+                "github_action_ref_update_only": action_ref_update_only,
+            }
+        )
         if status == "fail":
             findings.append(f"related_docs_update_missing:impact-{index}")
     return results, findings
@@ -431,7 +509,9 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
         if "readme_contracts" in config:
             contracts = config["readme_contracts"]
             findings.extend(_readme_findings(repo, contracts, tracked_files))
-        impact, impact_findings = _impact_results(changed, impact_rules)
+        impact, impact_findings = _impact_results(
+            repo, base_ref or "", changed, impact_rules
+        )
         findings.extend(impact_findings)
         findings.extend(_artifact_findings(repo, artifacts, changed))
         findings = sorted(set(findings))
