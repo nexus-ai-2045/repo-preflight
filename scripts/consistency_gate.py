@@ -13,8 +13,9 @@ SCHEMA = "repo-preflight.consistency/v1"
 CONFIG_NAME = ".repo-preflight-consistency.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 ACTION_USES_RE = re.compile(
-    rb"^(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)@([0-9a-f]{40})(\s*(?:#.*)?)$"
+    rb"^(\s*(?:-\s+)?uses:\s+)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*)@([0-9a-f]{40})((?:[ \t]+#.*)?[ \t]*)$"
 )
+YAML_KEY_RE = re.compile(rb"^( *)(- )?([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]*(.*))?$")
 CAPABILITY_ROUTES = (
     {
         "id": "readability-template",
@@ -351,25 +352,150 @@ def _readme_findings(repo: Path, contracts: dict, tracked_files: set[str]) -> li
     return findings
 
 
+def _action_uses_lines(source: bytes) -> set[int] | None:
+    lines_in_source = source.splitlines()
+    lines: set[int] = set()
+    jobs_seen = False
+    job_indent: int | None = None
+    job_child_indent: int | None = None
+    steps_indent: int | None = None
+    step_indent: int | None = None
+    block_scalar_indent: int | None = None
+    for line_number, raw_line in enumerate(lines_in_source):
+        if b"\t" in raw_line[: len(raw_line) - len(raw_line.lstrip())]:
+            return None
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith(b"#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(b" "))
+        if block_scalar_indent is not None:
+            if indent > block_scalar_indent:
+                continue
+            block_scalar_indent = None
+        match = YAML_KEY_RE.fullmatch(raw_line)
+        if match is None:
+            if jobs_seen and indent > 0:
+                return None
+            continue
+        has_dash = match.group(2) is not None
+        key = match.group(3)
+        value = (match.group(4) or b"").strip()
+        # YAML properties can precede a scalar or collection indicator. This
+        # scanner intentionally does not interpret them; fail closed instead.
+        if value.startswith((b"&", b"!")):
+            return None
+        if value.startswith(b"'") and not value.endswith(b"'"):
+            return None
+        if value.startswith(b'"'):
+            backslashes = 0
+            for byte in reversed(value[:-1]):
+                if byte != ord("\\"):
+                    break
+                backslashes += 1
+            if not value.endswith(b'"') or backslashes % 2:
+                return None
+        # Indentation does not describe ownership inside YAML flow collections.
+        # Refuse the exemption instead of risking that a nested non-Action
+        # ``uses`` key is mistaken for a job or step key.
+        if value.startswith((b"{", b"[")):
+            return None
+        if value.startswith((b"|", b">")):
+            block_scalar_indent = indent
+        if indent == 0:
+            jobs_seen = key == b"jobs" and not has_dash
+            job_indent = None
+            job_child_indent = None
+            steps_indent = None
+            step_indent = None
+            continue
+        if not jobs_seen:
+            continue
+        if job_indent is None:
+            if has_dash:
+                return None
+            job_indent = indent
+            continue
+        if indent < job_indent:
+            return None
+        if indent == job_indent:
+            if has_dash:
+                return None
+            job_child_indent = None
+            steps_indent = None
+            step_indent = None
+            continue
+        if job_child_indent is None:
+            if has_dash:
+                return None
+            job_child_indent = indent
+        if indent == job_child_indent:
+            steps_indent = indent if key == b"steps" and not has_dash else None
+            step_indent = None
+            if key == b"uses" and not has_dash:
+                lines.add(line_number)
+            continue
+        if steps_indent is None:
+            continue
+        if has_dash:
+            if step_indent is None:
+                step_indent = indent
+            elif indent != step_indent:
+                return None
+            if key == b"uses":
+                lines.add(line_number)
+            continue
+        if step_indent is not None and indent == step_indent + 2 and key == b"uses":
+            lines.add(line_number)
+    return lines
+
+
 def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
-    if not _matches(rel, [".github/workflows/*.yml", ".github/workflows/*.yaml"]):
+    workflow_path = Path(rel)
+    if (
+        workflow_path.parent.as_posix() != ".github/workflows"
+        or workflow_path.suffix
+        not in {
+            ".yml",
+            ".yaml",
+        }
+    ):
         return False
     base_entry = subprocess.run(
         ["git", "ls-tree", "-z", base_ref, "--", rel],
         cwd=repo,
         capture_output=True,
     )
-    current_entry = subprocess.run(
+    index_entry = subprocess.run(
         ["git", "ls-files", "-s", "-z", "--", rel],
         cwd=repo,
         capture_output=True,
     )
-    if base_entry.returncode or current_entry.returncode:
+    working_diff = subprocess.run(
+        ["git", "diff", "--raw", "-z", base_ref, "--", rel],
+        cwd=repo,
+        capture_output=True,
+    )
+    if base_entry.returncode or index_entry.returncode or working_diff.returncode:
         return False
     base_mode = base_entry.stdout.partition(b" ")[0]
-    current_mode = current_entry.stdout.partition(b" ")[0]
+    index_mode = index_entry.stdout.partition(b" ")[0]
+    diff_fields = [field for field in working_diff.stdout.split(b"\0") if field]
+    if len(diff_fields) != 2:
+        return False
+    metadata = diff_fields[0].split()
+    if (
+        len(metadata) != 5
+        or not metadata[0].startswith(b":")
+        or metadata[4] != b"M"
+        or diff_fields[1] != rel.encode("utf-8", errors="surrogateescape")
+    ):
+        return False
+    old_mode = metadata[0][1:]
+    current_mode = metadata[1]
     if (
         base_mode not in {b"100644", b"100755"}
+        or old_mode != base_mode
+        or index_mode != base_mode
         or current_mode != base_mode
         or (repo / rel).is_symlink()
     ):
@@ -387,10 +513,19 @@ def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
     after_lines = current.splitlines()
     if len(before_lines) != len(after_lines):
         return False
+    before_action_lines = _action_uses_lines(result.stdout)
+    after_action_lines = _action_uses_lines(current)
+    if before_action_lines is None or after_action_lines is None:
+        return False
     found_update = False
-    for before, after in zip(before_lines, after_lines):
+    for line_number, (before, after) in enumerate(zip(before_lines, after_lines)):
         if before == after:
             continue
+        if (
+            line_number not in before_action_lines
+            or line_number not in after_action_lines
+        ):
+            return False
         before_match = ACTION_USES_RE.fullmatch(before)
         after_match = ACTION_USES_RE.fullmatch(after)
         if (
