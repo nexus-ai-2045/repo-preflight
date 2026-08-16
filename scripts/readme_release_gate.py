@@ -203,8 +203,11 @@ def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
     diagram_type = ""
     fence_marker: str | None = None
     for line in lines:
-        stripped = line.lstrip()
-        match = FENCE_RE.match(line)
+        # block quote 内の fenced code block も Markdown 上は実際の図として描画される。
+        # container prefix を外した本文で fence とラベルを判定する。
+        content = re.sub(r"^\s*(?:>\s?)+", "", line)
+        stripped = content.lstrip()
+        match = FENCE_RE.match(content)
         if match and fence_marker is None:
             fence_marker = match.group(1)
             labels = [] if match.group(2).strip().casefold() == "mermaid" else None
@@ -222,7 +225,10 @@ def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
             # 図の 1 行目が種類 (flowchart TD / sequenceDiagram / erDiagram ...)
             diagram_type = stripped.split()[0].casefold()
             continue
-        labels.extend(_mermaid_line_labels(line, diagram_type))
+        labels.extend(_mermaid_line_labels(content, diagram_type))
+    # Markdown は閉じ fence がなくても EOF までを fenced code block として扱う。
+    if labels is not None:
+        diagrams.append(labels)
     return diagrams
 
 

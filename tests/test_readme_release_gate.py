@@ -545,3 +545,33 @@ def test_mermaid_example_inside_markdown_fence_is_not_a_diagram(tmp_path: Path):
     assert "Visualize" in report["recommended_capabilities"]
     assert "Localize Diagram" not in report["recommended_capabilities"]
     assert report["metrics"]["diagram_count"] == 0
+
+
+def test_eof_terminated_mermaid_suppresses_visualize(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + ORDERED_STEPS
+        + "\n```mermaid\nflowchart LR\nA[English] --> B[Only]\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "Localize Diagram" in report["recommended_capabilities"]
+    assert "Visualize" not in report["recommended_capabilities"]
+    assert report["metrics"]["diagram_count"] == 1
+
+
+def test_blockquoted_mermaid_suppresses_visualize(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + ORDERED_STEPS
+        + "\n> ```mermaid\n> flowchart LR\n> A[English] --> B[Only]\n> ```\n",
+    )
+
+    report = MODULE.review(path)
+
+    assert "Localize Diagram" in report["recommended_capabilities"]
+    assert "Visualize" not in report["recommended_capabilities"]
+    assert report["metrics"]["diagram_count"] == 1
