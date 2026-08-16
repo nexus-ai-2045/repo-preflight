@@ -203,8 +203,11 @@ def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
     diagram_type = ""
     fence_marker: str | None = None
     for line in lines:
-        stripped = line.lstrip()
-        match = FENCE_RE.match(line)
+        # block quote 内の fenced code block も Markdown 上は実際の図として描画される。
+        # container prefix を外した本文で fence とラベルを判定する。
+        content = re.sub(r"^\s*(?:>\s?)+", "", line)
+        stripped = content.lstrip()
+        match = FENCE_RE.match(content)
         if match and fence_marker is None:
             fence_marker = match.group(1)
             labels = [] if match.group(2).strip().casefold() == "mermaid" else None
@@ -222,7 +225,10 @@ def _mermaid_diagrams(lines: list[str]) -> list[list[str]]:
             # 図の 1 行目が種類 (flowchart TD / sequenceDiagram / erDiagram ...)
             diagram_type = stripped.split()[0].casefold()
             continue
-        labels.extend(_mermaid_line_labels(line, diagram_type))
+        labels.extend(_mermaid_line_labels(content, diagram_type))
+    # Markdown は閉じ fence がなくても EOF までを fenced code block として扱う。
+    if labels is not None:
+        diagrams.append(labels)
     return diagrams
 
 
@@ -245,10 +251,18 @@ def _japanese_readability_findings(
     metrics: dict[str, object] = {
         "japanese_document": japanese_document,
         "widest_table_command_cell": widest_command_cell,
+        # 図の有無は review() の "Visualize" 抑止でも使う。判定規則を
+        # ここ (FENCE_RE) に一本化し、文字列一致と食い違わせない (review 第 3 巡)
+        "diagram_count": len(mermaid_diagrams),
         "diagram_label_count": len(diagram_labels),
     }
     if not japanese_document:
         return findings, recommendations, metrics
+    # 可読性検査は当面 warning に留める (review F7)。
+    # 下流 repo に opt-out なしの hard block をかけない。ratchet の順序は
+    # 測る → 悪化を止める → 全部止める で、いまは第 1 段。運用で誤検知が
+    # ないことを確認してから error へ上げる
+    readability_severity = "warning"
     # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる。
     # 違反は全行を返す。1 件目で止めると修正→再実行が違反数だけ往復する (review F9)
     wide_lines = sorted(
@@ -262,7 +276,7 @@ def _japanese_readability_findings(
         findings.append(
             {
                 "code": "table_command_cell_too_wide",
-                "severity": "error",
+                "severity": readability_severity,
                 "message": (
                     "表のセルのコマンドが長すぎます。共通部分を表の外へ出すか、"
                     f"{MAX_TABLE_COMMAND_CELL_CHARS}文字以内へ分割してください。"
@@ -280,14 +294,16 @@ def _japanese_readability_findings(
         findings.append(
             {
                 "code": "diagram_labels_not_localized",
-                "severity": "error",
+                "severity": readability_severity,
                 "message": (
                     "図のラベルを本文と同じ言語にしてください。"
                     "識別子のままだと図から意味が読めません。"
                 ),
             }
         )
-        recommendations.add("Visualize")
+        # "Visualize" は「図が無い」の推薦語として review() で使っている。
+        # ここで同じ語を出すとエージェントが作図に走るので、翻訳を促す別語にする (review F10)
+        recommendations.add("Localize Diagram")
     return findings, recommendations, metrics
 
 
@@ -382,7 +398,10 @@ def review(readme: Path) -> dict[str, object]:
         )
 
     ordered_steps = len(re.findall(r"(?m)^\s*\d+[.)]\s+", text))
-    has_mermaid = "```mermaid" in text.casefold()
+    # 図の検出は _mermaid_diagrams と同じ規則 (~~~ fence / 空白入り info string /
+    # 入れ子 fence 内の例は除外)。"```mermaid" の部分一致だと Localize Diagram と
+    # Visualize が同時に出て F10 の分離が破れる
+    has_mermaid = int(ja_metrics["diagram_count"]) > 0
     if ordered_steps >= 4 and not has_mermaid:
         recommendations.add("Visualize")
 
