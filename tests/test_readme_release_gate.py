@@ -106,6 +106,8 @@ run
     )
     report = MODULE.review(path)
     assert "Visualize" in report["recommended_capabilities"]
+    # F10: 「図が無い」は Visualize、「図のラベルが英語」は Localize Diagram で分ける
+    assert "Localize Diagram" not in report["recommended_capabilities"]
 
 
 def test_public_word_does_not_false_positive_as_ui(tmp_path: Path):
@@ -164,8 +166,15 @@ def _codes(report: dict) -> set[str]:
     return {str(item["code"]) for item in report["findings"]}
 
 
+def _severities(report: dict, code: str) -> set[str]:
+    return {
+        str(item["severity"]) for item in report["findings"] if item["code"] == code
+    }
+
+
 def test_wide_command_cell_in_japanese_table_is_flagged(tmp_path: Path):
     # 横スクロールの実因。日本語の表なのに右列だけ極端に長いコマンドが入る形
+    # F7: 検知はするが warning に留め、下流 repo を opt-out なしで止めない
     path = write_readme(
         tmp_path,
         JAPANESE_BODY
@@ -176,7 +185,8 @@ def test_wide_command_cell_in_japanese_table_is_flagged(tmp_path: Path):
     report = MODULE.review(path)
 
     assert "table_command_cell_too_wide" in _codes(report)
-    assert report["status"] == "blocked"
+    assert _severities(report, "table_command_cell_too_wide") == {"warning"}
+    assert report["status"] == "pass"
 
 
 def test_table_without_outer_pipes_and_escaped_pipe_is_flagged(tmp_path: Path):
@@ -247,6 +257,8 @@ It never publishes or pushes anything.
 
 def test_diagram_with_english_only_labels_is_flagged(tmp_path: Path):
     # 日本語の文書なのに図のラベルだけ英語の識別子、という状態を拾う
+    # F7: warning に留めて status は pass のまま
+    # F10: 推薦語は "Localize Diagram"。"Visualize" は「図が無い」の意味で別用途
     path = write_readme(
         tmp_path,
         JAPANESE_BODY
@@ -258,6 +270,10 @@ def test_diagram_with_english_only_labels_is_flagged(tmp_path: Path):
     report = MODULE.review(path)
 
     assert "diagram_labels_not_localized" in _codes(report)
+    assert _severities(report, "diagram_labels_not_localized") == {"warning"}
+    assert report["status"] == "pass"
+    assert "Localize Diagram" in report["recommended_capabilities"]
+    assert "Visualize" not in report["recommended_capabilities"]
 
 
 def test_diagram_with_japanese_labels_passes(tmp_path: Path):

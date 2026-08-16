@@ -249,6 +249,11 @@ def _japanese_readability_findings(
     }
     if not japanese_document:
         return findings, recommendations, metrics
+    # 可読性検査は当面 warning に留める (review F7)。
+    # 下流 repo に opt-out なしの hard block をかけない。ratchet の順序は
+    # 測る → 悪化を止める → 全部止める で、いまは第 1 段。運用で誤検知が
+    # ないことを確認してから error へ上げる
+    readability_severity = "warning"
     # 表の右列に長いコマンドが入ると、狭い画面で横スクロールが出て読めなくなる。
     # 違反は全行を返す。1 件目で止めると修正→再実行が違反数だけ往復する (review F9)
     wide_lines = sorted(
@@ -262,7 +267,7 @@ def _japanese_readability_findings(
         findings.append(
             {
                 "code": "table_command_cell_too_wide",
-                "severity": "error",
+                "severity": readability_severity,
                 "message": (
                     "表のセルのコマンドが長すぎます。共通部分を表の外へ出すか、"
                     f"{MAX_TABLE_COMMAND_CELL_CHARS}文字以内へ分割してください。"
@@ -280,14 +285,16 @@ def _japanese_readability_findings(
         findings.append(
             {
                 "code": "diagram_labels_not_localized",
-                "severity": "error",
+                "severity": readability_severity,
                 "message": (
                     "図のラベルを本文と同じ言語にしてください。"
                     "識別子のままだと図から意味が読めません。"
                 ),
             }
         )
-        recommendations.add("Visualize")
+        # "Visualize" は「図が無い」の推薦語として review() で使っている。
+        # ここで同じ語を出すとエージェントが作図に走るので、翻訳を促す別語にする (review F10)
+        recommendations.add("Localize Diagram")
     return findings, recommendations, metrics
 
 
