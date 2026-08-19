@@ -40,6 +40,8 @@
 
 - 保証: Settingsのread-only取得、profile比較、403/404の`unavailable`分類、設定ごとのpreview分離。
 - 非保証: GitHub設定の自動変更、organization/enterprise policyの全体把握、設定変更・push・PR・merge・公開・releaseの承認。
+- PRのCI、review、inline threadをexact HEADへ束縛してread-only判定するreview snapshotを追加した。
+- 未解決thread、古いHEADのreview、CI待ちをreview完了と誤認しないfail-closed契約を追加した。
 
 ## 0.5.0 - 2026-08-17
 
