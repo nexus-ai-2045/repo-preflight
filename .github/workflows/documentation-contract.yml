@@ -21,9 +21,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - run: python -m pip install --upgrade "pip>=26.1.2"
+      - run: python -m pip install -e ".[test]"
       - name: README readability gate
         run: python scripts/readme_release_gate.py --repo . --json
       - name: Documentation consistency gate
         env:
           CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/consistency_gate.py --repo . --base-ref "$CONSISTENCY_BASE" --require-config --require-mode enforce --json
+      - name: Public narrative contract (CLI / REQUIRED / status / CI matrix)
+        run: python -m pytest -q tests/test_public_narrative_contract.py
