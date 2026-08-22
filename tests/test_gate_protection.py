@@ -23,6 +23,9 @@ def test_documentation_contract_workflow_invokes_the_gate_at_full_strength():
     assert "scripts/consistency_gate.py" in body
     assert "--require-config" in body
     assert "--require-mode enforce" in body
+    # CLI / REQUIRED / status 語彙 / CI matrix の叙述契約（第二の文書システムではない）
+    assert "tests/test_public_narrative_contract.py" in body
+    assert "pip install -e \".[test]\"" in body or 'pip install -e ".[test]"' in body
 
 
 def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():
@@ -54,5 +57,6 @@ def test_codeowners_covers_gate_and_watchdog():
         "/.github/",
         "/.repo-preflight-consistency.json",
         "/tests/test_gate_protection.py",
+        "/tests/test_public_narrative_contract.py",
     ):
         assert required in entries, required

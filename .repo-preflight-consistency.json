@@ -27,7 +27,11 @@
   "impact_map": [
     {
       "change": ["scripts/readiness_scan.py", "scripts/dialogue_gate.py"],
-      "requires_any": ["README.md", "docs/**/*.md", "tests/**"]
+      "requires_any": ["README.md", "docs/**/*.md", "tests/test_public_narrative_contract.py", "tests/**"]
+    },
+    {
+      "change": [".github/workflows/ci.yml"],
+      "requires_any": ["README.md", "docs/runtime-support.md", "tests/test_public_narrative_contract.py"]
     },
     {
       "change": ["scripts/readme_release_gate.py"],
