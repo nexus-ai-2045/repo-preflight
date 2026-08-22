@@ -36,7 +36,8 @@ Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160
 ## GitHub Actions 接続例
 
 ```yaml
-- uses: actions/checkout@v5
+# tag ではなく完全 SHA へ固定する（このリポジトリの ci.yml と同じ規律）
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
   with:
     fetch-depth: 0
 - run: python scripts/readiness_scan.py --repo . --intent open_pr --base-ref refs/remotes/origin/${{ github.base_ref }}
