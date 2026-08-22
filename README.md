@@ -9,7 +9,7 @@ APIキーらしき文字列や自分のPCのパスを、今あるファイルだ
 
 ## 使い方 — まず動かす
 
-必要なのはPython 3.11以降とGitだけ。追加のパッケージはありません。
+**利用（検査だけ）**に必要なのは Python 3.11 以降と Git だけです。追加のパッケージはありません。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
@@ -19,15 +19,32 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 調べたいリポジトリは、このツールとは別の場所にあってかまいません。中身は読むだけで、書き換えません。
 
-### 結果の読み方
+**開発・テスト・CI**では別途 `pip install -e ".[test]"`（pytest / black）が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-返ってくる答えは3種類です。
+### 結果の読み方（2つのモード）
+
+同じ CLI でも、返す JSON の schema と `status` 語彙が分かれます。混ぜて読まないでください。
+
+| モード | いつ | schema | `status` |
+|---|---|---|---|
+| 検査（scan） | `--repo` のみ、または CI | `repo-preflight.scan/v3` | `pass` / `blocked` / `tool_error` |
+| 対話（dialogue） | `--intent` 指定時 | `repo-preflight.dialogue/v3` | `needs_human_input` / `blocked` / `ready_after_confirmation` |
+
+**検査モード**の意味:
 
 | 返る値 | 意味 | 次にすること |
 |---|---|---|
 | `pass`（問題なし） | 機械で調べられる範囲では引っかからなかった | 中身と操作の相手を人が見て決める |
-| `blocked`（要対応） | 直すべき点があるか、質問への答え待ち | 指摘に対応してもう一度実行する |
+| `blocked`（要対応） | 直すべき点がある | 指摘に対応してもう一度実行する |
 | `tool_error`（調べられず） | Gitやファイルを十分に読めなかった | 原因を直すまで、この結果を判断に使わない |
+
+**対話モード**の意味（エージェント向け。詳細は [SKILL.md](SKILL.md)）:
+
+| 返る値 | 意味 | 次にすること |
+|---|---|---|
+| `needs_human_input` | 質問や設定確認が残っている | 人に聞いてから外への操作をしない |
+| `blocked` | secret 等で fail-closed | 無視して進まず、修復方針を聞く |
+| `ready_after_confirmation` | 機械不足は埋まっている | 最終確認のあと intent 準備へ |
 
 読めなかったものを「問題なし」とは言いません。**判断がつかないときは、通さない側に倒します。**
 
@@ -56,7 +73,7 @@ flowchart LR
 ## できること — 自動で調べる範囲
 
 - **認証情報らしき文字列**（APIキー、トークン、秘密鍵の形）と**自分のPCのパス**。消したつもりでも履歴に残っていれば見つけます
-- **必須の文書**がそろっているか（README、LICENSE、SECURITY.md、PREFLIGHT.md）
+- **必須の文書**がそろっているか（README、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
 - **コミットの名義**（作者・コミッターが意図した名前か）
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、そして日本語で書かれている場合は、表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、運用で誤検知がないことを確認してからエラーへ上げます
@@ -93,9 +110,7 @@ flowchart LR
 
 ## AIエージェントから使う
 
-エージェントが次の操作へ進む**直前**に自動で走らせる使い方です。人が毎回「チェックして」と言う必要はありません。
-
-どの場面でも、基本の形は同じです。
+エージェントが次の操作へ進む**直前**に自動で走らせる使い方です。人が毎回「チェックして」と言う必要はありません。stdout は対話 schema（上記）です。
 
 ```bash
 python scripts/readiness_scan.py --repo PATH --intent <場面> --human
@@ -111,12 +126,6 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 | リリース準備 | `release` | （なし） |
 
 返ってくるのは**質問リスト**です。エージェントはそれを人へ番号付きで見せ、答えが返るまで外部への操作をしません。
-
-質問はたとえばこうなります。
-
-- 「新しいリポジトリは非公開で作りますか？」
-- 「SECURITY.md がありません。ひな形から作りますか？」
-- 「未コミットの変更があります。コミットしてから進めますか？」
 
 **認証情報や個人のパスが見つかったときは、「無視して進む」という選択肢を出しません。**
 
@@ -136,34 +145,42 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 
 `ratchet` は「締める方向にしか進めない」やり方です。問題が減ったときは、見逃す枠も一緒に縮めるよう求めます。
 
-このリポジトリ自身は `enforce` に固定し、Linux・macOS・Windows で毎回検査しています。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md)、長く維持する設計判断は [ADR一覧](docs/adr/README.md) を参照してください。
+このリポジトリ自身は `enforce` に固定し、CIで毎回検査しています（ubuntu / macOS は Python 3.11 と 3.13、Windows は 3.13 のみ）。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md)、長く維持する設計判断は [ADR一覧](docs/adr/README.md)、実行環境の保証境界は [docs/runtime-support.md](docs/runtime-support.md) を参照してください。
 
 ## そのまま調べる（CIや現状把握）
 
-`--repo` だけを渡すと、質問をせずに検査結果だけを返します。CIから使うときはこの形です。
+`--repo` だけを渡すと、質問をせずに検査結果だけを返します（scan schema）。CIから使うときはこの形です。
 
 変更差分を見る設定（`impact_map` や生成物）がある場合、比較元の指定が要ります。指定がなければ「範囲を確定できない」として止まります。ここでも、わからないまま通すことはしません。
+
+差分へ絞るときは **`--base-ref`**（内部の `scan_scope.mode` は `target_diff`）を使います。CLI に `--target-diff` フラグはありません。
 
 ### 主な引数
 
 | 引数 | 何をするか |
 |---|---|
-| `--intent <場面>` | 操作の直前ゲートとして動かす |
+| `--intent <場面>` | 操作の直前ゲート（対話 schema）として動かす |
 | `--repo <パス>` | 調べる対象。新規作成のときだけ不要 |
-| `--base-ref <比較元>` | 検査の範囲を今回の変更へ絞る |
+| `--base-ref <比較元>` | 検査の範囲を今回の変更へ絞る（`push` / `open_pr` / `merge`） |
 | `--consistency-base-ref <比較元>` | 全体は調べたまま、文書チェックだけ差分に絞る |
 | `--expected-identity "<名前> <メール>"` | 全コミットが指定の名義かを確認する |
 | `--audience <相手>` | 見せる相手を指定する |
 | `--human` | 質問と要約を人向けに、結果は機械向けに分けて出す |
 | `--release` | READMEの情報設計チェックも一緒に走らせる |
+| `--interactive` | コンソール補助（TTYで検査オプションを選ぶ。本体ではない） |
+| `--record-dismissal <id>` | 推奨質問の抑止を `.repo-preflight.json` に記録して終了 |
+| `--dismissal-mode` | `7d` / `30d` / `90d` / `forever`（`--record-dismissal` と併用） |
+| `--dismissal-reason` | 抑止理由（任意） |
+
+対話 UI が出す「次から出さない」は主に `30d` / `90d` / `forever` です。CLI の `--dismissal-mode` はそれに加え `7d` も受け付けます。
 
 ### 終了コード
 
 | 値 | 意味 |
 |---|---|
-| `0` | 問題なし、または人の確認だけが残っている |
-| `1` | 要対応、または人の答え待ち |
-| `2` | 検査そのものが失敗した |
+| `0` | 検査 `pass`、または対話で人の確認だけが残っている（`ready_after_confirmation`） |
+| `1` | 検査 `blocked`、または対話の `needs_human_input` / `blocked` |
+| `2` | 検査そのものが失敗した（`tool_error`） |
 
 このツールは既定で読むだけです。リポジトリ作成、push、PR、マージ、公開範囲の変更、投稿は行いません。
 
@@ -212,7 +229,7 @@ python scripts/runtime_smoke.py --repo .
 
 各環境への配り方と、何が機械で検証され何が運用の約束なのかは [docs/runtime-support.md](docs/runtime-support.md) にまとめています。skillは**各自がcloneしてから配布**してください。他人のskillフォルダをコピーしないでください。
 
-公開リポジトリの保護設定やマージ方式の選び方は [GitHub repository設定ガイド](references/github-settings.md) を参照してください。
+公開リポジトリの保護設定やマージ方式の選び方は [GitHub repository設定ガイド](references/github-settings.md) を参照してください。参加の約束は [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)、脆弱性報告は [SECURITY.md](SECURITY.md) です。
 
 ## v0.1.x から移ってきた方へ
 

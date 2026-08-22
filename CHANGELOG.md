@@ -25,7 +25,7 @@
 
 ### 追加
 
-- `--target-diff` により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。
+- `--base-ref`（`push` / `open_pr` / `merge`）により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。結果 JSON の `scan_scope.mode` は内部値 `target_diff`。CLI フラグ名としての `--target-diff` はない。
 - repository 全体の文書・設定・実装の食い違いを検出する consistency gate を追加 (#15)。
 - README の理解順序、表の幅、Mermaid 図のラベルを含む日本語可読性ゲートを追加 (#16, #19)。
 
