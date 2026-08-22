@@ -32,7 +32,7 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
 `create_repo` 以外は `--repo <TARGET_REPO>` が必須。
-`--base-ref` は既存 private repo の `push` / `open_pr` で今回差分だけを検査する時に使う。
+`--base-ref` は既存 private repo の `push` / `open_pr` / `merge` で今回差分だけを検査する時に使う。
 base は HEAD の祖先であること。`publish` / `release` のrepo全体検査には使わない。
 
 ## Claude Code 固有の読み替え

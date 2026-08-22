@@ -1,6 +1,6 @@
 # intent 対話の運用オプション
 
-[AI 実装フロー](../README.md#ai-実装フロー--intent-対話-本体) の補足です。質問パケットそのものの契約は README を参照してください。
+[AIエージェントから使う](../README.md#aiエージェントから使う) の補足です。質問パケットそのものの契約は README を参照してください。
 
 ## 次から出さない (dismiss / snooze)
 
@@ -9,6 +9,8 @@
 - `dismiss_30d` — 30日間この項目を出さない
 - `dismiss_90d` — 90日間この項目を出さない
 - `dismiss_forever` — 次からこの項目は出さない
+
+対話 UI が提示するのは上記です。CLI の `--dismissal-mode` は `7d` / `30d` / `90d` / `forever` を受け付けます（`7d` は直接記録用）。
 
 記録先は採用先リポジトリの `.repo-preflight.json` です。
 

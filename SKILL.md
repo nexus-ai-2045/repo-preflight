@@ -64,9 +64,10 @@ baseまたはHEADが動いた場合は再検査する。
 6. **「次から出さない」** (`dismiss_30d` / `dismiss_90d` / `dismiss_forever`) を選ばれたら、採用先 repo に記録する:
    ```bash
    python scripts/readiness_scan.py --repo <path> \
-     --record-dismissal <proposal_id> --dismissal-mode 30d|90d|forever \
+     --record-dismissal <proposal_id> --dismissal-mode 7d|30d|90d|forever \
      --dismissal-reason "..."
    ```
+   対話 UI の選択肢は主に `dismiss_30d` / `dismiss_90d` / `dismiss_forever`。CLI は `7d` も受け付ける。
    secret / 必須文書欠落 / 危険操作の最終確認は dismiss できない。`suppressed_proposals` に抑止中一覧が出る。
 7. **GitHub 設定ガイドが stale** なら `references/github-settings.md` を公式 docs/changelog と突き合わせ、
    marker の `last_reviewed` を更新する。自動で GitHub 全変更を追従したことにはしない。
