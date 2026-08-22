@@ -18,15 +18,25 @@ def _read(rel: str) -> str:
 
 
 def test_documentation_contract_workflow_invokes_the_gate_at_full_strength():
-    body = _read(".github/workflows/documentation-contract.yml")
-    assert "scripts/readme_release_gate.py" in body
-    assert "scripts/consistency_gate.py" in body
-    assert "--require-config" in body
-    assert "--require-mode enforce" in body
-    # CLI / REQUIRED / status 語彙 / CI matrix の叙述契約（第二の文書システムではない）
-    assert "tests/test_public_narrative_contract.py" in body
-    assert "pip install -e \".[test]\"" in body or 'pip install -e ".[test]"' in body
+    import re
 
+    body = _read(".github/workflows/documentation-contract.yml")
+    # コメントだけの残存文字列で緑にならないよう、実行行以外を落とす
+    executable = re.sub(r"(?m)^\s*#.*$", "", body)
+    assert "scripts/readme_release_gate.py" in executable
+    assert "scripts/consistency_gate.py" in executable
+    assert "--require-config" in executable
+    assert "--require-mode enforce" in executable
+    # CLI / REQUIRED / status 語彙 / CI matrix の叙述契約（第二の文書システムではない）
+    # ファイル名の出現だけでなく、pytest が契約テストを実行する run step を要求する
+    assert re.search(
+        r"(?m)^\s*run:\s*python\s+-m\s+pytest\b[^\n]*\btests/test_public_narrative_contract\.py\b",
+        executable,
+    ), "documentation-contract must run pytest on test_public_narrative_contract.py"
+    assert (
+        'pip install -e ".[test]"' in executable
+        or "pip install -e '.[test]'" in executable
+    )
 
 def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():
     body = _read(".github/workflows/documentation-contract.yml")

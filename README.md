@@ -21,7 +21,7 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 **開発・テスト・CI**では別途 `pip install -e ".[test]"`（pytest / black）が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-### 結果の読み方（2つのモード）
+### 結果の読み方（応答モード）
 
 同じ CLI でも、返す JSON の schema と `status` 語彙が分かれます。混ぜて読まないでください。
 
@@ -29,6 +29,7 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 |---|---|---|---|
 | 検査（scan） | `--repo` のみ、または CI | `repo-preflight.scan/v3` | `pass` / `blocked` / `tool_error` |
 | 対話（dialogue） | `--intent` 指定時 | `repo-preflight.dialogue/v3` | `needs_human_input` / `blocked` / `ready_after_confirmation` |
+| 抑止記録 | `--record-dismissal` | `repo-preflight.preferences/v1` | `recorded` |
 
 **検査モード**の意味:
 
@@ -73,7 +74,7 @@ flowchart LR
 ## できること — 自動で調べる範囲
 
 - **認証情報らしき文字列**（APIキー、トークン、秘密鍵の形）と**自分のPCのパス**。消したつもりでも履歴に残っていれば見つけます
-- **必須の文書**がそろっているか（README、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
+- **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
 - **コミットの名義**（作者・コミッターが意図した名前か）
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、そして日本語で書かれている場合は、表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、運用で誤検知がないことを確認してからエラーへ上げます
@@ -178,7 +179,7 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 
 | 値 | 意味 |
 |---|---|
-| `0` | 検査 `pass`、または対話で人の確認だけが残っている（`ready_after_confirmation`） |
+| `0` | 検査 `pass`、対話 `ready_after_confirmation`、または抑止記録 `recorded` |
 | `1` | 検査 `blocked`、または対話の `needs_human_input` / `blocked` |
 | `2` | 検査そのものが失敗した（`tool_error`） |
 
