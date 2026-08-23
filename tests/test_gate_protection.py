@@ -57,6 +57,7 @@ def test_ci_pins_and_runs_ai_ratchet_gate_in_every_job():
     body = _read(".github/workflows/ci.yml")
     requirements = _read("requirements-tools.txt")
 
+    assert 'PYTHONUTF8: "1"' in body
     assert (
         body.count("python -m pip install --require-hashes -r requirements-tools.txt")
         == 3

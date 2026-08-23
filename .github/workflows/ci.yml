@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   # ジョブ表示名は ruleset 必須チェック `test (3.11)` / `test (3.13)` と一致させる
   test:
