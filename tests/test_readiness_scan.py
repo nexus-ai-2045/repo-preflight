@@ -149,6 +149,75 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
 
 
+def test_target_diff_ignores_preexisting_path_in_changed_file(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    registry = repo / "registry.yaml"
+    registry.write_text(
+        "legacy: C:/Us" + "ers/legacy-user/project\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add legacy registry")
+    base = set_remote_base(repo)
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write("canonical: Documents/.repos/example\n")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "register canonical path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_target_diff_blocks_new_personal_path_line(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    registry = repo / "registry.yaml"
+    registry.write_text("canonical: Documents/.repos/example\n", encoding="utf-8")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add registry")
+    base = set_remote_base(repo)
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write("checkout: C:/Us" + "ers/new-user/project\n")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add personal checkout")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_scans_transient_personal_path_in_commit_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    path_file = repo / "temporary-path.txt"
+    path_file.write_text("C:/Us" + "ers/new-user/project\n", encoding="utf-8")
+    git(repo, "add", path_file.name)
+    git(repo, "commit", "-m", "introduce transient personal path")
+    path_file.unlink()
+    git(repo, "add", "-u")
+    git(repo, "commit", "-m", "remove transient personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_blocks_personal_path_in_untracked_file(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "untracked.txt").write_text(
+        "C:/Us" + "ers/new-user/project\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
 def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)

@@ -258,6 +258,95 @@ def history_hits(
     return sorted(secret_hits), sorted(path_hits)
 
 
+def diff_added_lines_have(
+    repo: Path, patterns: tuple[re.Pattern, ...], *diff_args: str
+) -> bool:
+    """Return whether added text lines in one Git diff match ``patterns``.
+
+    A target-diff scan must not reclassify unchanged baseline text merely because
+    its file also contains a new, unrelated line.  Patch metadata is excluded;
+    only actual ``+`` lines are decoded by ``text_has``.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--unified=0",
+            *diff_args,
+            "--",
+        ],
+        cwd=repo,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    added = b"\n".join(
+        line[1:]
+        for line in result.stdout.splitlines()
+        if line.startswith(b"+") and not line.startswith(b"+++ ")
+    )
+    return bool(added) and text_has(patterns, added)
+
+
+def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
+    """Scan personal paths introduced anywhere after ``base_ref``.
+
+    Each commit is compared with its first parent so a path that was introduced
+    and later removed remains detectable.  The current index/worktree diff is
+    checked separately.  Evidence labels intentionally avoid file contents and
+    checkout paths.
+    """
+    commits = subprocess.run(
+        ["git", "rev-list", "--reverse", f"{base_ref}..HEAD"],
+        cwd=repo,
+        text=True,
+        encoding="ascii",
+        errors="strict",
+        capture_output=True,
+    )
+    if commits.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    hits: set[str] = set()
+    for commit in commits.stdout.splitlines():
+        parent = subprocess.run(
+            ["git", "rev-parse", "--verify", f"{commit}^1"],
+            cwd=repo,
+            text=True,
+            encoding="ascii",
+            errors="strict",
+            capture_output=True,
+        )
+        if parent.returncode:
+            raise RuntimeError("git_target_diff_inventory_failed")
+        if diff_added_lines_have(repo, PATH_PATTERNS, parent.stdout.strip(), commit):
+            hits.add(f"target-diff:commit:{commit[:12]}")
+    if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
+        hits.add("target-diff:working-tree")
+    untracked = subprocess.run(
+        ["git", "ls-files", "-z", "--others", "--exclude-standard"],
+        cwd=repo,
+        capture_output=True,
+    )
+    if untracked.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    for raw_name in untracked.stdout.split(b"\0"):
+        if not raw_name:
+            continue
+        path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        if path.is_symlink():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError("git_target_diff_inventory_failed") from exc
+        if text_has(PATH_PATTERNS, data):
+            hits.add("target-diff:untracked-worktree")
+            break
+    return sorted(hits)
+
+
 def working_tree_files(repo: Path) -> list[Path]:
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "-v", "--stage"],
@@ -520,20 +609,30 @@ def scan(
             }
         if text_has(SECRET_PATTERNS, data):
             credential_finding_count += 1
-        if text_has(PATH_PATTERNS, data):
+        if not base_ref and text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
             repo, (f"{base_ref}..HEAD",) if base_ref else ("--all",)
         )
         credential_finding_count += len(history_credential_findings)
-        path_hits.extend(history_path_hits)
     except RuntimeError:
         return {
             "status": "tool_error",
             "repo": repository_evidence_label(repo),
             "issues": ["git_history_inventory_failed"],
         }
+    if base_ref:
+        try:
+            path_hits.extend(target_diff_personal_path_hits(repo, base_ref))
+        except RuntimeError:
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["git_target_diff_inventory_failed"],
+            }
+    else:
+        path_hits.extend(history_path_hits)
     identity_lines = {line for line in identities.splitlines() if line}
     identity_mismatches = {
         line

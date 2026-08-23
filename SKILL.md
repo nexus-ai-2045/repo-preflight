@@ -47,6 +47,8 @@ stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stde
 
 `--base-ref` は `push` / `open_pr` / `merge` 専用。指定したbaseからHEADまでの変更fileとcommit範囲を検査し、
 既存repoのbaseline問題と今回差分を分離する。baseはHEADの祖先でなければfail-closed。
+個人pathは各commitと現在worktreeの追加行だけを検査し、変更file内の既存行は再検出しない。
+一方、secretは途中commitで追加後に削除されたものも含め、対象rangeのblobを引き続き検査する。
 `publish` / `release` では使用できず、repo全体modeを通す。整合性のchange-sensitive検査だけにbaseが必要なら `--consistency-base-ref` を使い、secret・個人path・必須文書はrepo全体のまま検査する。
 確認packetはbase ref / base SHA / head SHAを固定する。実際のpush / PRも同じbaseを使い、
 baseまたはHEADが動いた場合は再検査する。
