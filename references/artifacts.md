@@ -2,7 +2,7 @@
 
 必要なものだけ作成し、存在だけで合格にしない。
 
-- `README.md`: H1直後の短い価値説明、Why、What、quickstart、制約を理解順序どおりに置く。原則300行以内とし、詳細はdocsへ分離する。release準備では `readme_release_gate.py` の証拠を残す
+- `README.md`: H1直後の短い価値説明、Why、What、quickstart、制約を理解順序どおりに置く。原則300行以内とし、詳細はdocsへ分離する。release準備では `readme_release_gate.py` の証拠を残す。日本語READMEのクイックスタートは人の `pip install` 手順ではなく、AIに貼る GitHub URL と危険レビュー指示を置く。図は画像自身ではなく ADR / 再現テスト / 契約文書へリンクする
 - `LICENSE`とthird-party notice: code、data、model、画像、fontの権利
 - `SECURITY.md`: 非公開報告経路とdata handling
 - `CONTRIBUTING.md`: setup、test、sample data方針
