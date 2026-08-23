@@ -22,4 +22,16 @@ python -m pytest -q
 - Windows、macOS、Linuxのpathを考慮する（CIは ubuntu/macOS で 3.11+3.13、Windows は 3.13 のみ）。
 - 挙動変更は失敗するtestを先に追加する。
 - public化、push、PR、mergeをscannerへ実装しない。
+
 - 脆弱性報告は [SECURITY.md](SECURITY.md)、参加の約束は [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) を参照する。
+
+
+## PRを出す前
+
+[`docs/pr-self-review.md`](docs/pr-self-review.md) の20項目を差分に当てる。
+上の開発ルールを、実際のレビュー指摘から一般化した停止条件へ展開したもの。
+
+この file は外部で生成された配布物で、手で編集しない。編集すると
+`documentation-contract` の `PR self-review copy integrity` が本文hashの
+不一致で落ちる。
+
