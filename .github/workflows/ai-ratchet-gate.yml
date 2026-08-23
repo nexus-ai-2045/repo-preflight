@@ -1,0 +1,51 @@
+name: ai-ratchet-gate
+
+# tracked ∧ ignored の新規矛盾を fail-closed で止める。
+# 検査ロジックの正本は nexus-ai-2045/ai-ratchet-gate（GitHub Release wheel）。
+# baseline に載っている既存分だけを見逃し、増える方向は deny する。
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  AI_RATCHET_GATE_WHEEL_URL: https://github.com/nexus-ai-2045/ai-ratchet-gate/releases/download/v0.1.0/ai_ratchet_gate-0.1.0-py3-none-any.whl
+  AI_RATCHET_GATE_WHEEL_SHA256: ccccfb5c28ca9c34317d2d79c79124cc72daf5e1b8f9be7897867eebe9b75612
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: Install pinned ai-ratchet-gate wheel
+        run: |
+          set -euo pipefail
+          # pip はファイル名からバージョンを読む。短縮名にすると Invalid wheel filename になる。
+          WHEEL_PATH="/tmp/ai_ratchet_gate-0.1.0-py3-none-any.whl"
+          curl -fsSL -o "$WHEEL_PATH" "$AI_RATCHET_GATE_WHEEL_URL"
+          echo "${AI_RATCHET_GATE_WHEEL_SHA256}  ${WHEEL_PATH}" | sha256sum -c -
+          python -m pip install --no-deps "$WHEEL_PATH"
+
+      - name: Smoke-check installed CLI
+        run: |
+          set -euo pipefail
+          python -m ai_ratchet_gate --help | grep -F "tracked∧ignored"
+          ai-ratchet-gate --help | grep -F "tracked∧ignored"
+
+      - name: Run ai-ratchet-gate (fail-closed)
+        run: python -m ai_ratchet_gate --repo .
