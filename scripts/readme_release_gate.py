@@ -48,6 +48,9 @@ MERMAID_MESSAGE_DIAGRAMS = ("sequencediagram",)
 IMAGE_LINK_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
 LINKED_IMAGE_RE = re.compile(r"\[!\[[^\]]*\]\(([^)]+)\)\]\(([^)]+)\)")
 BARE_IMAGE_RE = re.compile(r"(?<!\[)!\[[^\]]*\]\(([^)]+)\)")
+GITHUB_REPO_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+)
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -355,7 +358,7 @@ def _ai_paste_contract_findings(
         lines, ("クイックスタート", "quickstart", "quick start")
     )
     if body:
-        has_paste = "https://github.com/" in body
+        has_paste = GITHUB_REPO_URL_RE.search(body) is not None
         has_pip = "pip install" in body.casefold()
         if not has_paste:
             warn(
