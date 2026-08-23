@@ -1,0 +1,4 @@
+# ai-ratchet-gate の baseline (ratchet)。
+# ここに列挙されたファイルは「tracked なのに gitignore にマッチする」既存の矛盾で、
+# 導入時点の現存分を grandfather したもの。新規の矛盾は commit 時に deny される。
+# 棚卸しで解消したらこのリストからも消すこと (縮む方向の更新も --update-baseline)。
