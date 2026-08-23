@@ -45,6 +45,9 @@ MERMAID_DIRECTIVE_PREFIXES = (
 )
 # message 抽出を当ててよい図。flowchart 系に当てると「A[読込: x]」の : でゴミが出る
 MERMAID_MESSAGE_DIAGRAMS = ("sequencediagram",)
+IMAGE_LINK_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
+LINKED_IMAGE_RE = re.compile(r"\[!\[[^\]]*\]\(([^)]+)\)\]\(([^)]+)\)")
+BARE_IMAGE_RE = re.compile(r"(?<!\[)!\[[^\]]*\]\(([^)]+)\)")
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -307,6 +310,100 @@ def _japanese_readability_findings(
     return findings, recommendations, metrics
 
 
+def _heading_section_body(lines: list[str], aliases: tuple[str, ...]) -> str:
+    """指定 alias の見出し直後から、同じかより浅い見出しの直前までの本文。"""
+    headings = _headings(lines)
+    start_line: int | None = None
+    start_level: int | None = None
+    end_line = len(lines) + 1
+    for level, title, number in headings:
+        folded = title.casefold()
+        if start_line is None and any(alias in folded for alias in aliases):
+            start_line = number
+            start_level = level
+            continue
+        if start_line is not None and start_level is not None and level <= start_level:
+            end_line = number
+            break
+    if start_line is None:
+        return ""
+    return "\n".join(lines[start_line : end_line - 1])
+
+
+def _is_image_target(target: str) -> bool:
+    path = target.split("?", 1)[0].split("#", 1)[0].casefold()
+    return path.endswith(IMAGE_LINK_EXT)
+
+
+def _ai_paste_contract_findings(
+    lines: list[str],
+) -> tuple[list[dict[str, object]], set[str]]:
+    """公開 README のクイックスタートを、AIへ貼る危険レビュー付きにする契約。
+
+    日本語READMEだけ。warning に留め、下流を hard block しない。
+    """
+    findings: list[dict[str, object]] = []
+    recommendations: set[str] = set()
+    if not _is_japanese_document(lines):
+        return findings, recommendations
+
+    def warn(code: str, message: str, rec: str) -> None:
+        findings.append({"code": code, "severity": "warning", "message": message})
+        recommendations.add(rec)
+
+    body = _heading_section_body(
+        lines, ("クイックスタート", "quickstart", "quick start")
+    )
+    if body:
+        has_paste = "https://github.com/" in body
+        has_pip = "pip install" in body.casefold()
+        if not has_paste:
+            warn(
+                "quickstart_missing_ai_paste",
+                "クイックスタートは人のコマンド手順ではなく、"
+                "AIに貼る GitHub URL を置いてください。",
+                "Paste To AI",
+            )
+        if has_pip:
+            warn(
+                "quickstart_is_command_procedure",
+                "クイックスタートに pip install があります。"
+                "人間が叩く手順ではなく、AIへ貼る文にしてください。",
+                "Paste To AI",
+            )
+        if has_paste and "危険レビュー" not in body:
+            warn(
+                "quickstart_missing_danger_review",
+                "貼る文に危険レビューを先に出させる指示がありません。"
+                "削除・GitHub write・visibility・secret・unknown を安全と読まないことを書いてください。",
+                "Danger Review Prompt",
+            )
+
+    text = "\n".join(lines)
+    linked_spans = [match.span() for match in LINKED_IMAGE_RE.finditer(text)]
+    for match in BARE_IMAGE_RE.finditer(text):
+        start = match.start()
+        if any(left <= start < right for left, right in linked_spans):
+            continue
+        warn(
+            "figure_not_linked_to_evidence",
+            "図は画像ファイル自身ではなく、根拠 (ADR / テスト / 契約文書) へリンクしてください。",
+            "Link Figures To Evidence",
+        )
+        break
+    else:
+        for match in LINKED_IMAGE_RE.finditer(text):
+            source, destination = match.group(1), match.group(2)
+            if source == destination or _is_image_target(destination):
+                warn(
+                    "figure_not_linked_to_evidence",
+                    "図のリンク先が画像自身です。ADR や再現テストなど根拠へ向けてください。",
+                    "Link Figures To Evidence",
+                )
+                break
+    return findings, recommendations
+
+
 def review(readme: Path) -> dict[str, object]:
     text = readme.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -374,6 +471,9 @@ def review(readme: Path) -> dict[str, object]:
     ja_findings, ja_recommendations, ja_metrics = _japanese_readability_findings(lines)
     findings.extend(ja_findings)
     recommendations |= ja_recommendations
+    paste_findings, paste_recommendations = _ai_paste_contract_findings(lines)
+    findings.extend(paste_findings)
+    recommendations |= paste_recommendations
 
     emoji_heading = re.compile(r"^#{1,6}\s+[^\w\s`#]", re.UNICODE)
     if any(emoji_heading.match(line) for line in lines):
