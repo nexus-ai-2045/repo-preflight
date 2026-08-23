@@ -19,6 +19,9 @@
 3. 設定ごとに現在値、推奨値、tier、外部影響、rollback、変更APIのpreviewを返す。
 4. 403、404、欠落field、plan・権限制約を`false`と推測せず`unavailable`にする。
 5. requiredの差分または取得不能だけをintent blockerにする。
+6. 認証accountをrepository ownerまたは明示expected accountと照合し、未一致を確認なしで通さない。
+7. activeなdefault-branch rulesetを全件集約し、bypass actor、required check名、default branchで現在発火するcheck/statusを照合する。
+8. CodeQLはdefault setupだけでなく、default branchのrecent advanced/external analysisも有効な証拠として区別する。
 
 このintentは設定変更を実装しません。実行時はfreshな現在値を再取得し、対象repository、正確な操作、外部影響、rollbackを設定ごとに提示して別承認を得ます。通常scanはネットワーク非依存のまま維持します。
 
@@ -49,4 +52,8 @@
 - requiredとrecommendedの差分を分離し、recommendedだけではblockしない。
 - 403、欠落field、selected policy詳細の取得不能を`unavailable`にする。
 - `team_public`はapproval数1以上を要求する。
+- 複数rulesetに分かれた保護を累積評価し、単一rulesetへ誤った変更previewを向けない。
+- Actions permissionsのPUT previewは必須`enabled`とfreshな関連fieldを保持する。
+- `high_risk_public`では未確認のselected-action patternとruleset bypass actorをblockする。
+- staleなGitHub設定ガイドは`configure_settings`でも更新確認を再発火する。
 - packetの`approved`と`external_actions_performed`は常にfalseから始まる。

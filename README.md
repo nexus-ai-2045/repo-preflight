@@ -130,7 +130,7 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 
 返ってくるのは**質問リスト**です。エージェントはそれを人へ番号付きで見せ、答えが返るまで外部への操作をしません。
 
-`configure_settings` は `gh api` のGETだけで remoteを実測し、`solo_public` / `team_public` / `high_risk_public` と比較します。設定候補は一件ずつ、現在値・推奨値・外部影響・rollback・API操作previewを返します。**設定変更は実行しません。** 403 / 404 / plan制約は `false` とみなさず `unavailable` にします。
+`configure_settings` は `gh api` のGETだけで remoteを実測し、`solo_public` / `team_public` / `high_risk_public` と比較します。認証account、複数rulesetの累積効果・bypass、required check名、default/advanced CodeQLを分けて確認し、設定候補は一件ずつ現在値・推奨値・外部影響・rollback・API操作previewを返します。**設定変更は実行しません。** 403 / 404 / plan制約は `false` とみなさず `unavailable` にします。
 
 ```bash
 python scripts/readiness_scan.py --repo PATH --intent configure_settings \

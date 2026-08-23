@@ -8,6 +8,13 @@
 - GitHub SettingsをGETだけで実測し、現在値、推奨値、外部影響、rollback、個別API操作previewを `repo-preflight.github-settings-review/v1` で返すようにした。
 - review済みの空baselineと、公開release wheelのURL・SHA-256を固定した `ai-ratchet-gate` v0.1.1を全CI jobへ追加し、trackedかつignoredなpathの新規増加を止めるようにした。
 
+### 修正 / 改善
+
+- Actions permissionsのPUT previewに必須`enabled`とfreshな関連fieldを含め、実行不能な一項目bodyを返さないようにした。
+- 認証account、複数rulesetの累積効果、bypass actor、required check名、advanced CodeQLをfail-closedに確認するようにした。
+- `high_risk_public`のselected-action patternを未確認のままpassせず、Dependabot security updatesのrequired/recommended境界をガイドと一致させた。
+- Windows CIをUTF-8へ固定し、公開release wheelの日本語出力を全OSで実行できるようにした。
+
 ### 保証境界
 
 - 保証: Settingsのread-only取得、profile比較、403/404の`unavailable`分類、設定ごとのpreview分離。

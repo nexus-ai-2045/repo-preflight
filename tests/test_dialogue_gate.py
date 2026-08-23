@@ -314,3 +314,79 @@ def test_format_dialogue_lists_numbered_proposals():
     assert "confirmations" not in text.lower() or "最終確認" in text
     assert "保証すること" in text
     assert "保証しないこと" in text
+
+
+def test_configure_settings_blocks_when_repository_identity_yields_no_settings():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "needs_human_input",
+            "repository": None,
+            "profile": "solo_public",
+            "settings": [],
+            "unknowns": [{"reason": "github_origin_owner_name_unavailable"}],
+        },
+    )
+
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "inspect_github_settings"
+    )
+    assert proposal["blocks_intent"] is True
+    assert dialogue["status"] == "needs_human_input"
+
+
+def test_configure_settings_surfaces_authenticated_account_confirmation():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "needs_human_input",
+            "repository": "example/repo",
+            "profile": "solo_public",
+            "settings": [
+                {
+                    "name": "authenticated_account",
+                    "tier": "required",
+                    "observed_value": "collaborator",
+                    "recommended_value": "example",
+                    "classification": "human_decision",
+                    "reason": "acting accountを固定する",
+                    "external_effect": "wrong account prevention",
+                    "proposed_operation": None,
+                    "rollback": None,
+                    "blocks_intent": True,
+                }
+            ],
+        },
+    )
+
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "github_setting_authenticated_account"
+    )
+    assert proposal["kind"] == "github_account_confirmation"
+    assert proposal["blocks_intent"] is True
+    assert "collaborator" in proposal["question"]
+
+
+def test_configure_settings_surfaces_stale_github_guidance():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "pass",
+            "repository": "example/repo",
+            "profile": "solo_public",
+            "settings": [],
+        },
+        github_baseline={
+            "status": "stale",
+            "last_reviewed": "2025-01-01",
+            "age_days": 600,
+            "max_age_days": 90,
+        },
+    )
+
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "refresh_github_settings_baseline" in ids

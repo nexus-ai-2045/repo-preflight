@@ -494,6 +494,27 @@ def build_github_settings_proposals(
         ]
 
     proposals: list[dict[str, Any]] = []
+    if review.get("status") == "needs_human_input" and not review.get("settings"):
+        return [
+            _proposal(
+                id="inspect_github_settings",
+                kind="github_setting_change",
+                severity="required",
+                question=(
+                    "GitHub owner/nameまたは認証accountを解決できず、Settingsを"
+                    "一件も確認できませんでした。取得条件を直して再検査しますか?"
+                ),
+                current={
+                    "repository": review.get("repository"),
+                    "unknowns": review.get("unknowns") or [],
+                },
+                proposed={"action": "inspect_github_settings_then_rerun"},
+                options=_yes_no_options("再検査する", "中止する"),
+                default="yes",
+                blocks_intent=True,
+                why="未取得を設定適合と誤判定しない",
+            )
+        ]
     for setting in review.get("settings") or []:
         if setting.get("classification") == "no_change":
             continue
@@ -501,6 +522,33 @@ def build_github_settings_proposals(
         safe_name = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
         tier = str(setting.get("tier") or "recommended")
         unavailable = setting.get("classification") == "unavailable"
+        if name == "authenticated_account":
+            proposals.append(
+                _proposal(
+                    id="github_setting_authenticated_account",
+                    kind="github_account_confirmation",
+                    severity="required",
+                    question=(
+                        f"GitHub認証accountは {setting.get('observed_value')!r} です。"
+                        "このaccountを対象repositoryの設定確認に使うことを確認しますか?"
+                    ),
+                    current={
+                        "repository": review.get("repository"),
+                        "login": setting.get("observed_value"),
+                        "classification": setting.get("classification"),
+                    },
+                    proposed={
+                        "approved": False,
+                        "action": "confirm_authenticated_account_then_reinspect",
+                        "expected": setting.get("recommended_value"),
+                    },
+                    options=_yes_no_options("accountを確認する", "中止する"),
+                    default="yes",
+                    blocks_intent=bool(setting.get("blocks_intent")),
+                    why=str(setting.get("reason") or "acting accountを固定する"),
+                )
+            )
+            continue
         proposals.append(
             _proposal(
                 id=f"github_setting_{safe_name or 'unknown'}",
@@ -748,6 +796,7 @@ def build_dialogue(
             "release",
             "open_pr",
             "merge",
+            "configure_settings",
         }:
             proposals.append(baseline_proposal)
 
