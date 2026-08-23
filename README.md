@@ -106,6 +106,7 @@ flowchart LR
 | pushする | 今回の変更、履歴、未コミットの取りこぼし |
 | PRを作る | 比較元との差分、文書とテストの追随 |
 | マージする | 統合前の残作業と人の確認 |
+| GitHub Settingsを整える | remote設定の実測、profile差分、外部影響、rollback |
 | チーム共有・納品・公開 | 見せる相手、全履歴、権利と個人情報 |
 | リリース準備 | READMEの情報設計と運用記録 |
 
@@ -123,10 +124,18 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 |---|---|---|
 | リポジトリを新しく作る | `create_repo` | （`--repo` も不要） |
 | push / PR作成 / マージ | `push` `open_pr` `merge` | `--base-ref origin/比較元` |
+| GitHub Settingsの変更準備 | `configure_settings` | `--github-settings-profile solo_public` など |
 | 共有・納品・公開 | `publish` | `--audience public` など相手を指定 |
 | リリース準備 | `release` | （なし） |
 
 返ってくるのは**質問リスト**です。エージェントはそれを人へ番号付きで見せ、答えが返るまで外部への操作をしません。
+
+`configure_settings` は `gh api` のGETだけで remoteを実測し、`solo_public` / `team_public` / `high_risk_public` と比較します。設定候補は一件ずつ、現在値・推奨値・外部影響・rollback・API操作previewを返します。**設定変更は実行しません。** 403 / 404 / plan制約は `false` とみなさず `unavailable` にします。
+
+```bash
+python scripts/readiness_scan.py --repo PATH --intent configure_settings \
+  --github-settings-profile solo_public --human
+```
 
 **認証情報や個人のパスが見つかったときは、「無視して進む」という選択肢を出しません。**
 
@@ -148,6 +157,8 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 
 このリポジトリ自身は `enforce` に固定し、CIで毎回検査しています（ubuntu / macOS は Python 3.11 と 3.13、Windows は 3.13 のみ）。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md)、長く維持する設計判断は [ADR一覧](docs/adr/README.md)、実行環境の保証境界は [docs/runtime-support.md](docs/runtime-support.md) を参照してください。
 
+加えて、trackedなのにignore対象でもあるpathの新規増加は、公開wheel `ai-ratchet-gate==0.1.1` とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
+
 ## そのまま調べる（CIや現状把握）
 
 `--repo` だけを渡すと、質問をせずに検査結果だけを返します（scan schema）。CIから使うときはこの形です。
@@ -166,6 +177,7 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 | `--consistency-base-ref <比較元>` | 全体は調べたまま、文書チェックだけ差分に絞る |
 | `--expected-identity "<名前> <メール>"` | 全コミットが指定の名義かを確認する |
 | `--audience <相手>` | 見せる相手を指定する |
+| `--github-settings-profile <profile>` | Settings比較profile（`solo_public` / `team_public` / `high_risk_public`） |
 | `--human` | 質問と要約を人向けに、結果は機械向けに分けて出す |
 | `--release` | READMEの情報設計チェックも一緒に走らせる |
 | `--interactive` | コンソール補助（TTYで検査オプションを選ぶ。本体ではない） |

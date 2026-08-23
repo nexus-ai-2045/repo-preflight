@@ -15,3 +15,4 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | ADR | status | 判断 |
 |---|---|---|
 | [0001](0001-github-action-sha-update-exemption.md) | Accepted | GitHub Action参照だけの更新を厳密な条件で関連文書・テスト要件から免除する |
+| [0003](0003-github-settings-read-only-gate.md) | Proposed | GitHub Settingsの実測・比較・previewをread-only gateにし、変更を個別承認へ分離する |

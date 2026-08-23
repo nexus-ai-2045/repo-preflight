@@ -19,14 +19,14 @@
    Python 3.11+ と git があれば、Linux / macOS / Windows で同じ JSON schema  
    (`repo-preflight.scan/v3` / `repo-preflight.dialogue/v3`) を返す。
 2. **intent 対話**  
-   `create_repo` / `push` / `open_pr` / `merge` / `publish` / `release` で  
+   `create_repo` / `push` / `open_pr` / `merge` / `configure_settings` / `publish` / `release` で
    guarantees / non_guarantees / proposals / confirmations が機械生成される。
 3. **Skill 入口**  
    Claude Code / Grok / Codex 向け adapter が root `SKILL.md` を正本として指す。  
    各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
 4. **クロス OS CI**  
    `.github/workflows/ci.yml` どおり: ubuntu-latest と macos-latest で Python 3.11 / 3.13、  
-   windows-latest で Python 3.13 のみ。各ジョブで pytest と `runtime_smoke` を実行する。
+   windows-latest で Python 3.13 のみ。各ジョブで pytest、`runtime_smoke`、公開wheel `ai-ratchet-gate==0.1.1` を実行する。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
 
@@ -36,7 +36,7 @@
 2. モデルが skill を **無視して** push / PR / 公開を実行しないことの物理強制（hook が無い環境では運用契約）。
 3. Claude Code Cloud / リモート sandbox に git やローカル path が無い場合の完全動作。
 4. 各製品 UI のバージョン差分・権限ダイアログ・ネットワーク制限。
-5. GitHub 設定の自動適用。
+5. GitHub 設定の自動適用。`configure_settings`は`gh api`のGET、profile比較、個別previewまでを保証するが、変更は別承認・別工程。
 
 ## 導入 (Claude Code / Grok)
 

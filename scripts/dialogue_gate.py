@@ -7,6 +7,7 @@ TTY メニューではなく、エージェントが repo 作成 / push / PR / m
 
 from __future__ import annotations
 
+import re
 from typing import Any  # preferences_module は duck typing
 
 DIALOGUE_SCHEMA = "repo-preflight.dialogue/v3"
@@ -17,6 +18,7 @@ INTENTS = (
     "push",
     "open_pr",
     "merge",
+    "configure_settings",
     "publish",
     "release",
 )
@@ -26,6 +28,7 @@ INTENT_LABELS = {
     "push": "remote への push",
     "open_pr": "Pull Request 作成",
     "merge": "PR merge",
+    "configure_settings": "GitHub repository Settings の変更準備",
     "publish": "見せる相手を広げる (public化 / 共有 / 納品)",
     "release": "release / tag / 告知準備",
 }
@@ -37,6 +40,7 @@ AGENT_INSTRUCTIONS = (
     "回答が yes / approve でも、push・PR・merge・visibility変更・投稿は別ゲートとして再確認する。",
     "secret / personal_path / 危険な履歴操作は『無視して進む』選択肢を出さない。",
     "テンプレート作成や設定変更は、ユーザーが明示的に yes した項目だけ行う。",
+    "configure_settings は inspect / compare / preview まで。各設定の変更は別承認後にだけ実行する。",
     "dismiss_30d / dismiss_90d / dismiss_forever を選ばれたら、採用先の .repo-preflight.json に記録する"
     "（--record-dismissal または preferences API）。secret 等 dismissible=false は記録しない。",
     "suppressed_proposals は『次から出さない』済み。必要なら設定ファイルを見せて解除方法を案内する。",
@@ -467,15 +471,93 @@ def build_create_repo_proposals(*, scan_available: bool) -> list[dict[str, Any]]
     return proposals
 
 
+def build_github_settings_proposals(
+    review: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """read-only settings review を設定ごとの対話提案へ変換する。"""
+    if review is None:
+        return [
+            _proposal(
+                id="inspect_github_settings",
+                kind="github_setting_change",
+                severity="required",
+                question=(
+                    "GitHub Settings のread-only取得結果がありません。"
+                    "対象owner/nameと認証を確認して再検査しますか?"
+                ),
+                current="unknown",
+                proposed={"action": "inspect_github_settings_then_rerun"},
+                options=_yes_no_options("再検査する", "中止する"),
+                default="yes",
+                why="取得不能を無効(false)と推測しない",
+            )
+        ]
+
+    proposals: list[dict[str, Any]] = []
+    for setting in review.get("settings") or []:
+        if setting.get("classification") == "no_change":
+            continue
+        name = str(setting.get("name") or "unknown")
+        safe_name = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+        tier = str(setting.get("tier") or "recommended")
+        unavailable = setting.get("classification") == "unavailable"
+        proposals.append(
+            _proposal(
+                id=f"github_setting_{safe_name or 'unknown'}",
+                kind="github_setting_change",
+                severity="required" if tier == "required" else "recommended",
+                question=(
+                    f"GitHub setting `{name}` は current={setting.get('observed_value')!r}, "
+                    f"recommended={setting.get('recommended_value')!r} です。"
+                    + (
+                        "取得不能のため権限・plan・organization policyを確認して再検査しますか?"
+                        if unavailable
+                        else "外部影響とrollbackを確認し、この設定だけ変更候補にしますか?"
+                    )
+                ),
+                current={
+                    "repository": review.get("repository"),
+                    "profile": review.get("profile"),
+                    "value": setting.get("observed_value"),
+                    "classification": setting.get("classification"),
+                },
+                proposed={
+                    "approved": False,
+                    "recommended_value": setting.get("recommended_value"),
+                    "operation": setting.get("proposed_operation"),
+                    "external_effect": setting.get("external_effect"),
+                    "rollback": setting.get("rollback"),
+                    "on_approval": "fresh_read_then_execute_separately_then_verify",
+                },
+                options=(
+                    [
+                        {"id": "reinspect", "label": "取得条件を直して再検査"},
+                        {"id": "stop", "label": "中止する"},
+                    ]
+                    if unavailable
+                    else [
+                        {"id": "previewed", "label": "個別変更の承認判断へ進む"},
+                        {"id": "keep", "label": "現在値を維持する"},
+                    ]
+                ),
+                default="reinspect" if unavailable else "keep",
+                blocks_intent=bool(setting.get("blocks_intent")),
+                why=str(setting.get("reason") or "GitHub Settings profileとの差分"),
+            )
+        )
+    return proposals
+
+
 def build_confirmations(
     *,
     intent: str,
     audience: str,
     scan: dict[str, Any] | None,
+    github_settings_review: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     label = INTENT_LABELS.get(intent, intent)
     head = (scan or {}).get("head")
-    repo = (scan or {}).get("repo")
+    repo = (scan or {}).get("repo") or (github_settings_review or {}).get("repository")
     scan_scope = (scan or {}).get("scan_scope") or {}
     base_ref = scan_scope.get("base_ref")
     base_oid = scan_scope.get("base_oid")
@@ -519,6 +601,14 @@ def build_confirmations(
         base["proposed"] = {
             "action": "create_private_repository",
             "reminder": "public 作成や push は含めない",
+        }
+    elif intent == "configure_settings":
+        base["proposed"] = {
+            "action": "configure_settings",
+            "reminder": (
+                "この確認は設定変更を包括承認しない。対象repository、現在値、"
+                "正確な操作、外部影響、rollbackを設定ごとに再掲して別承認する"
+            ),
         }
     else:
         base["proposed"] = {"action": intent}
@@ -612,6 +702,7 @@ def build_dialogue(
     preferences: dict[str, Any] | None = None,
     github_baseline: dict[str, Any] | None = None,
     preferences_module: Any | None = None,
+    github_settings_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if intent not in INTENTS:
         raise ValueError(f"unknown intent: {intent}")
@@ -622,6 +713,10 @@ def build_dialogue(
     proposals: list[dict[str, Any]] = []
     if intent == "create_repo" and scan is None:
         proposals.extend(build_create_repo_proposals(scan_available=False))
+    elif intent == "configure_settings":
+        # remote Settings review はlocal repository scanと独立したread-only gate。
+        # repo pathはorigin解決にだけ使い、既存local baselineを設定確認へ混ぜない。
+        pass
     elif scan is not None:
         proposals.extend(
             build_proposals_from_scan(intent=intent, scan=scan, audience=audience)
@@ -641,6 +736,9 @@ def build_dialogue(
                 default="yes",
             )
         )
+
+    if intent == "configure_settings":
+        proposals.extend(build_github_settings_proposals(github_settings_review))
 
     if github_baseline is not None:
         baseline_proposal = build_github_baseline_proposal(github_baseline)
@@ -665,7 +763,12 @@ def build_dialogue(
             proposal["max_dismissal"] = None
 
     # create_repo + scan 時は build_proposals_from_scan 内で create 提案も付く
-    confirmations = build_confirmations(intent=intent, audience=audience, scan=scan)
+    confirmations = build_confirmations(
+        intent=intent,
+        audience=audience,
+        scan=scan,
+        github_settings_review=github_settings_review,
+    )
     # intent 最終確認自体は dismiss 不可
     for item in confirmations:
         item["dismissible"] = False
@@ -690,6 +793,7 @@ def build_dialogue(
             "load_error": prefs.get("load_error"),
         },
         "github_baseline": github_baseline,
+        "github_settings_review": github_settings_review,
         "proposals": proposals,
         "suppressed_proposals": suppressed,
         "confirmations": confirmations,
@@ -776,7 +880,7 @@ def format_dialogue_for_agent(dialogue: dict[str, Any]) -> str:
 
 
 def intent_needs_scan(intent: str) -> bool:
-    return intent != "create_repo"
+    return intent not in {"create_repo", "configure_settings"}
 
 
 def intent_uses_release_gate(intent: str) -> bool:

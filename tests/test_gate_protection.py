@@ -38,6 +38,7 @@ def test_documentation_contract_workflow_invokes_the_gate_at_full_strength():
         or "pip install -e '.[test]'" in executable
     )
 
+
 def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():
     body = _read(".github/workflows/documentation-contract.yml")
     assert "pull_request:" in body
@@ -50,6 +51,14 @@ def test_ci_workflow_keeps_ruleset_required_job_names():
     assert "name: test (${{ matrix.python-version }})" in body
     assert '"3.11"' in body
     assert '"3.13"' in body
+
+
+def test_ci_pins_and_runs_ai_ratchet_gate_in_every_job():
+    body = _read(".github/workflows/ci.yml")
+
+    assert body.count('python -m pip install "ai-ratchet-gate==0.1.1"') == 3
+    assert body.count("python -m ai_ratchet_gate --repo .") == 3
+    assert (REPO / ".ai-ratchet-gate" / "baseline.txt").is_file()
 
 
 def test_consistency_config_stays_enforce():
@@ -66,6 +75,7 @@ def test_codeowners_covers_gate_and_watchdog():
     for required in (
         "/.github/",
         "/.repo-preflight-consistency.json",
+        "/.ai-ratchet-gate/",
         "/tests/test_gate_protection.py",
         "/tests/test_public_narrative_contract.py",
     ):
