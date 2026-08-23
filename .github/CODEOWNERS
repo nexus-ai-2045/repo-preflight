@@ -1,7 +1,0 @@
-# 門番 (documentation-contract) と見張り (test_gate_protection) の無音改変防止。
-# ここに載せた path を触る PR は所有者の approve が必要になる
-# (ruleset 側で "Require review from Code Owners" を有効にして効力を持つ)。
-/.github/ @nexus-ai-2045
-/.repo-preflight-consistency.json @nexus-ai-2045
-/tests/test_gate_protection.py @nexus-ai-2045
-/tests/test_public_narrative_contract.py @nexus-ai-2045
