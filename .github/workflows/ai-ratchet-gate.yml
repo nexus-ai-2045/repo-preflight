@@ -7,6 +7,7 @@ name: ai-ratchet-gate
 on:
   pull_request:
     branches: ["main"]
+  merge_group:
   push:
     branches: ["main"]
   workflow_dispatch:
@@ -15,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  AI_RATCHET_GATE_WHEEL_URL: https://github.com/nexus-ai-2045/ai-ratchet-gate/releases/download/v0.1.0/ai_ratchet_gate-0.1.0-py3-none-any.whl
-  AI_RATCHET_GATE_WHEEL_SHA256: ccccfb5c28ca9c34317d2d79c79124cc72daf5e1b8f9be7897867eebe9b75612
+  AI_RATCHET_GATE_WHEEL_URL: https://github.com/nexus-ai-2045/ai-ratchet-gate/releases/download/v0.1.1/ai_ratchet_gate-0.1.1-py3-none-any.whl
+  AI_RATCHET_GATE_WHEEL_SHA256: b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7
 
 jobs:
   ratchet:
@@ -36,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           # pip はファイル名からバージョンを読む。短縮名にすると Invalid wheel filename になる。
-          WHEEL_PATH="/tmp/ai_ratchet_gate-0.1.0-py3-none-any.whl"
+          WHEEL_PATH="/tmp/ai_ratchet_gate-0.1.1-py3-none-any.whl"
           curl -fsSL -o "$WHEEL_PATH" "$AI_RATCHET_GATE_WHEEL_URL"
           echo "${AI_RATCHET_GATE_WHEEL_SHA256}  ${WHEEL_PATH}" | sha256sum -c -
           python -m pip install --no-deps "$WHEEL_PATH"
