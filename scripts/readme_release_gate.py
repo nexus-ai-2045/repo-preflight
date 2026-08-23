@@ -380,6 +380,11 @@ def _is_image_target(target: str) -> bool:
     return path.endswith(IMAGE_LINK_EXT)
 
 
+def _is_remote_target(target: str) -> bool:
+    lowered = target.strip().casefold()
+    return lowered.startswith("https://") or lowered.startswith("http://")
+
+
 def _is_evidence_target(target: str) -> bool:
     if _is_image_target(target):
         return False
@@ -497,16 +502,22 @@ def _ai_paste_contract_findings(
                 )
 
     visible = _visible_markdown(lines)
+    refs = _reference_targets(visible)
     linked_spans, linked_pairs = _figure_pairs(visible)
     bare_found = False
     for match in BARE_IMAGE_RE.finditer(visible):
         if _covered_by_span(match.start(), linked_spans):
+            continue
+        if _is_remote_target(match.group(1)):
             continue
         bare_found = True
         break
     if not bare_found:
         for match in BARE_REF_IMAGE_RE.finditer(visible):
             if _covered_by_span(match.start(), linked_spans):
+                continue
+            source = _resolve_reference(match.group(1), refs)
+            if _is_remote_target(source):
                 continue
             bare_found = True
             break
@@ -518,6 +529,8 @@ def _ai_paste_contract_findings(
         )
     else:
         for source, destination in linked_pairs:
+            if _is_remote_target(source):
+                continue
             if source == destination or not _is_evidence_target(destination):
                 warn(
                     "figure_not_linked_to_evidence",
