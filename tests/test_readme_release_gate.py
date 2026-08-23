@@ -575,3 +575,279 @@ def test_blockquoted_mermaid_suppresses_visualize(tmp_path: Path):
     assert "Localize Diagram" in report["recommended_capabilities"]
     assert "Visualize" not in report["recommended_capabilities"]
     assert report["metrics"]["diagram_count"] == 1
+
+
+def test_japanese_command_quickstart_without_paste_url_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            "python -m pip install -e \".[test]\"\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" in _codes(report)
+    assert "quickstart_is_command_procedure" in _codes(report)
+    assert "Paste To AI" in report["recommended_capabilities"]
+    assert report["status"] == "pass"
+
+
+def test_japanese_paste_without_danger_review_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            "https://github.com/nexus-ai-2045/sample\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_danger_review" in _codes(report)
+    assert "Danger Review Prompt" in report["recommended_capabilities"]
+    assert report["status"] == "pass"
+
+
+def test_japanese_ai_paste_quickstart_with_danger_review_is_clean(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            (
+                "このリポジトリを読んで直して。先に危険レビューを出せ。\n"
+                "削除・--force・GitHub write・visibility 変更・secret 露出・"
+                "個人パスを実行していないか。unknown を安全と読まない。\n"
+                "https://github.com/nexus-ai-2045/sample\n"
+            ),
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" not in _codes(report)
+    assert "quickstart_missing_danger_review" not in _codes(report)
+    assert "quickstart_is_command_procedure" not in _codes(report)
+
+
+def test_bare_figure_without_evidence_link_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY + "\n![概要](docs/assets/hero.jpg)\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" in _codes(report)
+    assert "Link Figures To Evidence" in report["recommended_capabilities"]
+    assert report["status"] == "pass"
+
+
+def test_figure_linked_to_decision_is_clean(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" not in _codes(report)
+
+
+def test_japanese_usage_section_is_not_ai_paste_quickstart(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        """# サンプル
+
+サンプルは、人へ見せる直前の確認を短時間で終える読み取り専用のツールです。
+
+## 目的
+
+公開してよいかの判断と、テストが通ったことを分けて扱います。
+
+## できること
+
+- リポジトリの状態を調べる
+
+## 使い方
+
+```bash
+python -m pip install -e ".[test]"
+python scripts/check.py --json
+```
+
+## 制約
+
+公開や外部への送信そのものは行いません。
+""",
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" not in _codes(report)
+    assert "quickstart_is_command_procedure" not in _codes(report)
+
+
+def test_english_readme_skips_ai_paste_contract(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        """# Sample
+
+Sample is a read-only inspection tool.
+
+## Purpose
+
+Separate machine checks from human publication decisions.
+
+## Features
+
+- Inspect state
+
+## Quickstart
+
+```powershell
+python -m pip install -e ".[test]"
+```
+
+## Limitations
+
+It never publishes.
+""",
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" not in _codes(report)
+    assert "quickstart_is_command_procedure" not in _codes(report)
+    assert "figure_not_linked_to_evidence" not in _codes(report)
+
+
+PASTE_WITH_DANGER = (
+    "このリポジトリを読んで直して。先に危険レビューを出せ。\n"
+    "削除・--force・GitHub write・visibility 変更・secret 露出・"
+    "個人パスを実行していないか。unknown を安全と読まない。\n"
+    "https://github.com/nexus-ai-2045/sample\n"
+)
+
+
+def test_empty_japanese_quickstart_is_flagged_for_missing_paste(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "## クイックスタート\n\n説明のとおりに実行します。\n",
+            "## クイックスタート\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" in _codes(report)
+
+
+def test_danger_review_noun_without_request_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            "危険レビューは不要です。\nhttps://github.com/nexus-ai-2045/sample\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_danger_review" in _codes(report)
+
+
+def test_figure_linked_to_unrelated_url_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY + "\n[![概要](docs/assets/hero.jpg)](https://example.com)\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" in _codes(report)
+
+
+def test_fenced_image_example_is_not_a_figure_finding(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            PASTE_WITH_DANGER,
+        )
+        + "\n```markdown\n![概要](docs/assets/hero.jpg)\n```\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" not in _codes(report)
+
+
+def test_fenced_heading_does_not_cut_quickstart_paste(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            "```text\n## 依頼\n" + PASTE_WITH_DANGER + "```\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" not in _codes(report)
+    assert "quickstart_missing_danger_review" not in _codes(report)
+
+
+def test_reference_style_bare_image_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" in _codes(report)
+
+
+def test_pip3_and_tab_separated_pip_are_command_procedures(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            PASTE_WITH_DANGER + "pip3 install package\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_is_command_procedure" in _codes(report)
+
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            PASTE_WITH_DANGER + "python -m pip\tinstall package\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_is_command_procedure" in _codes(report)
+
+
+def test_english_bare_figure_is_flagged(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        """# Sample
+
+Sample is a read-only inspection tool.
+
+## Purpose
+
+Separate machine checks from human publication decisions.
+
+## Features
+
+- Inspect state
+
+## Quickstart
+
+Paste the repository URL to an AI.
+
+## Limitations
+
+It never publishes.
+
+![overview](docs/assets/hero.jpg)
+""",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" in _codes(report)
+    assert "quickstart_missing_ai_paste" not in _codes(report)
+
+
+def test_html_comment_github_url_is_not_a_paste_target(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY.replace(
+            "説明のとおりに実行します。",
+            "先に危険レビューを出せ。削除 write visibility secret unknown\n"
+            "<!-- https://github.com/nexus-ai-2045/sample -->\n",
+        ),
+    )
+    report = MODULE.review(path)
+    assert "quickstart_missing_ai_paste" in _codes(report)
