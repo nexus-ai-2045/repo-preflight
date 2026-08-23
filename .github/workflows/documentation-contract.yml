@@ -50,7 +50,7 @@ jobs:
               sys.exit(
                   f"{path} was edited by hand: it declares rules_version "
                   f"{declared.group(1)} but its body hashes to {actual}. "
-                  "Regenerate it from nexus_ai scripts/export_pr_self_review.py."
+                  "Regenerate it from the rule exporter (scripts/export_pr_self_review.py)."
               )
           print(f"{path} matches rules_version {actual}")
           PY

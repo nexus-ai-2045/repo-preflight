@@ -4,7 +4,7 @@ type: reference
 status: active
 scope: pr-review-recurrence
 tags: [review, quality, pr]
-generated_by: nexus-ai-2045/nexus_ai scripts/export_pr_self_review.py
+generated_by: pr-review-rule-exporter scripts/export_pr_self_review.py
 ---
 
 # PR セルフレビュー
@@ -22,7 +22,7 @@ generated_by: nexus-ai-2045/nexus_ai scripts/export_pr_self_review.py
 | | |
 |---|---|
 | rules_version | `dfb366f323516772` |
-| 生成元 | `nexus-ai-2045/nexus_ai` `references/pr-review-recurrence-rules.md` |
+| 生成元 | `pr-review-rule-exporter` `references/pr-review-recurrence-rules.md` |
 
 更新は正本側で行い、`scripts/export_pr_self_review.py` で再生成して各リポジトリへ配る。
 `rules_version` が配布先ごとに食い違っている状態は、正本側の
