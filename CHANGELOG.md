@@ -42,7 +42,7 @@
 
 ### 追加
 
-- `--target-diff` により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。
+- `--base-ref`（`push` / `open_pr` / `merge`）により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。結果 JSON の `scan_scope.mode` は内部値 `target_diff`。CLI フラグ名としての `--target-diff` はない。
 - repository 全体の文書・設定・実装の食い違いを検出する consistency gate を追加 (#15)。
 - README の理解順序、表の幅、Mermaid 図のラベルを含む日本語可読性ゲートを追加 (#16, #19)。
 
@@ -65,7 +65,7 @@
 - skill に絶対 path を焼かない portable install に変更。
   - install 先に `run_preflight.py` + `checkout/` link を置く
   - root 解決: `REPO_PREFLIGHT_ROOT` → `checkout/` → cwd 探索
-- 他人の skill フォルダをコピーすると壊れる問題を設計上避ける（各自 `--apply`）
+- 他人の skill フォルダをコピーすると壊れる問題を設計上避ける（各自 `install_runtime_skills.py --apply`）
 - Claude Code / Grok adapter と runtime-support 文書を更新
 
 ## 0.3.1 - 2026-08-06
