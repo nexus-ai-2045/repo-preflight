@@ -646,6 +646,19 @@ def test_figure_linked_to_decision_is_clean(tmp_path: Path):
     assert "figure_not_linked_to_evidence" not in _codes(report)
 
 
+def test_status_badges_are_not_treated_as_figures(tmp_path: Path):
+    path = write_readme(
+        tmp_path,
+        JAPANESE_BODY
+        + "\n[![CI](https://github.com/nexus-ai-2045/sample/actions/workflows/ci.yml/badge.svg)]"
+        "(https://github.com/nexus-ai-2045/sample/actions/workflows/ci.yml)\n"
+        + "[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)\n"
+        + "[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
+    )
+    report = MODULE.review(path)
+    assert "figure_not_linked_to_evidence" not in _codes(report)
+
+
 def test_japanese_usage_section_is_not_ai_paste_quickstart(tmp_path: Path):
     path = write_readme(
         tmp_path,
