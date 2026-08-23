@@ -157,7 +157,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 このリポジトリ自身は `enforce` に固定し、CIで毎回検査しています（ubuntu / macOS は Python 3.11 と 3.13、Windows は 3.13 のみ）。設定を消したり段階を下げたりすると、CIが失敗します。設定例と境界は [リポジトリ整合性ゲート](docs/repository-consistency-gate.md)、長く維持する設計判断は [ADR一覧](docs/adr/README.md)、実行環境の保証境界は [docs/runtime-support.md](docs/runtime-support.md) を参照してください。
 
-加えて、trackedなのにignore対象でもあるpathの新規増加は、公開wheel `ai-ratchet-gate==0.1.1` とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
+加えて、trackedなのにignore対象でもあるpathの新規増加は、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
 
 ## そのまま調べる（CIや現状把握）
 

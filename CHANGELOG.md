@@ -6,7 +6,7 @@
 
 - `configure_settings` intent と `solo_public` / `team_public` / `high_risk_public` profileを追加した。
 - GitHub SettingsをGETだけで実測し、現在値、推奨値、外部影響、rollback、個別API操作previewを `repo-preflight.github-settings-review/v1` で返すようにした。
-- review済みの空baselineと公開wheel `ai-ratchet-gate==0.1.1` を全CI jobへ追加し、trackedかつignoredなpathの新規増加を止めるようにした。
+- review済みの空baselineと、公開release wheelのURL・SHA-256を固定した `ai-ratchet-gate` v0.1.1を全CI jobへ追加し、trackedかつignoredなpathの新規増加を止めるようにした。
 
 ### 保証境界
 

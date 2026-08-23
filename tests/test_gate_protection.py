@@ -55,9 +55,21 @@ def test_ci_workflow_keeps_ruleset_required_job_names():
 
 def test_ci_pins_and_runs_ai_ratchet_gate_in_every_job():
     body = _read(".github/workflows/ci.yml")
+    requirements = _read("requirements-tools.txt")
 
-    assert body.count('python -m pip install "ai-ratchet-gate==0.1.1"') == 3
+    assert (
+        body.count("python -m pip install --require-hashes -r requirements-tools.txt")
+        == 3
+    )
     assert body.count("python -m ai_ratchet_gate --repo .") == 3
+    assert (
+        "releases/download/v0.1.1/ai_ratchet_gate-0.1.1-py3-none-any.whl"
+        in requirements
+    )
+    assert (
+        "sha256:b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7"
+        in requirements
+    )
     assert (REPO / ".ai-ratchet-gate" / "baseline.txt").is_file()
 
 

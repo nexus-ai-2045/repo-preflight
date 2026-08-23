@@ -26,7 +26,7 @@
    各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
 4. **クロス OS CI**  
    `.github/workflows/ci.yml` どおり: ubuntu-latest と macos-latest で Python 3.11 / 3.13、  
-   windows-latest で Python 3.13 のみ。各ジョブで pytest、`runtime_smoke`、公開wheel `ai-ratchet-gate==0.1.1` を実行する。
+   windows-latest で Python 3.13 のみ。各ジョブで pytest、`runtime_smoke`、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
 
