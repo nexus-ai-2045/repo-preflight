@@ -131,6 +131,7 @@ Dependabot version updatesは`.github/dependabot.yml`で管理する。最低限
 - approval数は0でもよい。人間が最終mergeを実行する。
 - squash mergeとbranch自動削除を基本にする。
 - auto-mergeはmerge待ちが実害になるまでOFFにする。
+- CODEOWNERS と「Require review from Code Owners」は付けない。作者は自分のPRをApproveできず、一人だとマージ不能になる。複数maintainerになってから検討する。
 
 ### 複数maintainer
 
