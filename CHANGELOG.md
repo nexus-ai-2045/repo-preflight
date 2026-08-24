@@ -19,6 +19,26 @@
 - 非保証: 生成元の正本が正しいこと、配布物が最新の正本から生成されたこと。
   後者は正本側の配布台帳が担当する。
 
+## 0.5.1 - 2026-08-24
+
+### 追加
+
+- `configure_settings` intent と `solo_public` / `team_public` / `high_risk_public` profileを追加した。
+- GitHub SettingsをGETだけで実測し、現在値、推奨値、外部影響、rollback、個別API操作previewを `repo-preflight.github-settings-review/v1` で返すようにした。
+- review済みの空baselineと、公開release wheelのURL・SHA-256を固定した `ai-ratchet-gate` v0.1.1を全CI jobへ追加し、trackedかつignoredなpathの新規増加を止めるようにした。
+
+### 修正 / 改善
+
+- Actions permissionsのPUT previewに必須`enabled`とfreshな関連fieldを含め、実行不能な一項目bodyを返さないようにした。
+- 認証account、複数rulesetの累積効果、bypass actor、required check名、advanced CodeQLをfail-closedに確認するようにした。
+- `high_risk_public`のselected-action patternを未確認のままpassせず、Dependabot security updatesのrequired/recommended境界をガイドと一致させた。
+- Windows CIをUTF-8へ固定し、公開release wheelの日本語出力を全OSで実行できるようにした。
+
+### 保証境界
+
+- 保証: Settingsのread-only取得、profile比較、403/404の`unavailable`分類、設定ごとのpreview分離。
+- 非保証: GitHub設定の自動変更、organization/enterprise policyの全体把握、設定変更・push・PR・merge・公開・releaseの承認。
+
 ## 0.5.0 - 2026-08-17
 
 ### 追加

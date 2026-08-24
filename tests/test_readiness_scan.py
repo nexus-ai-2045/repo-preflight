@@ -71,6 +71,59 @@ def test_output_is_json_without_any_output_flag(tmp_path: Path):
     assert json.loads(result.stdout)["status"] == "pass"
 
 
+def test_configure_settings_cli_uses_profile_and_attaches_live_review(
+    tmp_path: Path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+
+    class SettingsModule:
+        PROFILES = ("solo_public", "team_public", "high_risk_public")
+
+        @staticmethod
+        def repository_from_repo(path):
+            assert path == repo
+            return "example/repo"
+
+        @staticmethod
+        def review_repository(repository, profile):
+            assert repository == "example/repo"
+            assert profile == "team_public"
+            return {
+                "schema_version": "repo-preflight.github-settings-review/v1",
+                "status": "pass",
+                "repository": repository,
+                "profile": profile,
+                "settings": [],
+                "external_actions_performed": False,
+            }
+
+    monkeypatch.setattr(MODULE, "load_github_settings_module", lambda: SettingsModule)
+    options = MODULE.ScanOptions(
+        repo=repo,
+        intent="configure_settings",
+        github_settings_profile="team_public",
+    )
+
+    dialogue = MODULE.build_intent_dialogue(options)
+
+    assert dialogue["intent"] == "configure_settings"
+    assert dialogue["github_settings_review"]["repository"] == "example/repo"
+    assert dialogue["github_settings_review"]["profile"] == "team_public"
+    assert dialogue["github_settings_review"]["external_actions_performed"] is False
+    assert dialogue["scan"] is None
+
+
+def test_configure_settings_requires_repo_path():
+    args = MODULE.build_parser().parse_args(["--intent", "configure_settings"])
+
+    try:
+        MODULE.resolve_options(args, stdin_is_tty=False)
+    except SystemExit as exc:
+        assert "--repo is required" in str(exc)
+    else:
+        raise AssertionError("configure_settings without --repo must fail closed")
+
+
 def test_removed_json_flag_is_rejected(tmp_path: Path):
     repo = make_repo(tmp_path)
 

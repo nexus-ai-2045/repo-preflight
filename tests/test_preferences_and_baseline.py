@@ -161,9 +161,9 @@ def test_github_baseline_parser_and_freshness():
     parsed = PREFS.parse_github_baseline(text)
     assert parsed == {"last_reviewed": "2026-01-01", "max_age_days": 90}
     path = ROOT / "references" / "github-settings.md"
-    status = PREFS.github_baseline_status(path, today=date(2026, 8, 6))
+    status = PREFS.github_baseline_status(path, today=date(2026, 8, 24))
     assert status["status"] == "fresh"
-    assert status["last_reviewed"] == "2026-08-06"
+    assert status["last_reviewed"] == "2026-08-24"
     stale = PREFS.github_baseline_status(path, today=date(2026, 12, 1))
     assert stale["status"] == "stale"
 
