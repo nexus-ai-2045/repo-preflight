@@ -1,5 +1,5 @@
 name: repo-preflight
-description: "repoの設計、実装、検証、登録、README release gate、PR、公開、後片付けを証拠と承認ゲート付きで進める。PR/push/公開/release/repo作成の直前に intent 対話を発火する。"
+description: "repoの設計、実装、検証、登録、README release gate、PR、公開、GitHub Settings、後片付けを証拠と承認ゲート付きで進める。PR/push/公開/release/repo作成/Settings確認の直前に intent 対話を発火する。"
 interface:
   key: repo-preflight
   display_name: "Repo Preflight"
