@@ -17,6 +17,10 @@ def test_runtime_adapters_exist_and_name_repo_preflight():
         "runtime/agents/openai.yaml",
         "runtime/shared/run_preflight.py",
         "docs/runtime-support.md",
+        "scripts/ai_entry_contract.py",
+        "schemas/ai-entry-contract.schema.json",
+        "assets/ai-entry-contract.example.json",
+        "docs/ai-constitution-entry-contract.md",
     ):
         path = ROOT / rel
         assert path.is_file(), rel
