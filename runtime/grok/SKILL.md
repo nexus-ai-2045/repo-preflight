@@ -31,7 +31,8 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
-Use `--base-ref` only for target-diff checks before `push` / `open_pr` in an existing private repo.
+Use `--base-ref` only for target-diff checks before `push` / `open_pr` / `merge` in an existing private repo
+(JSON `scan_scope.mode` is `target_diff`; there is no `--target-diff` CLI flag).
 The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` / `release`.
 
 ## MUST

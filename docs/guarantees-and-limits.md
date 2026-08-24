@@ -8,7 +8,7 @@
 |---|---|
 | 読み取り専用検査 | ローカルGitの現在treeと履歴を変更せず読む |
 | 自動判定項目 | 必須文書・secret候補・個人path・作者名義・CI設定の最低限の構造 |
-| status の意味 | pass / blocked / tool_error はCLI担当分の結果だけ |
+| status の意味 | 検査 (`scan/v3`) は pass / blocked / tool_error。対話 (`dialogue/v3`) は needs_human_input / blocked / ready_after_confirmation。いずれも公開承認ではない |
 | 公開判定の分離 | `publication_decision` は常に人間レビュー要求。自動承認しない |
 | 秘密値の非出力 | 検出結果に秘密値そのものを載せない |
 

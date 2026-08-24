@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### 追加
+
+- 日本語READMEのクイックスタートを、AIへ貼る URL と危険レビュー指示にする契約を warning として検知する。
+- 図が画像自身ではなく ADR / 再現テストへリンクされているかを warning として検知する。空のクイックスタート、否定形の危険レビュー、fence内の見出し/画像例、reference-style画像、pip3、HTMLコメント内URL、英語READMEの図も対象にする。CI/License などの遠隔バッジは図ではないので対象外。
+- PRを出す前のセルフレビュー `docs/pr-self-review.md` を追加した。複数リポジトリの
+  レビュー指摘を横断で一般化した停止条件 R1〜R14 と、差分に当てる20項目からなる。
+  `CONTRIBUTING.md` の開発ルールを展開したもので、出典PR番号も非公開repository名も
+  含まない。
+- 上記は外部生成の配布物なので、`documentation-contract` で本文hashと `rules_version`
+  の一致を検査し、手編集を止めるようにした。判断根拠はADR-0002に記録した。
+
+### 保証境界
+
+- 保証: `docs/pr-self-review.md` がこのrepositoryで改変されていないこと。
+- 非保証: 生成元の正本が正しいこと、配布物が最新の正本から生成されたこと。
+  後者は正本側の配布台帳が担当する。
+
 ## 0.5.0 - 2026-08-17
 
 ### 追加
@@ -25,7 +44,7 @@
 
 ### 追加
 
-- `--target-diff` により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。
+- `--base-ref`（`push` / `open_pr` / `merge`）により、指定した差分範囲へ検査対象を限定できる preflight mode を追加 (#14)。結果 JSON の `scan_scope.mode` は内部値 `target_diff`。CLI フラグ名としての `--target-diff` はない。
 - repository 全体の文書・設定・実装の食い違いを検出する consistency gate を追加 (#15)。
 - README の理解順序、表の幅、Mermaid 図のラベルを含む日本語可読性ゲートを追加 (#16, #19)。
 
@@ -48,7 +67,7 @@
 - skill に絶対 path を焼かない portable install に変更。
   - install 先に `run_preflight.py` + `checkout/` link を置く
   - root 解決: `REPO_PREFLIGHT_ROOT` → `checkout/` → cwd 探索
-- 他人の skill フォルダをコピーすると壊れる問題を設計上避ける（各自 `--apply`）
+- 他人の skill フォルダをコピーすると壊れる問題を設計上避ける（各自 `install_runtime_skills.py --apply`）
 - Claude Code / Grok adapter と runtime-support 文書を更新
 
 ## 0.3.1 - 2026-08-06
