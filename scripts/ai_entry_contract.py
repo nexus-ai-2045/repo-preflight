@@ -37,9 +37,17 @@ def normalize_text(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def canonical_source_text(value: str) -> str:
+    """Use one trailing newline convention for hashes and projections."""
+
+    return normalize_text(value).rstrip("\n") + "\n"
+
+
 def resolve_template(value: str, *, home: Path, project: Path | None) -> Path:
     """Resolve only explicit, portable path placeholders."""
 
+    if "{PROJECT}" in value and project is None:
+        raise ValueError("project_required")
     expanded = value.replace("{HOME}", str(home))
     if project is not None:
         expanded = expanded.replace("{PROJECT}", str(project))
@@ -47,14 +55,15 @@ def resolve_template(value: str, *, home: Path, project: Path | None) -> Path:
 
 
 def path_forms(path: Path) -> set[str]:
-    """Return case-insensitive slash variants for pointer matching."""
+    """Return slash variants using the host path case semantics."""
 
     raw = str(path)
-    return {
-        raw.replace("/", "\\").casefold(),
-        raw.replace("\\", "/").casefold(),
-        path.as_posix().casefold(),
+    forms = {
+        raw.replace("/", "\\"),
+        raw.replace("\\", "/"),
+        path.as_posix(),
     }
+    return {form.casefold() for form in forms} if os.name == "nt" else forms
 
 
 def has_pointer(text: str, source: Path) -> bool:
@@ -62,7 +71,9 @@ def has_pointer(text: str, source: Path) -> bool:
 
     forms = path_forms(source)
     for line in normalize_text(text).splitlines():
-        normalized = line.replace("\\", "/").casefold()
+        normalized = line.replace("\\", "/")
+        if os.name == "nt":
+            normalized = normalized.casefold()
         pointer_forms = ["@" + form.replace("\\", "/") for form in forms]
         if any(pointer in normalized for pointer in pointer_forms):
             return True
@@ -86,9 +97,7 @@ def generated_common_block(text: str) -> tuple[str, str] | None:
 def render_materialized(source_text: str, existing: str | None = None) -> str:
     """Render the generated common block and preserve a generated overlay."""
 
-    source = normalize_text(source_text)
-    if not source.endswith("\n"):
-        source += "\n"
+    source = canonical_source_text(source_text)
     source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
     generated = (
         f"<!-- repo-preflight:ai-constitution source-sha256={source_hash} -->\n"
@@ -96,7 +105,7 @@ def render_materialized(source_text: str, existing: str | None = None) -> str:
         f"{source}"
         f"{END_MARKER}\n"
     )
-    if not existing:
+    if existing is None:
         return generated
 
     normalized = normalize_text(existing)
@@ -134,6 +143,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if len(ids) != len(entries) or len(set(ids)) != len(ids):
         raise ValueError("manifest_entry_ids_invalid")
     for entry in entries:
+        if "required" in entry and not isinstance(entry["required"], bool):
+            raise ValueError(f"manifest_required_invalid:{entry.get('id')}")
         if entry.get("strategy") not in STRATEGIES:
             raise ValueError(f"manifest_strategy_invalid:{entry.get('id')}")
         if not entry.get("runtime"):
@@ -171,7 +182,7 @@ def check_manifest(
     try:
         source_text = source.read_text(encoding="utf-8")
         source_hash = hashlib.sha256(
-            (normalize_text(source_text).rstrip("\n") + "\n").encode("utf-8")
+            canonical_source_text(source_text).encode("utf-8")
         ).hexdigest()
     except (OSError, UnicodeError) as exc:
         return {
@@ -195,7 +206,16 @@ def check_manifest(
             )
             continue
 
-        target = resolve_template(entry["path"], home=home, project=project)
+        try:
+            target = resolve_template(entry["path"], home=home, project=project)
+        except ValueError as exc:
+            return {
+                "schema": SCHEMA,
+                "status": "tool_error",
+                "source": {"exists": True, "sha256": source_hash},
+                "findings": [str(exc)],
+                "entries": [],
+            }
         if not target.is_file():
             results.append(
                 _entry_result(entry, status="missing", findings=["entry_missing"])
@@ -235,7 +255,7 @@ def check_manifest(
             )
             continue
         declared_hash, common_block = generated
-        expected = normalize_text(source_text).rstrip("\n") + "\n"
+        expected = canonical_source_text(source_text)
         findings: list[str] = []
         if declared_hash != source_hash:
             findings.append("source_hash_mismatch")
@@ -298,15 +318,34 @@ def apply_entry(
     except (OSError, ValueError, json.JSONDecodeError, KeyError, UnicodeError) as exc:
         return {"schema": SCHEMA, "status": "tool_error", "findings": [str(exc)]}
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".repo-preflight-entry-", dir=target.parent)
+    fd: int | None = None
+    temporary: str | None = None
     try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(
+            prefix=".repo-preflight-entry-", dir=target.parent
+        )
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            fd = None
             handle.write(rendered)
         os.replace(temporary, target)
+    except OSError as exc:
+        return {
+            "schema": SCHEMA,
+            "status": "tool_error",
+            "findings": [f"target_write_failed:{type(exc).__name__}"],
+        }
     finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary and os.path.exists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
     return check_manifest(manifest_path, home=home, project=project)
 
 
