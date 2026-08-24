@@ -36,6 +36,30 @@ def test_documentation_contract_workflow_invokes_the_gate_at_full_strength():
         'pip install -e ".[test]"' in executable
         or "pip install -e '.[test]'" in executable
     )
+    # 配布物 docs/pr-self-review.md の整合性ゲート。
+    # rules_version の自己整合だけだと前置き (frontmatter・出典・警告) が
+    # 無防備なので、完全ファイル digest の allowlist 照合も要求する。
+    assert "PR self-review copy integrity" in executable
+    assert "docs/pr-self-review.md" in executable
+    assert "rules_version" in executable
+    assert "docs/pr-self-review-trusted-digests.txt" in executable
+
+
+def test_pr_self_review_allowlist_matches_the_distributed_copy():
+    """allowlist が実物とずれたまま緑にならないよう、test 側でも突き合わせる。"""
+    import hashlib
+    import re
+
+    canonical = (REPO / "docs/pr-self-review.md").read_bytes().replace(b"\r\n", b"\n")
+    digest = hashlib.sha256(canonical).hexdigest()
+    allowed = {
+        line.strip().lower()
+        for line in _read("docs/pr-self-review-trusted-digests.txt").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert allowed, "allowlist is empty"
+    assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in allowed), allowed
+    assert digest in allowed, f"{digest} not allowlisted"
 
 
 def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():

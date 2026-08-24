@@ -45,6 +45,41 @@ MERMAID_DIRECTIVE_PREFIXES = (
 )
 # message 抽出を当ててよい図。flowchart 系に当てると「A[読込: x]」の : でゴミが出る
 MERMAID_MESSAGE_DIAGRAMS = ("sequencediagram",)
+IMAGE_LINK_EXT = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
+LINKED_IMAGE_RE = re.compile(r"\[!\[[^\]]*\]\(([^)]+)\)\]\(([^)]+)\)")
+LINKED_INLINE_TO_REF_RE = re.compile(r"\[!\[[^\]]*\]\(([^)]+)\)\]\[([^\]]+)\]")
+LINKED_REF_TO_INLINE_RE = re.compile(r"\[!\[[^\]]*\]\[([^\]]+)\]\]\(([^)]+)\)")
+LINKED_REF_TO_REF_RE = re.compile(r"\[!\[[^\]]*\]\[([^\]]+)\]\]\[([^\]]+)\]")
+BARE_IMAGE_RE = re.compile(r"(?<!\[)!\[[^\]]*\]\(([^)]+)\)")
+BARE_REF_IMAGE_RE = re.compile(r"(?<!\[)!\[[^\]]*\]\[([^\]]+)\]")
+REFERENCE_DEF_RE = re.compile(r"^\[([^\]]+)\]:\s+(\S+)", re.MULTILINE)
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+PIP_INSTALL_RE = re.compile(
+    r"(?:python(?:3)?[ \t]+-m[ \t]+)?pip3?[ \t]+install\b",
+    re.IGNORECASE,
+)
+DANGER_REVIEW_REQUEST_RE = re.compile(
+    r"(?:先に.{0,20})?危険レビュー.{0,24}(?:出せ|して|せよ|しろ|してください)"
+    r"|(?:必ず|先に).{0,12}危険レビュー"
+)
+DANGER_REVIEW_NEGATION_RE = re.compile(r"危険レビュー.{0,16}不要")
+GITHUB_REPO_URL_RE = re.compile(
+    r"https://github\.com/[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*"
+)
+EVIDENCE_MARKERS = (
+    "docs/decisions/",
+    "/decisions/",
+    "adr-",
+    "adr/",
+    "tests/",
+    "test_",
+    "public_ready",
+    "security.md",
+    "preflight.md",
+    "contract",
+    "artifacts.md",
+)
+SAFETY_SUBJECTS = ("write", "visibility", "secret", "unknown")
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
@@ -307,6 +342,205 @@ def _japanese_readability_findings(
     return findings, recommendations, metrics
 
 
+def _headings_outside_fences(lines: list[str]) -> list[tuple[int, str, int]]:
+    result: list[tuple[int, str, int]] = []
+    for number, line in _outside_fences(lines):
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if match:
+            result.append((len(match.group(1)), match.group(2).strip(), number))
+    return result
+
+
+def _heading_section_body(lines: list[str], aliases: tuple[str, ...]) -> str | None:
+    """指定 alias の見出し直後から、同じかより浅い見出しの直前までの本文。
+
+    見出しが無ければ None。見出しはあるが本文が空なら空文字。
+    fence 内の見出しは節境界に使わない。
+    """
+    headings = _headings_outside_fences(lines)
+    start_line: int | None = None
+    start_level: int | None = None
+    end_line = len(lines) + 1
+    for level, title, number in headings:
+        folded = title.casefold()
+        if start_line is None and any(alias in folded for alias in aliases):
+            start_line = number
+            start_level = level
+            continue
+        if start_line is not None and start_level is not None and level <= start_level:
+            end_line = number
+            break
+    if start_line is None:
+        return None
+    return "\n".join(lines[start_line : end_line - 1])
+
+
+def _is_image_target(target: str) -> bool:
+    path = target.split("?", 1)[0].split("#", 1)[0].casefold()
+    return path.endswith(IMAGE_LINK_EXT)
+
+
+def _is_remote_target(target: str) -> bool:
+    lowered = target.strip().casefold()
+    return lowered.startswith("https://") or lowered.startswith("http://")
+
+
+def _is_evidence_target(target: str) -> bool:
+    if _is_image_target(target):
+        return False
+    lowered = target.casefold()
+    return any(marker in lowered for marker in EVIDENCE_MARKERS)
+
+
+def _visible_markdown(lines: list[str]) -> str:
+    return HTML_COMMENT_RE.sub(
+        "", "\n".join(line for _, line in _outside_fences(lines))
+    )
+
+
+def _reference_targets(text: str) -> dict[str, str]:
+    return {
+        match.group(1).casefold(): match.group(2)
+        for match in REFERENCE_DEF_RE.finditer(text)
+    }
+
+
+def _resolve_reference(target: str, refs: dict[str, str]) -> str:
+    return refs.get(target.casefold(), target)
+
+
+def _has_danger_review_request(body: str) -> bool:
+    if DANGER_REVIEW_NEGATION_RE.search(body):
+        return False
+    if DANGER_REVIEW_REQUEST_RE.search(body) is None:
+        return False
+    if "削除" not in body:
+        return False
+    lowered = body.casefold()
+    return all(token in lowered for token in SAFETY_SUBJECTS)
+
+
+def _covered_by_span(start: int, spans: list[tuple[int, int]]) -> bool:
+    return any(left <= start < right for left, right in spans)
+
+
+def _figure_pairs(text: str) -> tuple[list[tuple[int, int]], list[tuple[str, str]]]:
+    refs = _reference_targets(text)
+    linked_spans: list[tuple[int, int]] = []
+    linked_pairs: list[tuple[str, str]] = []
+
+    def add_linked(match: re.Match[str], source: str, destination: str) -> None:
+        linked_spans.append(match.span())
+        linked_pairs.append((source, destination))
+
+    for match in LINKED_IMAGE_RE.finditer(text):
+        add_linked(match, match.group(1), match.group(2))
+    for match in LINKED_INLINE_TO_REF_RE.finditer(text):
+        add_linked(
+            match,
+            match.group(1),
+            _resolve_reference(match.group(2), refs),
+        )
+    for match in LINKED_REF_TO_INLINE_RE.finditer(text):
+        add_linked(
+            match,
+            _resolve_reference(match.group(1), refs),
+            match.group(2),
+        )
+    for match in LINKED_REF_TO_REF_RE.finditer(text):
+        add_linked(
+            match,
+            _resolve_reference(match.group(1), refs),
+            _resolve_reference(match.group(2), refs),
+        )
+    return linked_spans, linked_pairs
+
+
+def _ai_paste_contract_findings(
+    lines: list[str],
+) -> tuple[list[dict[str, object]], set[str]]:
+    """公開 README のクイックスタートを、AIへ貼る危険レビュー付きにする契約。
+
+    貼り付け契約は日本語READMEだけ。図の根拠リンクは言語を問わない。
+    warning に留め、下流を hard block しない。
+    """
+    findings: list[dict[str, object]] = []
+    recommendations: set[str] = set()
+
+    def warn(code: str, message: str, rec: str) -> None:
+        findings.append({"code": code, "severity": "warning", "message": message})
+        recommendations.add(rec)
+
+    if _is_japanese_document(lines):
+        body = _heading_section_body(
+            lines, ("クイックスタート", "quickstart", "quick start")
+        )
+        if body is not None:
+            visible_body = HTML_COMMENT_RE.sub("", body)
+            has_paste = GITHUB_REPO_URL_RE.search(visible_body) is not None
+            has_pip = PIP_INSTALL_RE.search(visible_body) is not None
+            if not has_paste:
+                warn(
+                    "quickstart_missing_ai_paste",
+                    "クイックスタートは人のコマンド手順ではなく、"
+                    "AIに貼る GitHub URL を置いてください。",
+                    "Paste To AI",
+                )
+            if has_pip:
+                warn(
+                    "quickstart_is_command_procedure",
+                    "クイックスタートに pip install があります。"
+                    "人間が叩く手順ではなく、AIへ貼る文にしてください。",
+                    "Paste To AI",
+                )
+            if has_paste and not _has_danger_review_request(visible_body):
+                warn(
+                    "quickstart_missing_danger_review",
+                    "貼る文に危険レビューを先に出させる指示がありません。"
+                    "削除・GitHub write・visibility・secret・unknown を安全と読まないことを書いてください。",
+                    "Danger Review Prompt",
+                )
+
+    visible = _visible_markdown(lines)
+    refs = _reference_targets(visible)
+    linked_spans, linked_pairs = _figure_pairs(visible)
+    bare_found = False
+    for match in BARE_IMAGE_RE.finditer(visible):
+        if _covered_by_span(match.start(), linked_spans):
+            continue
+        if _is_remote_target(match.group(1)):
+            continue
+        bare_found = True
+        break
+    if not bare_found:
+        for match in BARE_REF_IMAGE_RE.finditer(visible):
+            if _covered_by_span(match.start(), linked_spans):
+                continue
+            source = _resolve_reference(match.group(1), refs)
+            if _is_remote_target(source):
+                continue
+            bare_found = True
+            break
+    if bare_found:
+        warn(
+            "figure_not_linked_to_evidence",
+            "図は画像ファイル自身ではなく、根拠 (ADR / テスト / 契約文書) へリンクしてください。",
+            "Link Figures To Evidence",
+        )
+    else:
+        for source, destination in linked_pairs:
+            if _is_remote_target(source):
+                continue
+            if source == destination or not _is_evidence_target(destination):
+                warn(
+                    "figure_not_linked_to_evidence",
+                    "図のリンク先が根拠ではありません。ADR や再現テストなどへ向けてください。",
+                    "Link Figures To Evidence",
+                )
+                break
+    return findings, recommendations
+
+
 def review(readme: Path) -> dict[str, object]:
     text = readme.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -374,6 +608,9 @@ def review(readme: Path) -> dict[str, object]:
     ja_findings, ja_recommendations, ja_metrics = _japanese_readability_findings(lines)
     findings.extend(ja_findings)
     recommendations |= ja_recommendations
+    paste_findings, paste_recommendations = _ai_paste_contract_findings(lines)
+    findings.extend(paste_findings)
+    recommendations |= paste_recommendations
 
     emoji_heading = re.compile(r"^#{1,6}\s+[^\w\s`#]", re.UNICODE)
     if any(emoji_heading.match(line) for line in lines):
