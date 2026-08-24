@@ -63,7 +63,8 @@ def has_pointer(text: str, source: Path) -> bool:
     forms = path_forms(source)
     for line in normalize_text(text).splitlines():
         normalized = line.replace("\\", "/").casefold()
-        if any(f"@{form.replace('\\', '/')}" in normalized for form in forms):
+        pointer_forms = ["@" + form.replace("\\", "/") for form in forms]
+        if any(pointer in normalized for pointer in pointer_forms):
             return True
     return False
 
