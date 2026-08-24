@@ -21,6 +21,7 @@ GUARANTEES = (
     "検出結果に秘密値そのものを出力しない",
     "推奨質問の dismiss/snooze を採用先 .repo-preflight.json に記録し、次回から抑止する",
     "同梱 GitHub 設定ガイドの last_reviewed 期限切れを検知し、更新確認の質問を出す",
+    "configure_settings intent ではGitHub APIをread-only取得し、profile差分と個別previewを返す",
     "宣言設定がある repo では Markdown・README契約・影響マップ・SSOT生成物の整合性を検査する",
 )
 
@@ -28,7 +29,7 @@ NON_GUARANTEES = (
     "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
-    "GitHubのbranch保護・review必須・Actions権限など remote 設定の現在状態",
+    "通常scanにおけるGitHub remote設定の現在状態 (configure_settings intentでのみ別途read-only取得する)",
     "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
@@ -375,6 +376,16 @@ def load_dialogue_gate():
 def load_preferences_module():
     script = Path(__file__).with_name("preferences.py")
     spec = importlib.util.spec_from_file_location("preferences", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_github_settings_module():
+    script = Path(__file__).with_name("github_settings_gate.py")
+    spec = importlib.util.spec_from_file_location("github_settings_gate", script)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader
     sys.modules[spec.name] = module
@@ -741,6 +752,7 @@ class ScanOptions:
         intent: str | None = None,
         base_ref: str | None = None,
         consistency_base_ref: str | None = None,
+        github_settings_profile: str = "solo_public",
     ) -> None:
         self.repo = repo
         self.release = release
@@ -751,6 +763,7 @@ class ScanOptions:
         self.intent = intent
         self.base_ref = base_ref
         self.consistency_base_ref = consistency_base_ref
+        self.github_settings_profile = github_settings_profile
 
 
 def boundary_sections() -> dict[str, list[str]]:
@@ -793,6 +806,7 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
             if options.consistency_base_ref
             else None
         ),
+        "github_settings_profile": options.github_settings_profile,
     }
     enriched.update(boundary_sections())
     return enriched
@@ -803,7 +817,9 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
     gate = load_dialogue_gate()
     prefs_mod = load_preferences_module()
     scan_report: dict | None = None
-    needs_scan = gate.intent_needs_scan(options.intent) or options.repo is not None
+    needs_scan = gate.intent_needs_scan(options.intent) or (
+        options.intent == "create_repo" and options.repo is not None
+    )
     if needs_scan and options.repo is not None:
         release = options.release or gate.intent_uses_release_gate(options.intent)
         scan_kwargs = {
@@ -827,6 +843,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 intent=options.intent,
                 base_ref=options.base_ref,
                 consistency_base_ref=options.consistency_base_ref,
+                github_settings_profile=options.github_settings_profile,
             ),
         )
     elif needs_scan and options.repo is None:
@@ -835,6 +852,24 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
     github_baseline = prefs_mod.github_baseline_status(
         prefs_mod.default_github_baseline_path()
     )
+    github_settings_review: dict | None = None
+    if options.intent == "configure_settings" and options.repo is not None:
+        settings_mod = load_github_settings_module()
+        repository = settings_mod.repository_from_repo(options.repo)
+        if repository is None:
+            github_settings_review = {
+                "schema_version": settings_mod.SCHEMA_VERSION,
+                "status": "needs_human_input",
+                "repository": None,
+                "profile": options.github_settings_profile,
+                "settings": [],
+                "unknowns": [{"reason": "github_origin_owner_name_unavailable"}],
+                "external_actions_performed": False,
+            }
+        else:
+            github_settings_review = settings_mod.review_repository(
+                repository, options.github_settings_profile
+            )
     boundaries = boundary_sections()
     return gate.build_dialogue(
         intent=options.intent,
@@ -845,6 +880,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
         preferences=preferences,
         github_baseline=github_baseline,
         preferences_module=prefs_mod,
+        github_settings_review=github_settings_review,
     )
 
 
@@ -1124,7 +1160,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=list(gate.INTENTS),
         help=(
             "AIが実行しようとする操作。"
-            "create_repo / push / open_pr / merge / publish / release。"
+            "create_repo / push / open_pr / merge / configure_settings / publish / release。"
             "指定時は不足設定と推奨案を質問パケットとして返す"
         ),
     )
@@ -1162,6 +1198,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[key for key, _ in AUDIENCE_CHOICES],
         default="unspecified",
         help="見せる相手。publish intent やメタデータに使う",
+    )
+    parser.add_argument(
+        "--github-settings-profile",
+        choices=["solo_public", "team_public", "high_risk_public"],
+        default="solo_public",
+        help=(
+            "configure_settings intentで比較する運用profile。"
+            "solo_public / team_public / high_risk_public"
+        ),
     )
     parser.add_argument(
         "--human",
@@ -1224,9 +1269,12 @@ def resolve_options(
         options.intent = intent
         options.base_ref = base_ref
         options.consistency_base_ref = consistency_base_ref
+        options.github_settings_profile = args.github_settings_profile
         return options
 
     gate = load_dialogue_gate()
+    if intent == "configure_settings" and args.repo is None:
+        raise SystemExit("error: --repo is required for --intent configure_settings")
     if intent and not gate.intent_needs_scan(intent) and args.repo is None:
         return ScanOptions(
             repo=None,
@@ -1238,6 +1286,7 @@ def resolve_options(
             intent=intent,
             base_ref=base_ref,
             consistency_base_ref=consistency_base_ref,
+            github_settings_profile=args.github_settings_profile,
         )
     if args.repo is None:
         raise SystemExit(
@@ -1254,6 +1303,7 @@ def resolve_options(
         intent=intent,
         base_ref=base_ref,
         consistency_base_ref=consistency_base_ref,
+        github_settings_profile=args.github_settings_profile,
     )
 
 

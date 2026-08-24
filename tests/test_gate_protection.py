@@ -61,6 +61,7 @@ def test_pr_self_review_allowlist_matches_the_distributed_copy():
     assert all(re.fullmatch(r"[0-9a-f]{64}", v) for v in allowed), allowed
     assert digest in allowed, f"{digest} not allowlisted"
 
+
 def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():
     body = _read(".github/workflows/documentation-contract.yml")
     assert "pull_request:" in body
@@ -73,6 +74,27 @@ def test_ci_workflow_keeps_ruleset_required_job_names():
     assert "name: test (${{ matrix.python-version }})" in body
     assert '"3.11"' in body
     assert '"3.13"' in body
+
+
+def test_ci_pins_and_runs_ai_ratchet_gate_in_every_job():
+    body = _read(".github/workflows/ci.yml")
+    requirements = _read("requirements-tools.txt")
+
+    assert 'PYTHONUTF8: "1"' in body
+    assert (
+        body.count("python -m pip install --require-hashes -r requirements-tools.txt")
+        == 3
+    )
+    assert body.count("python -m ai_ratchet_gate --repo .") == 3
+    assert (
+        "releases/download/v0.1.1/ai_ratchet_gate-0.1.1-py3-none-any.whl"
+        in requirements
+    )
+    assert (
+        "sha256:b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7"
+        in requirements
+    )
+    assert (REPO / ".ai-ratchet-gate" / "baseline.txt").is_file()
 
 
 def test_consistency_config_stays_enforce():

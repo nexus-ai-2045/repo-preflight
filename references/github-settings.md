@@ -1,6 +1,6 @@
 # GitHub repository設定ガイド
 
-<!-- repo-preflight:github-baseline last_reviewed: 2026-08-06 max_age_days: 90 -->
+<!-- repo-preflight:github-baseline last_reviewed: 2026-08-24 max_age_days: 90 -->
 
 この文書は、公開repositoryで確認するGitHub設定と選択理由を整理する。特定repositoryの現在値や検査記録は対象repository側または非公開の運用記録へ保存し、この文書には含めない。
 
@@ -131,6 +131,7 @@ Dependabot version updatesは`.github/dependabot.yml`で管理する。最低限
 - approval数は0でもよい。人間が最終mergeを実行する。
 - squash mergeとbranch自動削除を基本にする。
 - auto-mergeはmerge待ちが実害になるまでOFFにする。
+- CODEOWNERS と「Require review from Code Owners」は付けない。作者は自分のPRをApproveできず、一人だとマージ不能になる。複数maintainerになってから検討する。
 
 ### 複数maintainer
 
@@ -180,6 +181,15 @@ APIが404や権限errorを返した項目を無効と断定しない。取得不
 
 ## AIへ読ませて設定する
 
+repo-preflightからは次のread-only intentで、同じ契約のpacketを生成できる。
+
+```bash
+python scripts/readiness_scan.py --repo PATH --intent configure_settings \
+  --github-settings-profile solo_public --human
+```
+
+profileは`solo_public` / `team_public` / `high_risk_public`。このintentは設定変更を実行せず、GitHub APIのGET、比較、previewまでを担当する。
+
 AIへ依頼する場合も、いきなり設定変更を実行させない。次の5段階を固定する。
 
 1. **Inspect**: repository、account、現在値、organization policyをread-onlyで取得する。
@@ -226,7 +236,7 @@ OWNER/REPO のGitHub設定をread-onlyで実測してください。
 
 ```json
 {
-  "schema_version": "github-settings-review/v1",
+  "schema_version": "repo-preflight.github-settings-review/v1",
   "repository": "OWNER/REPO",
   "observed_at": "RFC3339",
   "account": "LOGIN",
