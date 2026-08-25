@@ -1,9 +1,9 @@
 ---
 name: repo-preflight
 description: >
-  repository preflight and AI intent dialogue before PR, push, merge, publish, release, or new repo creation.
-  Grok Build / agents で PR作る・pushする・公開する・リポジトリ作成・preflight・公開前チェックのときに使う。
-  Use before creating a PR, pushing, merging, publishing, releasing, or creating a GitHub repo.
+  repository preflight and AI intent dialogue before PR, push, merge, publish, release, GitHub settings, or new repo creation.
+  Grok Build / agents で PR作る・pushする・公開する・リポジトリ作成・GitHub設定・preflight・公開前チェックのときに使う。
+  Use before creating a PR, pushing, merging, publishing, releasing, changing GitHub settings, or creating a GitHub repo.
 ---
 
 # repo-preflight (Grok adapter)
@@ -29,15 +29,20 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `THIS_SKILL_DIR` = directory containing this SKILL.md (e.g. `~/.grok/skills/repo-preflight`)
 
-`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
+`intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
 Use `--base-ref` only for target-diff checks before `push` / `open_pr` / `merge` in an existing private repo
 (JSON `scan_scope.mode` is `target_diff`; there is no `--target-diff` CLI flag).
-The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` / `release`.
+The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` / `release` / `configure_settings`.
+`configure_settings` is GET/compare/preview only. Do not change GitHub settings from this skill.
+
+```bash
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent configure_settings --github-settings-profile solo_public --human
+```
 
 ## MUST
 
-- Run `--intent` before PR / push / merge / publish / release / create_repo
+- Run `--intent` before PR / push / merge / publish / release / create_repo / configure_settings
 - Do not perform external ops while dialogue status is `needs_human_input` or `blocked`
 - Show guarantees / non_guarantees briefly
 - Never offer ignore for secrets

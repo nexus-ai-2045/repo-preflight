@@ -23,7 +23,10 @@
    guarantees / non_guarantees / proposals / confirmations が機械生成される。
 3. **Skill 入口**  
    Claude Code / Grok / Codex 向け adapter が root `SKILL.md` を正本として指す。  
-   各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
+   各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。  
+   `configure_settings` も同様に `runtime/claude-code/SKILL.md` / `runtime/grok/SKILL.md` /
+   `runtime/agents/openai.yaml` それぞれの description・intent 列挙・trigger 語に明示され、
+   root `SKILL.md` と乖離しない（GitHub Settings の変更は行わず GET/比較/preview まで）。
 4. **クロス OS CI**  
    `.github/workflows/ci.yml` どおり: ubuntu-latest と macos-latest で Python 3.11 / 3.13、  
    windows-latest で Python 3.13 のみ。各ジョブを`PYTHONUTF8=1`で実行し、pytest、`runtime_smoke`、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。
