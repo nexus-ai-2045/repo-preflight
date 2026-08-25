@@ -29,6 +29,10 @@
    windows-latest で Python 3.13 のみ。各ジョブを`PYTHONUTF8=1`で実行し、pytest、`runtime_smoke`、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
+6. **GitHub 採用時の対話**  
+   `create_repo` / `push` / `open_pr` / `merge` の直前に `--intent` を実行すると  
+   `repo-preflight.dialogue/v3` が返り、質問が機械生成される。これが GitHub 採用時の契約。  
+   clone や GitHub ページ閲覧だけでは対話は走らない。
 
 ## 保証しないこと
 
@@ -37,6 +41,7 @@
 3. Claude Code Cloud / リモート sandbox に git やローカル path が無い場合の完全動作。
 4. 各製品 UI のバージョン差分・権限ダイアログ・ネットワーク制限。
 5. GitHub 設定の自動適用。`configure_settings`は`gh api`のGET、profile比較、個別previewまでを保証するが、変更は別承認・別工程。
+6. github.com の repository ページが対話 UI になること。
 
 ## 導入 (Claude Code / Grok)
 
