@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import importlib.util
 import json
 import re
@@ -272,6 +273,7 @@ def diff_added_lines_have(
             "git",
             "diff",
             "--no-ext-diff",
+            "--no-textconv",
             "--no-color",
             "--unified=0",
             *diff_args,
@@ -282,12 +284,137 @@ def diff_added_lines_have(
     )
     if result.returncode:
         raise RuntimeError("git_target_diff_inventory_failed")
-    added = b"\n".join(
-        line[1:]
-        for line in result.stdout.splitlines()
-        if line.startswith(b"+") and not line.startswith(b"+++ ")
+    added_lines: list[bytes] = []
+    in_hunk = False
+    for line in result.stdout.splitlines():
+        if line.startswith(b"diff --git "):
+            in_hunk = False
+        elif line.startswith(b"@@"):
+            in_hunk = True
+        elif line.startswith((b"--- ", b"+++ ")) and not in_hunk:
+            continue
+        elif in_hunk and line.startswith(b"+"):
+            added_lines.append(line[1:])
+    added = b"\n".join(added_lines)
+    if added and text_has(patterns, added):
+        return True
+
+    # Git omits patch lines for UTF-16 and attribute-classified binary text.
+    # Inspect only those binary entries and compare decoded blob lines, so an
+    # unchanged baseline path in a modified file is not reclassified as new.
+    numstat = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--numstat",
+            "-z",
+            *diff_args,
+            "--",
+        ],
+        cwd=repo,
+        capture_output=True,
     )
-    return bool(added) and text_has(patterns, added)
+    if numstat.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    revisions = list(diff_args)
+    old_revision = revisions[0] if len(revisions) == 2 else "HEAD"
+    new_revision = revisions[1] if len(revisions) == 2 else None
+    for entry in numstat.stdout.split(b"\0"):
+        if not entry:
+            continue
+        additions, separator, remainder = entry.partition(b"\t")
+        deletions, separator2, raw_path = remainder.partition(b"\t")
+        if not separator or not separator2 or additions != b"-" or deletions != b"-":
+            continue
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        old_blob = subprocess.run(
+            ["git", "show", f"{old_revision}:{path}"],
+            cwd=repo,
+            capture_output=True,
+        )
+        old_data = old_blob.stdout if old_blob.returncode == 0 else b""
+        if new_revision is None:
+            candidate = repo / path
+            if candidate.is_symlink():
+                continue
+            try:
+                new_data = candidate.read_bytes()
+            except OSError as exc:
+                raise RuntimeError("git_target_diff_inventory_failed") from exc
+        else:
+            new_blob = subprocess.run(
+                ["git", "show", f"{new_revision}:{path}"],
+                cwd=repo,
+                capture_output=True,
+            )
+            if new_blob.returncode:
+                continue
+            new_data = new_blob.stdout
+        old_text = _decode_scannable_text(old_data)
+        new_text = _decode_scannable_text(new_data)
+        if new_text is None:
+            continue
+        old_lines = old_text.splitlines() if old_text is not None else []
+        new_lines = new_text.splitlines()
+        introduced = "\n".join(
+            line
+            for operation, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+                a=old_lines, b=new_lines, autojunk=False
+            ).get_opcodes()
+            if operation in {"insert", "replace"}
+            for line in new_lines[j1:j2]
+        ).encode("utf-8")
+        if introduced and text_has(patterns, introduced):
+            return True
+    return False
+
+
+def _decode_scannable_text(data: bytes) -> str | None:
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
+    """Choose the parent containing the scanned base, or the empty tree."""
+    parents = subprocess.run(
+        ["git", "show", "-s", "--format=%P", commit],
+        cwd=repo,
+        text=True,
+        encoding="ascii",
+        errors="strict",
+        capture_output=True,
+    )
+    if parents.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    candidates = parents.stdout.split()
+    if not candidates:
+        empty_tree = subprocess.run(
+            ["git", "hash-object", "-t", "tree", "--stdin"],
+            cwd=repo,
+            input=b"",
+            capture_output=True,
+        )
+        if empty_tree.returncode:
+            raise RuntimeError("git_target_diff_inventory_failed")
+        return empty_tree.stdout.decode("ascii").strip()
+    for parent in candidates:
+        contains_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_ref, parent],
+            cwd=repo,
+            capture_output=True,
+        )
+        if contains_base.returncode == 0:
+            return parent
+        if contains_base.returncode != 1:
+            raise RuntimeError("git_target_diff_inventory_failed")
+    return candidates[0]
 
 
 def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
@@ -310,17 +437,8 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
         raise RuntimeError("git_target_diff_inventory_failed")
     hits: set[str] = set()
     for commit in commits.stdout.splitlines():
-        parent = subprocess.run(
-            ["git", "rev-parse", "--verify", f"{commit}^1"],
-            cwd=repo,
-            text=True,
-            encoding="ascii",
-            errors="strict",
-            capture_output=True,
-        )
-        if parent.returncode:
-            raise RuntimeError("git_target_diff_inventory_failed")
-        if diff_added_lines_have(repo, PATH_PATTERNS, parent.stdout.strip(), commit):
+        parent = comparison_parent(repo, base_ref, commit)
+        if diff_added_lines_have(repo, PATH_PATTERNS, parent, commit):
             hits.add(f"target-diff:commit:{commit[:12]}")
     if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
         hits.add("target-diff:working-tree")

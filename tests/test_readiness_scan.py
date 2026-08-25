@@ -187,6 +187,94 @@ def test_target_diff_blocks_new_personal_path_line(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "fail"
 
 
+def test_target_diff_blocks_added_line_that_looks_like_patch_header(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "header-like.txt").write_text(
+        "++ C:/Us" + "ers/new-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "header-like.txt")
+    git(repo, "commit", "-m", "add header-like personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_blocks_personal_path_in_utf16_addition(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "utf16.txt").write_text(
+        "checkout: C:/Us" + "ers/new-user/project\n", encoding="utf-16"
+    )
+    git(repo, "add", "utf16.txt")
+    git(repo, "commit", "-m", "add UTF-16 personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_does_not_execute_textconv(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    marker = tmp_path / "textconv-ran"
+    converter = tmp_path / "converter.py"
+    converter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    git(repo, "config", "diff.sideeffect.textconv", f'python "{converter}"')
+    (repo / ".gitattributes").write_text("*.custom diff=sideeffect\n", encoding="utf-8")
+    (repo / "safe.custom").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", ".gitattributes", "safe.custom")
+    git(repo, "commit", "-m", "add textconv-classified file")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+    assert not marker.exists()
+
+
+def test_target_diff_merge_compares_base_containing_parent(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "branch", "feature")
+    (repo / "baseline.txt").write_text(
+        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "baseline.txt")
+    git(repo, "commit", "-m", "advance remote base")
+    base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    (repo / "feature.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "safe feature")
+    git(repo, "merge", "--no-ff", "origin/main", "-m", "merge updated base")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    git(repo, "checkout", "--orphan", "imported")
+    git(repo, "rm", "-rf", ".")
+    (repo / "imported.txt").write_text(
+        "C:/Us" + "ers/imported-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "imported.txt")
+    git(repo, "commit", "-m", "import root")
+    git(repo, "checkout", "main")
+    git(repo, "merge", "--allow-unrelated-histories", "--no-ff", "imported", "-m", "merge import")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
 def test_target_diff_scans_transient_personal_path_in_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
