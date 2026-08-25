@@ -20,6 +20,7 @@ REQUIRED_RELATIVE = (
     "runtime/grok/SKILL.md",
     "runtime/agents/openai.yaml",
     "docs/runtime-support.md",
+    "scripts/ai_entry_contract.py",
 )
 TRIGGER_TOKENS = (
     "PR",

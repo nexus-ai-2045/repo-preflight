@@ -1,0 +1,41 @@
+{
+  "schema": "repo-preflight.ai-entry-contract/v1",
+  "source": "{HOME}/AI-CONSTITUTION.md",
+  "entries": [
+    {
+      "id": "codex-global",
+      "runtime": "codex",
+      "path": "{HOME}/AGENTS.md",
+      "strategy": "materialized",
+      "required": true
+    },
+    {
+      "id": "claude-global",
+      "runtime": "claude-code",
+      "path": "{HOME}/.claude/CLAUDE.md",
+      "strategy": "pointer",
+      "required": true
+    },
+    {
+      "id": "gemini-global",
+      "runtime": "gemini-cli",
+      "path": "{HOME}/.gemini/GEMINI.md",
+      "strategy": "pointer",
+      "required": true
+    },
+    {
+      "id": "grok-global",
+      "runtime": "grok",
+      "path": "{HOME}/.grok/AGENTS.md",
+      "strategy": "materialized",
+      "required": true
+    },
+    {
+      "id": "cursor-user-rules",
+      "runtime": "cursor",
+      "strategy": "manual",
+      "evidence": "Cursor Settings > Rules",
+      "required": true
+    }
+  ]
+}
