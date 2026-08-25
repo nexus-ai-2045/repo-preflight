@@ -16,3 +16,4 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 |---|---|---|
 | [0001](0001-github-action-sha-update-exemption.md) | Accepted | GitHub Action参照だけの更新を厳密な条件で関連文書・テスト要件から免除する |
 | [0002](0002-pr-self-review-copy-integrity.md) | Accepted | 外部生成のPRセルフレビュー配布物を本文hashで検査し、手編集を止める |
+| [0003](0003-github-settings-read-only-gate.md) | Proposed | GitHub Settingsの実測・比較・previewをread-only gateにし、変更を個別承認へ分離する |

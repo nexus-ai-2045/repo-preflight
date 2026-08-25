@@ -148,6 +148,123 @@ def test_cli_intent_open_pr_includes_scan(tmp_path: Path):
     assert code in {0, 1}
 
 
+def test_configure_settings_emits_one_proposal_per_setting_and_keeps_mutation_separate():
+    review = {
+        "schema_version": "repo-preflight.github-settings-review/v1",
+        "status": "needs_human_input",
+        "repository": "example/repo",
+        "profile": "solo_public",
+        "external_actions_performed": False,
+        "settings": [
+            {
+                "name": "default_workflow_permissions",
+                "tier": "required",
+                "observed_value": "write",
+                "recommended_value": "read",
+                "classification": "human_decision",
+                "reason": "least privilege",
+                "external_effect": "workflow token becomes read-only",
+                "proposed_operation": {
+                    "method": "PUT",
+                    "endpoint": "repos/example/repo/actions/permissions/workflow",
+                    "body": {"default_workflow_permissions": "read"},
+                },
+                "rollback": {
+                    "method": "PUT",
+                    "endpoint": "repos/example/repo/actions/permissions/workflow",
+                    "body": {"default_workflow_permissions": "write"},
+                },
+                "approved": False,
+                "blocks_intent": True,
+            },
+            {
+                "name": "delete_branch_on_merge",
+                "tier": "recommended",
+                "observed_value": False,
+                "recommended_value": True,
+                "classification": "recommended_change",
+                "reason": "branch hygiene",
+                "external_effect": "merged branches are deleted",
+                "proposed_operation": {
+                    "method": "PATCH",
+                    "endpoint": "repos/example/repo",
+                    "body": {"delete_branch_on_merge": True},
+                },
+                "rollback": {
+                    "method": "PATCH",
+                    "endpoint": "repos/example/repo",
+                    "body": {"delete_branch_on_merge": False},
+                },
+                "approved": False,
+                "blocks_intent": False,
+            },
+        ],
+    }
+
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        scan={"status": "pass", "repo": "/safe/repo", "checks": {}},
+        github_settings_review=review,
+    )
+
+    assert dialogue["github_settings_review"] is review
+    proposals = {
+        item["id"]: item
+        for item in dialogue["proposals"]
+        if item["kind"] == "github_setting_change"
+    }
+    required = proposals["github_setting_default_workflow_permissions"]
+    recommended = proposals["github_setting_delete_branch_on_merge"]
+    assert required["blocks_intent"] is True
+    assert recommended["blocks_intent"] is False
+    assert required["proposed"]["approved"] is False
+    assert required["proposed"]["operation"]["method"] == "PUT"
+    assert required["proposed"]["rollback"]
+    assert review["external_actions_performed"] is False
+    assert dialogue["confirmations"][0]["proposed"]["action"] == "configure_settings"
+    assert "別承認" in dialogue["confirmations"][0]["proposed"]["reminder"]
+    assert dialogue["status"] == "needs_human_input"
+
+
+def test_configure_settings_unavailable_required_observation_blocks_without_operation():
+    review = {
+        "status": "needs_human_input",
+        "repository": "example/repo",
+        "profile": "solo_public",
+        "external_actions_performed": False,
+        "settings": [
+            {
+                "name": "default_branch_ruleset",
+                "tier": "required",
+                "observed_value": "unknown",
+                "recommended_value": "active",
+                "classification": "unavailable",
+                "reason": "API unavailable",
+                "external_effect": "branch protection",
+                "proposed_operation": None,
+                "rollback": None,
+                "approved": False,
+                "blocks_intent": True,
+            }
+        ],
+    }
+
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        scan={"status": "pass", "checks": {}},
+        github_settings_review=review,
+    )
+
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["kind"] == "github_setting_change"
+    )
+    assert proposal["proposed"]["operation"] is None
+    assert proposal["blocks_intent"] is True
+    assert dialogue["status"] == "needs_human_input"
+
+
 def test_cli_open_pr_target_diff_uses_explicit_base(tmp_path: Path):
     repo = make_repo(tmp_path)
     subprocess.run(
@@ -197,3 +314,79 @@ def test_format_dialogue_lists_numbered_proposals():
     assert "confirmations" not in text.lower() or "最終確認" in text
     assert "保証すること" in text
     assert "保証しないこと" in text
+
+
+def test_configure_settings_blocks_when_repository_identity_yields_no_settings():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "needs_human_input",
+            "repository": None,
+            "profile": "solo_public",
+            "settings": [],
+            "unknowns": [{"reason": "github_origin_owner_name_unavailable"}],
+        },
+    )
+
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "inspect_github_settings"
+    )
+    assert proposal["blocks_intent"] is True
+    assert dialogue["status"] == "needs_human_input"
+
+
+def test_configure_settings_surfaces_authenticated_account_confirmation():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "needs_human_input",
+            "repository": "example/repo",
+            "profile": "solo_public",
+            "settings": [
+                {
+                    "name": "authenticated_account",
+                    "tier": "required",
+                    "observed_value": "collaborator",
+                    "recommended_value": "example",
+                    "classification": "human_decision",
+                    "reason": "acting accountを固定する",
+                    "external_effect": "wrong account prevention",
+                    "proposed_operation": None,
+                    "rollback": None,
+                    "blocks_intent": True,
+                }
+            ],
+        },
+    )
+
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "github_setting_authenticated_account"
+    )
+    assert proposal["kind"] == "github_account_confirmation"
+    assert proposal["blocks_intent"] is True
+    assert "collaborator" in proposal["question"]
+
+
+def test_configure_settings_surfaces_stale_github_guidance():
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        github_settings_review={
+            "status": "pass",
+            "repository": "example/repo",
+            "profile": "solo_public",
+            "settings": [],
+        },
+        github_baseline={
+            "status": "stale",
+            "last_reviewed": "2025-01-01",
+            "age_days": 600,
+            "max_age_days": 90,
+        },
+    )
+
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "refresh_github_settings_baseline" in ids
