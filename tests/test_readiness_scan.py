@@ -321,7 +321,15 @@ def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):
     git(repo, "add", "imported.txt")
     git(repo, "commit", "-m", "import root")
     git(repo, "checkout", "main")
-    git(repo, "merge", "--allow-unrelated-histories", "--no-ff", "imported", "-m", "merge import")
+    git(
+        repo,
+        "merge",
+        "--allow-unrelated-histories",
+        "--no-ff",
+        "imported",
+        "-m",
+        "merge import",
+    )
 
     report = MODULE.scan(repo, base_ref=base)
 
