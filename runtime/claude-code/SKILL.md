@@ -3,8 +3,8 @@ name: repo-preflight
 description: >
   repository の公開・共有前チェックと AI 実装フローの intent 対話。
   Claude Code で PR 作成・push・merge・public 化・release・リポジトリ新規作成の直前に使う。
-  トリガ: PR作る, pushする, 公開する, リポジトリ作成, preflight, 公開前チェック, 共有前チェック。
-  Use before creating a PR, pushing, merging, publishing, releasing, or creating a GitHub repo.
+  トリガ: PR作る, pushする, 公開する, リポジトリ作成, GitHub設定, preflight, 公開前チェック, 共有前チェック。
+  Use before creating a PR, pushing, merging, publishing, releasing, changing GitHub settings, or creating a GitHub repo.
 ---
 
 # repo-preflight (Claude Code adapter)
@@ -30,10 +30,15 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `THIS_SKILL_DIR` = この SKILL.md があるディレクトリ（例: `~/.claude/skills/repo-preflight`）
 
-`intent`: `create_repo` | `push` | `open_pr` | `merge` | `publish` | `release`  
+`intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 `create_repo` 以外は `--repo <TARGET_REPO>` が必須。
 `--base-ref` は既存 private repo の `push` / `open_pr` / `merge` で今回差分だけを検査する時に使う。
-base は HEAD の祖先であること。`publish` / `release` のrepo全体検査には使わない。
+base は HEAD の祖先であること。`publish` / `release` / `configure_settings` のrepo全体検査には使わない。
+`configure_settings` は GET / 比較 / preview まで。この skill から Settings は変更しない。
+
+```bash
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent configure_settings --github-settings-profile solo_public --human
+```
 
 ## Claude Code 固有の読み替え
 
@@ -46,7 +51,7 @@ base は HEAD の祖先であること。`publish` / `release` のrepo全体検�
 
 ## MUST
 
-- `gh pr create` / `git push` / visibility 変更 / release の**前**に `--intent` を走らせる
+- `gh pr create` / `git push` / visibility 変更 / release / GitHub Settings 変更の**前**に `--intent` を走らせる
 - stdout の `status` が `needs_human_input` または `blocked` の間は外部操作しない
 - secret 検出に ignore を提案しない
 - 公開・投稿ボタンは押さない（別承認）
