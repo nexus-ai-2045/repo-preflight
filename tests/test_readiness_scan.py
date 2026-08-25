@@ -255,9 +255,7 @@ def test_target_diff_detects_personal_path_embedded_in_binary_file(tmp_path: Pat
     # UTF-8/UTF-16 のどちらでも全体decodeが失敗する noise (孤立surrogate) と
     # 個人pathを混在させたバイナリ file。noiseが弱いとUTF-16へのfallbackが
     # 文字化けしつつdecode成功してしまい、本来のバグ経路を再現できない。
-    payload = (
-        b"\x00\x01\x00\xd8" + b"C:/Us" + b"ers/newuser/project" + b"\x00\x02noise"
-    )
+    payload = b"\x00\x01\x00\xd8" + b"C:/Us" + b"ers/newuser/project" + b"\x00\x02noise"
     (repo / "blob.bin").write_bytes(payload)
     git(repo, "add", "blob.bin")
     git(repo, "commit", "-m", "add binary with embedded personal path")
