@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import importlib.util
 import json
 import re
@@ -257,6 +258,237 @@ def history_hits(
         if cursor != len(batch.stdout):
             raise RuntimeError("git_history_inventory_failed")
     return sorted(secret_hits), sorted(path_hits)
+
+
+def diff_added_lines_have(
+    repo: Path, patterns: tuple[re.Pattern, ...], *diff_args: str
+) -> bool:
+    """Return whether added text lines in one Git diff match ``patterns``.
+
+    A target-diff scan must not reclassify unchanged baseline text merely because
+    its file also contains a new, unrelated line.  Patch metadata is excluded;
+    only actual ``+`` lines are decoded by ``text_has``.
+    """
+    result = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--unified=0",
+            *diff_args,
+            "--",
+        ],
+        cwd=repo,
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    added_lines: list[bytes] = []
+    in_hunk = False
+    for line in result.stdout.splitlines():
+        if line.startswith(b"diff --git "):
+            in_hunk = False
+        elif line.startswith(b"@@"):
+            in_hunk = True
+        elif line.startswith((b"--- ", b"+++ ")) and not in_hunk:
+            continue
+        elif in_hunk and line.startswith(b"+"):
+            added_lines.append(line[1:])
+    added = b"\n".join(added_lines)
+    if added and text_has(patterns, added):
+        return True
+
+    # Git omits patch lines for UTF-16 and attribute-classified binary text.
+    # Inspect only those binary entries and compare decoded blob lines, so an
+    # unchanged baseline path in a modified file is not reclassified as new.
+    numstat = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--numstat",
+            "-z",
+            *diff_args,
+            "--",
+        ],
+        cwd=repo,
+        capture_output=True,
+    )
+    if numstat.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    revisions = list(diff_args)
+    old_revision = revisions[0] if len(revisions) == 2 else "HEAD"
+    new_revision = revisions[1] if len(revisions) == 2 else None
+    for entry in numstat.stdout.split(b"\0"):
+        if not entry:
+            continue
+        additions, separator, remainder = entry.partition(b"\t")
+        deletions, separator2, raw_path = remainder.partition(b"\t")
+        if not separator or not separator2 or additions != b"-" or deletions != b"-":
+            continue
+        path = raw_path.decode("utf-8", errors="surrogateescape")
+        old_blob = subprocess.run(
+            ["git", "show", f"{old_revision}:{path}"],
+            cwd=repo,
+            capture_output=True,
+        )
+        old_data = old_blob.stdout if old_blob.returncode == 0 else b""
+        if new_revision is None:
+            candidate = repo / path
+            if candidate.is_symlink():
+                continue
+            try:
+                new_data = candidate.read_bytes()
+            except OSError as exc:
+                raise RuntimeError("git_target_diff_inventory_failed") from exc
+        else:
+            new_blob = subprocess.run(
+                ["git", "show", f"{new_revision}:{path}"],
+                cwd=repo,
+                capture_output=True,
+            )
+            if new_blob.returncode:
+                continue
+            new_data = new_blob.stdout
+        old_text = _decode_scannable_text(old_data)
+        new_text = _decode_scannable_text(new_data)
+        if new_text is None:
+            # Genuinely binary content (non-UTF-8/UTF-16 noise) that Git also
+            # omits from the unified diff. Fall back to a raw-byte pattern
+            # search so an embedded ASCII personal path is not skipped just
+            # because the surrounding bytes cannot be decoded as text. Only
+            # report a hit that is new relative to the comparison base, so an
+            # unchanged baseline blob is not reclassified.
+            if _bytes_pattern_hit(patterns, new_data) and not _bytes_pattern_hit(
+                patterns, old_data
+            ):
+                return True
+            continue
+        old_lines = old_text.splitlines() if old_text is not None else []
+        new_lines = new_text.splitlines()
+        introduced = "\n".join(
+            line
+            for operation, _i1, _i2, j1, j2 in difflib.SequenceMatcher(
+                a=old_lines, b=new_lines, autojunk=False
+            ).get_opcodes()
+            if operation in {"insert", "replace"}
+            for line in new_lines[j1:j2]
+        ).encode("utf-8")
+        if introduced and text_has(patterns, introduced):
+            return True
+    return False
+
+
+def _decode_scannable_text(data: bytes) -> str | None:
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return None
+
+
+def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
+    """Search ``patterns`` directly against raw bytes, without decoding.
+
+    ``text_has``/``_decode_scannable_text`` require the *entire* buffer to
+    decode cleanly as UTF-8 or UTF-16 before searching it. A genuinely binary
+    blob (e.g. an image or executable) with non-UTF-8 noise elsewhere fails
+    that whole-buffer decode even when it also contains an ASCII personal
+    path, so the match was silently skipped. All patterns here are ASCII-only,
+    so matching their pattern text against raw bytes finds embedded hits
+    without needing the surrounding noise to decode at all.
+    """
+    return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
+
+
+def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
+    """Choose the parent containing the scanned base, or the empty tree."""
+    parents = subprocess.run(
+        ["git", "show", "-s", "--format=%P", commit],
+        cwd=repo,
+        text=True,
+        encoding="ascii",
+        errors="strict",
+        capture_output=True,
+    )
+    if parents.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    candidates = parents.stdout.split()
+    if not candidates:
+        empty_tree = subprocess.run(
+            ["git", "hash-object", "-t", "tree", "--stdin"],
+            cwd=repo,
+            input=b"",
+            capture_output=True,
+        )
+        if empty_tree.returncode:
+            raise RuntimeError("git_target_diff_inventory_failed")
+        return empty_tree.stdout.decode("ascii").strip()
+    for parent in candidates:
+        contains_base = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_ref, parent],
+            cwd=repo,
+            capture_output=True,
+        )
+        if contains_base.returncode == 0:
+            return parent
+        if contains_base.returncode != 1:
+            raise RuntimeError("git_target_diff_inventory_failed")
+    return candidates[0]
+
+
+def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
+    """Scan personal paths introduced anywhere after ``base_ref``.
+
+    Each commit is compared with its first parent so a path that was introduced
+    and later removed remains detectable.  The current index/worktree diff is
+    checked separately.  Evidence labels intentionally avoid file contents and
+    checkout paths.
+    """
+    commits = subprocess.run(
+        ["git", "rev-list", "--reverse", f"{base_ref}..HEAD"],
+        cwd=repo,
+        text=True,
+        encoding="ascii",
+        errors="strict",
+        capture_output=True,
+    )
+    if commits.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    hits: set[str] = set()
+    for commit in commits.stdout.splitlines():
+        parent = comparison_parent(repo, base_ref, commit)
+        if diff_added_lines_have(repo, PATH_PATTERNS, parent, commit):
+            hits.add(f"target-diff:commit:{commit[:12]}")
+    if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
+        hits.add("target-diff:working-tree")
+    untracked = subprocess.run(
+        ["git", "ls-files", "-z", "--others", "--exclude-standard"],
+        cwd=repo,
+        capture_output=True,
+    )
+    if untracked.returncode:
+        raise RuntimeError("git_target_diff_inventory_failed")
+    for raw_name in untracked.stdout.split(b"\0"):
+        if not raw_name:
+            continue
+        path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        if path.is_symlink():
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise RuntimeError("git_target_diff_inventory_failed") from exc
+        # 全体decode失敗時も raw bytes で拾う (診断は diff_added_lines_have と同じ)
+        if text_has(PATH_PATTERNS, data) or _bytes_pattern_hit(PATH_PATTERNS, data):
+            hits.add("target-diff:untracked-worktree")
+            break
+    return sorted(hits)
 
 
 def working_tree_files(repo: Path) -> list[Path]:
@@ -531,20 +763,30 @@ def scan(
             }
         if text_has(SECRET_PATTERNS, data):
             credential_finding_count += 1
-        if text_has(PATH_PATTERNS, data):
+        if not base_ref and text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
             repo, (f"{base_ref}..HEAD",) if base_ref else ("--all",)
         )
         credential_finding_count += len(history_credential_findings)
-        path_hits.extend(history_path_hits)
     except RuntimeError:
         return {
             "status": "tool_error",
             "repo": repository_evidence_label(repo),
             "issues": ["git_history_inventory_failed"],
         }
+    if base_ref:
+        try:
+            path_hits.extend(target_diff_personal_path_hits(repo, base_ref))
+        except RuntimeError:
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["git_target_diff_inventory_failed"],
+            }
+    else:
+        path_hits.extend(history_path_hits)
     identity_lines = {line for line in identities.splitlines() if line}
     identity_mismatches = {
         line

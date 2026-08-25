@@ -202,6 +202,198 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
 
 
+def test_target_diff_ignores_preexisting_path_in_changed_file(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    registry = repo / "registry.yaml"
+    registry.write_text(
+        "legacy: C:/Us" + "ers/legacy-user/project\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add legacy registry")
+    base = set_remote_base(repo)
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write("canonical: Documents/.repos/example\n")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "register canonical path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_target_diff_blocks_new_personal_path_line(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    registry = repo / "registry.yaml"
+    registry.write_text("canonical: Documents/.repos/example\n", encoding="utf-8")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add registry")
+    base = set_remote_base(repo)
+    with registry.open("a", encoding="utf-8") as stream:
+        stream.write("checkout: C:/Us" + "ers/new-user/project\n")
+    git(repo, "add", registry.name)
+    git(repo, "commit", "-m", "add personal checkout")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_detects_personal_path_embedded_in_binary_file(tmp_path: Path):
+    """バイナリ内埋め込みの個人pathも検出する (回帰: PR#38レビュー指摘)。
+
+    ``diff_added_lines_have`` の binary fallback は ``_decode_scannable_text``
+    がblob全体をUTF-8/UTF-16としてdecodeできて初めて内容を検査する。
+    非UTF-8 noiseを含む真のバイナリblob内に個人pathがASCIIで埋め込まれていても
+    decode自体が失敗し、そのfileの内容検査が丸ごと ``continue`` で
+    スキップされていた (unified=0 diffも 'Binary files ... differ' のみで
+    +行を出さないため、二重に見逃す)。
+    """
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    # UTF-8/UTF-16 のどちらでも全体decodeが失敗する noise (孤立surrogate) と
+    # 個人pathを混在させたバイナリ file。noiseが弱いとUTF-16へのfallbackが
+    # 文字化けしつつdecode成功してしまい、本来のバグ経路を再現できない。
+    payload = b"\x00\x01\x00\xd8" + b"C:/Us" + b"ers/newuser/project" + b"\x00\x02noise"
+    (repo / "blob.bin").write_bytes(payload)
+    git(repo, "add", "blob.bin")
+    git(repo, "commit", "-m", "add binary with embedded personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["files"]
+    assert report["status"] == "blocked"
+
+
+def test_target_diff_blocks_added_line_that_looks_like_patch_header(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "header-like.txt").write_text(
+        "++ C:/Us" + "ers/new-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "header-like.txt")
+    git(repo, "commit", "-m", "add header-like personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_blocks_personal_path_in_utf16_addition(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "utf16.txt").write_text(
+        "checkout: C:/Us" + "ers/new-user/project\n", encoding="utf-16"
+    )
+    git(repo, "add", "utf16.txt")
+    git(repo, "commit", "-m", "add UTF-16 personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_does_not_execute_textconv(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    marker = tmp_path / "textconv-ran"
+    converter = tmp_path / "converter.py"
+    converter.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    git(repo, "config", "diff.sideeffect.textconv", f'python "{converter}"')
+    (repo / ".gitattributes").write_text("*.custom diff=sideeffect\n", encoding="utf-8")
+    (repo / "safe.custom").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", ".gitattributes", "safe.custom")
+    git(repo, "commit", "-m", "add textconv-classified file")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+    assert not marker.exists()
+
+
+def test_target_diff_merge_compares_base_containing_parent(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    git(repo, "branch", "feature")
+    (repo / "baseline.txt").write_text(
+        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "baseline.txt")
+    git(repo, "commit", "-m", "advance remote base")
+    base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    (repo / "feature.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "safe feature")
+    git(repo, "merge", "--no-ff", "origin/main", "-m", "merge updated base")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    git(repo, "checkout", "--orphan", "imported")
+    git(repo, "rm", "-rf", ".")
+    (repo / "imported.txt").write_text(
+        "C:/Us" + "ers/imported-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "imported.txt")
+    git(repo, "commit", "-m", "import root")
+    git(repo, "checkout", "main")
+    git(
+        repo,
+        "merge",
+        "--allow-unrelated-histories",
+        "--no-ff",
+        "imported",
+        "-m",
+        "merge import",
+    )
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_scans_transient_personal_path_in_commit_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    path_file = repo / "temporary-path.txt"
+    path_file.write_text("C:/Us" + "ers/new-user/project\n", encoding="utf-8")
+    git(repo, "add", path_file.name)
+    git(repo, "commit", "-m", "introduce transient personal path")
+    path_file.unlink()
+    git(repo, "add", "-u")
+    git(repo, "commit", "-m", "remove transient personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_target_diff_blocks_personal_path_in_untracked_file(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / "untracked.txt").write_text(
+        "C:/Us" + "ers/new-user/project\n",
+        encoding="utf-8",
+    )
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
 def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
