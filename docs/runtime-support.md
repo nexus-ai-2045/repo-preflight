@@ -37,6 +37,19 @@
    `repo-preflight.dialogue/v3` が返り、質問が機械生成される。これが GitHub 採用時の契約。  
    clone や GitHub ページ閲覧だけでは対話は走らない。
 
+## AI憲法の入口保証
+
+runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届くことは別の契約です。
+`scripts/ai_entry_contract.py` は、共通正本と入口の関係を次の3戦略で検査します。
+
+- `pointer`: runtimeが文書内のsource pointer/importを解釈する場合
+- `materialized`: import非対応runtime向けに生成した共通本文とsource hashを検査する場合
+- `manual`: 製品UIや未確認仕様に依存し、自動完了扱いしない場合
+
+検査は既定で読み取り専用です。Grok/Cursorへ新しいglobal設定を勝手に作らず、
+未確認の入口は`blocked`または`human_review`として返します。詳細は
+[AI憲法入口契約](ai-constitution-entry-contract.md)を参照してください。
+
 ## 保証しないこと
 
 1. Claude Code / Grok が **skill を自動インストール**すること（導入は `install_runtime_skills.py` または手動）。

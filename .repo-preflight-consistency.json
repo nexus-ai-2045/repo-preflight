@@ -44,6 +44,10 @@
       "allow_github_action_ref_updates": true
     },
     {
+      "change": ["scripts/ai_entry_contract.py", "schemas/ai-entry-contract.schema.json"],
+      "requires_any": ["docs/ai-constitution-entry-contract.md", "tests/test_ai_entry_contract.py"]
+    },
+    {
       "change": ["assets/**", "runtime/**", "SKILL.md"],
       "requires_any": ["README.md", "docs/runtime-support.md", "tests/**"]
     }

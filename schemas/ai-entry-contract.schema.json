@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/nexus-ai-2045/repo-preflight/schema/ai-entry-contract/v1",
+  "title": "AI constitution entry contract",
+  "type": "object",
+  "required": ["schema", "source", "entries"],
+  "properties": {
+    "schema": { "const": "repo-preflight.ai-entry-contract/v1" },
+    "source": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "runtime", "strategy"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "runtime": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "strategy": {
+            "enum": ["pointer", "materialized", "manual"]
+          },
+          "required": { "type": "boolean", "default": true },
+          "evidence": { "type": "string" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "strategy": { "const": "manual" } } },
+            "then": { "required": ["evidence"] }
+          },
+          {
+            "if": {
+              "properties": {
+                "strategy": { "enum": ["pointer", "materialized"] }
+              }
+            },
+            "then": { "required": ["path"] }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
