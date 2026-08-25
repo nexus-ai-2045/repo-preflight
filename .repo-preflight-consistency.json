@@ -8,6 +8,7 @@
   "readme_contracts": {
     "required_paths": [
       "scripts/readiness_scan.py",
+      "scripts/github_settings_gate.py",
       "scripts/readme_release_gate.py",
       "scripts/consistency_gate.py",
       "docs/repository-consistency-gate.md",
@@ -26,7 +27,7 @@
   },
   "impact_map": [
     {
-      "change": ["scripts/readiness_scan.py", "scripts/dialogue_gate.py"],
+      "change": ["scripts/readiness_scan.py", "scripts/dialogue_gate.py", "scripts/github_settings_gate.py"],
       "requires_any": ["README.md", "docs/**/*.md", "tests/test_public_narrative_contract.py", "tests/**"]
     },
     {

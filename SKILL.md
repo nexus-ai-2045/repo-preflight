@@ -29,6 +29,7 @@ public化は到達点のひとつであり、唯一の終点ではない。priva
 | remote へ push する | `push` | MUST |
 | Pull Request を作る | `open_pr` | MUST |
 | PR を merge する | `merge` | MUST |
+| GitHub repository Settings を変更する | `configure_settings` | MUST |
 | public化 / チーム共有 / 納品 / 外部協力者へ渡す | `publish` | MUST |
 | release / tag / 告知準備 | `release` | MUST |
 
@@ -41,6 +42,9 @@ python scripts/readiness_scan.py --intent create_repo --human
 
 # 例: 公開・共有の直前
 python scripts/readiness_scan.py --repo <path> --intent publish --audience public --consistency-base-ref origin/<base> --human
+
+# 例: GitHub Settingsの変更準備 (read-only inspect / compare / preview)
+python scripts/readiness_scan.py --repo <path> --intent configure_settings --github-settings-profile solo_public --human
 ```
 
 stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stderr に番号付きの質問文も出る。
@@ -75,7 +79,8 @@ baseまたはHEADが動いた場合は再検査する。
    marker の `last_reviewed` を更新する。自動で GitHub 全変更を追従したことにはしない。
 8. secret / personal path には「無視して進む」を出さない (`agent_instructions` を守る)。
 9. approve 後も、push / PR / merge / visibility 変更 / 投稿は **別ゲート** として操作内容を再掲して確認する。
-10. 完了後に再 scan し、結果を報告する。
+10. `configure_settings` はGETによる実測とpreviewまで。各設定は対象repository、freshな現在値、正確な操作、外部影響、rollbackを再掲し、設定ごとの別承認後にだけ変更する。403 / 404は無効と推測しない。
+11. 完了後に再 scan し、結果を報告する。
 
 ### status の意味
 
@@ -119,6 +124,7 @@ discovered -> requirements_defined -> research_complete -> design_complete
 - PR作成・comment・review依頼
 - merge
 - privateからpublicへのvisibility変更
+- GitHub repository Settings の個別変更
 - release、告知、投稿、共有
 - remote/local branch、worktree削除
 
