@@ -38,6 +38,19 @@ def test_claude_and_grok_adapters_are_portable():
         assert "guarantees" in text.lower() or "保証" in text or "MUST" in text
 
 
+def test_runtime_adapters_expose_configure_settings():
+    # root SKILL.md が configure_settings を intent 対話として保証する以上、
+    # 各 runtime adapter も description / intent 列挙 / trigger 語で同じ intent を
+    # 明示しないと乖離する (adapter だけ古いままだと agent が intent を発火しない)。
+    for rel in (
+        "runtime/claude-code/SKILL.md",
+        "runtime/grok/SKILL.md",
+        "runtime/agents/openai.yaml",
+    ):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "configure_settings" in text, rel
+
+
 def test_run_preflight_discovers_root_from_clone(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, str(RUN), "--intent", "create_repo"],
