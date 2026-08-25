@@ -38,6 +38,27 @@ def test_claude_and_grok_adapters_are_portable():
         assert "guarantees" in text.lower() or "保証" in text or "MUST" in text
 
 
+def test_github_adoption_documents_intent_dialogue_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    runtime = (ROOT / "docs/runtime-support.md").read_text(encoding="utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    for text, label in (
+        (readme, "README.md"),
+        (skill, "SKILL.md"),
+        (runtime, "docs/runtime-support.md"),
+        (changelog, "CHANGELOG.md"),
+    ):
+        assert "dialogue" in text.lower() or "対話" in text, label
+        assert "--intent" in text, label
+    for intent in ("create_repo", "push", "open_pr", "merge"):
+        assert intent in skill, intent
+        assert intent in readme, intent
+    assert "repo-preflight.dialogue/v3" in readme
+    assert "GitHub を採用" in readme
+    assert "github.com のページが対話 UI" in runtime or "ページが対話 UI" in runtime
+
+
 def test_run_preflight_discovers_root_from_clone(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, str(RUN), "--intent", "create_repo"],
