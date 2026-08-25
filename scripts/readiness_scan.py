@@ -357,6 +357,16 @@ def diff_added_lines_have(
         old_text = _decode_scannable_text(old_data)
         new_text = _decode_scannable_text(new_data)
         if new_text is None:
+            # Genuinely binary content (non-UTF-8/UTF-16 noise) that Git also
+            # omits from the unified diff. Fall back to a raw-byte pattern
+            # search so an embedded ASCII personal path is not skipped just
+            # because the surrounding bytes cannot be decoded as text. Only
+            # report a hit that is new relative to the comparison base, so an
+            # unchanged baseline blob is not reclassified.
+            if _bytes_pattern_hit(patterns, new_data) and not _bytes_pattern_hit(
+                patterns, old_data
+            ):
+                return True
             continue
         old_lines = old_text.splitlines() if old_text is not None else []
         new_lines = new_text.splitlines()
@@ -380,6 +390,20 @@ def _decode_scannable_text(data: bytes) -> str | None:
         except UnicodeDecodeError:
             continue
     return None
+
+
+def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
+    """Search ``patterns`` directly against raw bytes, without decoding.
+
+    ``text_has``/``_decode_scannable_text`` require the *entire* buffer to
+    decode cleanly as UTF-8 or UTF-16 before searching it. A genuinely binary
+    blob (e.g. an image or executable) with non-UTF-8 noise elsewhere fails
+    that whole-buffer decode even when it also contains an ASCII personal
+    path, so the match was silently skipped. All patterns here are ASCII-only,
+    so matching their pattern text against raw bytes finds embedded hits
+    without needing the surrounding noise to decode at all.
+    """
+    return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
@@ -460,7 +484,8 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
             data = path.read_bytes()
         except OSError as exc:
             raise RuntimeError("git_target_diff_inventory_failed") from exc
-        if text_has(PATH_PATTERNS, data):
+        # 全体decode失敗時も raw bytes で拾う (診断は diff_added_lines_have と同じ)
+        if text_has(PATH_PATTERNS, data) or _bytes_pattern_hit(PATH_PATTERNS, data):
             hits.add("target-diff:untracked-worktree")
             break
     return sorted(hits)

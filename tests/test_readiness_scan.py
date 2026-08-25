@@ -240,6 +240,35 @@ def test_target_diff_blocks_new_personal_path_line(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "fail"
 
 
+def test_target_diff_detects_personal_path_embedded_in_binary_file(tmp_path: Path):
+    """バイナリ内埋め込みの個人pathも検出する (回帰: PR#38レビュー指摘)。
+
+    ``diff_added_lines_have`` の binary fallback は ``_decode_scannable_text``
+    がblob全体をUTF-8/UTF-16としてdecodeできて初めて内容を検査する。
+    非UTF-8 noiseを含む真のバイナリblob内に個人pathがASCIIで埋め込まれていても
+    decode自体が失敗し、そのfileの内容検査が丸ごと ``continue`` で
+    スキップされていた (unified=0 diffも 'Binary files ... differ' のみで
+    +行を出さないため、二重に見逃す)。
+    """
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    # UTF-8/UTF-16 のどちらでも全体decodeが失敗する noise (孤立surrogate) と
+    # 個人pathを混在させたバイナリ file。noiseが弱いとUTF-16へのfallbackが
+    # 文字化けしつつdecode成功してしまい、本来のバグ経路を再現できない。
+    payload = (
+        b"\x00\x01\x00\xd8" + b"C:/Us" + b"ers/newuser/project" + b"\x00\x02noise"
+    )
+    (repo / "blob.bin").write_bytes(payload)
+    git(repo, "add", "blob.bin")
+    git(repo, "commit", "-m", "add binary with embedded personal path")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["files"]
+    assert report["status"] == "blocked"
+
+
 def test_target_diff_blocks_added_line_that_looks_like_patch_header(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
