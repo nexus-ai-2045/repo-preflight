@@ -23,12 +23,19 @@
    guarantees / non_guarantees / proposals / confirmations が機械生成される。
 3. **Skill 入口**  
    Claude Code / Grok / Codex 向け adapter が root `SKILL.md` を正本として指す。  
-   各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。
+   各 runtime で「PR 作る」「公開する」等の trigger 語が description に含まれる。  
+   `configure_settings` も同様に `runtime/claude-code/SKILL.md` / `runtime/grok/SKILL.md` /
+   `runtime/agents/openai.yaml` それぞれの description・intent 列挙・trigger 語に明示され、
+   root `SKILL.md` と乖離しない（GitHub Settings の変更は行わず GET/比較/preview まで）。
 4. **クロス OS CI**  
    `.github/workflows/ci.yml` どおり: ubuntu-latest と macos-latest で Python 3.11 / 3.13、  
    windows-latest で Python 3.13 のみ。各ジョブを`PYTHONUTF8=1`で実行し、pytest、`runtime_smoke`、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
+6. **GitHub 採用時の対話**  
+   `create_repo` / `push` / `open_pr` / `merge` の直前に `--intent` を実行すると  
+   `repo-preflight.dialogue/v3` が返り、質問が機械生成される。これが GitHub 採用時の契約。  
+   clone や GitHub ページ閲覧だけでは対話は走らない。
 
 ## AI憲法の入口保証
 
@@ -50,6 +57,7 @@ runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届�
 3. Claude Code Cloud / リモート sandbox に git やローカル path が無い場合の完全動作。
 4. 各製品 UI のバージョン差分・権限ダイアログ・ネットワーク制限。
 5. GitHub 設定の自動適用。`configure_settings`は`gh api`のGET、profile比較、個別previewまでを保証するが、変更は別承認・別工程。
+6. github.com の repository ページが対話 UI になること。
 
 ## 導入 (Claude Code / Grok)
 
