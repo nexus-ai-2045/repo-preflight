@@ -21,6 +21,7 @@ REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "readiness_scan.py"
 
 DOCUMENTED_INTENTS = [
+    ("create_repo", []),
     ("push", ["--base-ref", "origin/main"]),
     ("open_pr", ["--base-ref", "origin/main"]),
     ("merge", ["--base-ref", "origin/main"]),
@@ -64,6 +65,16 @@ def test_documented_intents_stay_usable_against_this_repository(intent, extra):
             )
         pytest.skip("origin/main が無い、または HEAD の祖先ではない環境")
     report = _run_scan(intent, extra)
+    assert report.get("schema") == "repo-preflight.dialogue/v3"
+    assert report.get("intent") == intent
+    if intent == "create_repo":
+        assert report["status"] in {
+            "needs_human_input",
+            "blocked",
+            "ready_after_confirmation",
+        }
+        assert report.get("proposals")
+        return
     scan = report["scan"]
     assert scan["status"] != "tool_error", scan.get("issues", scan)
     consistency = scan["checks"]["repository_consistency"]
