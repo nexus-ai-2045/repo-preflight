@@ -14,15 +14,29 @@
 
 `@` は製品ごとに意味が異なります。Claude Code/Geminiのimportとして使える入口と、Grok/Cursorのファイル添付・rule参照を同じ構文として扱いません。
 
+pointer検出は文字列の部分一致ではなく、`@<path>` トークンをパスとして解決してsourceとの同一性 (`samefile`) で判定します。絶対パス・`~/` 表記・entryファイルからの相対パスを受理し、コードフェンス内・インラインコード内・HTMLコメント内の例示はimportとして扱いません。大文字小文字はファイルシステムの実際の解決に従います (case-insensitiveなファイルシステムでは一致し、case-sensitiveでは一致しない)。
+
+パスは `{HOME}` / `{PROJECT}` placeholder だけを解決します。`~` は `--home` の差し替えを迂回して実行ユーザーの実homeに解決されてしまうため、fail-closedで拒否します。
+
 ## 検査
 
 ```powershell
 py -3.13 scripts/ai_entry_contract.py `
-  --manifest assets/ai-entry-contract.example.json `
-  --json
+  --manifest assets/ai-entry-contract.example.json
 ```
 
-既定は読み取り専用です。結果が `blocked` のときは、未確認のruntimeを「対応済み」と扱いません。
+既定は読み取り専用です。出力は常にJSONです。結果が `blocked` のときは、未確認のruntimeを「対応済み」と扱いません。
+
+exit codeは結果の種類を区別します。
+
+| exit | status | 意味 |
+|---|---|---|
+| 0 | `pass` | 全required entryが整合 |
+| 1 | `blocked` | drift・stale・missing (行動が必要) |
+| 2 | `tool_error` | manifest不正・実行失敗 (gate自体の問題) |
+| 3 | `human_review` | requiredなmanual entryの人手確認だけが残っている |
+
+同梱exampleはCursorのmanual entryを含むため、機械検証で到達できる最良は exit 3 です。CIでgateにする場合は 0 と 3 を許容するか、manual entryを `required: false` にした運用manifestを使います。`--entry-id` を `--apply` なしで渡すことはできません (entry単位のread-only検査は提供していないため、全件検査が黙って走って「1件だけ確認した」と誤読されるのを防ぎます)。
 
 ## 投影の更新
 
@@ -32,9 +46,10 @@ py -3.13 scripts/ai_entry_contract.py `
 py -3.13 scripts/ai_entry_contract.py `
   --manifest <manifest.json> `
   --entry-id grok-global `
-  --apply `
-  --json
+  --apply
 ```
+
+成功時のレポートには `applied_entry` が付き、書き込みが完了したentryを他entryの状態やexit codeと独立に識別できます (manual entryが残るmanifestではapply成功でもexitは3になります)。
 
 次の安全境界があります。
 
@@ -42,6 +57,9 @@ py -3.13 scripts/ai_entry_contract.py `
 - `pointer` と `manual` は自動変更しない
 - 既存の未生成ファイルは上書きしない
 - 生成範囲はsource hashとbegin/end markerで検査する
+- markerはファイル内で一意でなければならない。marker類似文字列を含むoverlay・複製ブロック・source自身にmarkerを含むケースは、破壊や見逃しを防ぐため `projection_markers_ambiguous` / `source_contains_projection_markers` としてfail-closedで停止する
+- sourceとtargetが同一ファイルに解決される場合は `source_target_identical` で拒否する
+- エラーメッセージに絶対パスを載せない (secret-safe)
 - runtime設定、認証、Cursor/GrokのUI設定は変更しない
 
 ## 現在の判断

@@ -4,6 +4,8 @@
 
 ### 追加
 
+- AI憲法入口契約 (`scripts/ai_entry_contract.py` / `schemas/ai-entry-contract.schema.json` / ADR-0004) を追加した。pointer / materialized / manual の3戦略をmanifestで宣言し、未同期runtimeをfail-closedで検出する。レビュー指摘15件を吸収済み: marker一意性検査 (source内marker・複製ブロック・overlay引用による増殖破壊/削除/見逃しを停止)、`~` 記法の拒否 ({HOME}のみ、`--home` sandbox迂回を防止)、pointer判定をパス解決+`samefile`化 (フェンス/コメント内例示のfalse green、`@~/`・相対パス・case-insensitive FSのfalse redを解消)、source==target拒否、manifest構造検証のschema同等化 (型・id・evidence・未知キー)、apply成功の `applied_entry` 明示とexit code分離 (0=pass/1=blocked/2=tool_error/3=human_review)、エラーメッセージの絶対パス非露出、既存targetパーミッション保持、`--entry-id` 単独指定の明示エラー化、dead flag `--json` の削除。
+  - 保証: sourceと宣言された入口の存在・pointer到達性・生成本文とhashの整合・markerの一意性。非保証: AI製品が入口を毎回同じ意味で解釈すること、UI設定 (manual entry) が有効であること。manualはhuman_review (exit 3) で人手に返す。
 - 日本語READMEのクイックスタートを、AIへ貼る URL と危険レビュー指示にする契約を warning として検知する。
 - 図が画像自身ではなく ADR / 再現テストへリンクされているかを warning として検知する。空のクイックスタート、否定形の危険レビュー、fence内の見出し/画像例、reference-style画像、pip3、HTMLコメント内URL、英語READMEの図も対象にする。CI/License などの遠隔バッジは図ではないので対象外。
 - PRを出す前のセルフレビュー `docs/pr-self-review.md` を追加した。複数リポジトリの
