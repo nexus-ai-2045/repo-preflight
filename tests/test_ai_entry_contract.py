@@ -55,7 +55,7 @@ def test_instruction_pointer_entry_passes_for_non_import_loader(
     source = home / "AI-CONSTITUTION.md"
     source.write_text("source\n", encoding="utf-8")
     (home / "AGENTS.md").write_text(
-        f"共通原則の正本を先に読みます: `{source}`\n",
+        f"共通原則の正本は、必ず次を先に読みます。\n\n`{source}`\n",
         encoding="utf-8",
     )
     manifest = write_manifest(
@@ -74,6 +74,94 @@ def test_instruction_pointer_entry_passes_for_non_import_loader(
     report = gate.check_manifest(manifest, home=home)
 
     assert report["status"] == "pass"
+
+
+def test_instruction_pointer_path_only_is_blocked(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = home / "AI-CONSTITUTION.md"
+    source.write_text("source\n", encoding="utf-8")
+    (home / "AGENTS.md").write_text(
+        f"参照先のパス: `{source}`\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(
+        tmp_path,
+        [
+            {
+                "id": "codex",
+                "runtime": "codex",
+                "path": "{HOME}/AGENTS.md",
+                "strategy": "pointer",
+                "pointer_kind": "instruction",
+            }
+        ],
+    )
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["codex:source_pointer_missing"]
+
+
+def test_instruction_pointer_negative_read_instruction_is_blocked(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = home / "AI-CONSTITUTION.md"
+    source.write_text("source\n", encoding="utf-8")
+    (home / "AGENTS.md").write_text(
+        f"共通原則の正本を読まないでください: `{source}`\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(
+        tmp_path,
+        [
+            {
+                "id": "codex",
+                "runtime": "codex",
+                "path": "{HOME}/AGENTS.md",
+                "strategy": "pointer",
+                "pointer_kind": "instruction",
+            }
+        ],
+    )
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["codex:source_pointer_missing"]
+
+
+def test_instruction_pointer_english_negative_read_instruction_is_blocked(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = home / "AI-CONSTITUTION.md"
+    source.write_text("source\n", encoding="utf-8")
+    (home / "AGENTS.md").write_text(
+        f"Do not read the canonical source: `{source}`\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(
+        tmp_path,
+        [
+            {
+                "id": "codex",
+                "runtime": "codex",
+                "path": "{HOME}/AGENTS.md",
+                "strategy": "pointer",
+                "pointer_kind": "instruction",
+            }
+        ],
+    )
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["codex:source_pointer_missing"]
 
 
 def test_instruction_pointer_wrong_path_is_blocked(tmp_path: Path) -> None:

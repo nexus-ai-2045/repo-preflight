@@ -30,6 +30,25 @@ HEADER_RE = re.compile(
 )
 STRATEGIES = {"pointer", "materialized", "manual"}
 POINTER_KINDS = {"import", "instruction"}
+INSTRUCTION_SUBJECT_RE = re.compile(
+    r"(?:共通原則|正本|\b(?:constitution|canonical|source)\b)",
+    re.IGNORECASE,
+)
+INSTRUCTION_ACTION_RE = re.compile(
+    r"(?:読|参照|\b(?:read|load|consult)\b)", re.IGNORECASE
+)
+INSTRUCTION_ORDER_RE = re.compile(
+    r"(?:必ず|先に|開始前|最初|\b(?:must|before|first)\b)",
+    re.IGNORECASE,
+)
+INSTRUCTION_NEGATIVE_RE = re.compile(
+    r"(?:読まない|読み込まない|参照しない|"
+    r"\bdo\s+not\s+(?:read|load|consult)\b|"
+    r"\bdon['’]t\s+(?:read|load|consult)\b|"
+    r"\bnever\s+(?:read|load|consult)\b|"
+    r"\bnot\s+(?:read|load|consult)\b)",
+    re.IGNORECASE,
+)
 
 
 def normalize_text(value: str) -> str:
@@ -67,14 +86,31 @@ def path_forms(path: Path) -> set[str]:
     return {form.casefold() for form in forms} if os.name == "nt" else forms
 
 
+def _has_instruction_semantics(lines: list[str], path_line: int) -> bool:
+    """Require a nearby, affirmative instruction to read the canonical source."""
+
+    context = "\n".join(lines[max(0, path_line - 2) : path_line + 3])
+    if INSTRUCTION_NEGATIVE_RE.search(context):
+        return False
+    return bool(
+        INSTRUCTION_SUBJECT_RE.search(context)
+        and INSTRUCTION_ACTION_RE.search(context)
+        and INSTRUCTION_ORDER_RE.search(context)
+    )
+
+
 def has_pointer(text: str, source: Path, *, pointer_kind: str = "import") -> bool:
     """Check a runtime-specific explicit pointer without reading source content."""
 
     forms = path_forms(source)
-    for line in normalize_text(text).splitlines():
-        normalized = line.replace("\\", "/")
+    lines: list[str] = []
+    for raw_line in normalize_text(text).splitlines():
+        line = raw_line.replace("\\", "/")
         if os.name == "nt":
-            normalized = normalized.casefold()
+            line = line.casefold()
+        lines.append(line)
+
+    for line_number, normalized in enumerate(lines):
         normalized_forms = {form.replace("\\", "/") for form in forms}
         if pointer_kind == "import":
             pointer_forms = ["@" + form for form in normalized_forms]
@@ -82,7 +118,9 @@ def has_pointer(text: str, source: Path, *, pointer_kind: str = "import") -> boo
                 return True
         elif pointer_kind == "instruction":
             code_spans = re.findall(r"`([^`]+)`", normalized)
-            if any(span in normalized_forms for span in code_spans):
+            if any(
+                span in normalized_forms for span in code_spans
+            ) and _has_instruction_semantics(lines, line_number):
                 return True
         else:
             raise ValueError("pointer_kind_invalid")
