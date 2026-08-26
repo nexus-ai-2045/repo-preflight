@@ -6,7 +6,8 @@
       "id": "codex-global",
       "runtime": "codex",
       "path": "{HOME}/AGENTS.md",
-      "strategy": "materialized",
+      "strategy": "pointer",
+      "pointer_kind": "instruction",
       "required": true
     },
     {

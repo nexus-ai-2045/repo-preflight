@@ -42,7 +42,7 @@
 runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届くことは別の契約です。
 `scripts/ai_entry_contract.py` は、共通正本と入口の関係を次の3戦略で検査します。
 
-- `pointer`: runtimeが文書内のsource pointer/importを解釈する場合
+- `pointer`: runtime固有のsource pointer/importまたは明示的な正本読込指示を検査する場合
 - `materialized`: import非対応runtime向けに生成した共通本文とsource hashを検査する場合
 - `manual`: 製品UIや未確認仕様に依存し、自動完了扱いしない場合
 
