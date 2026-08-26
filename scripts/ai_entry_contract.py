@@ -34,6 +34,7 @@ HEADER_RE = re.compile(
     r"<!--\s*repo-preflight:ai-constitution source-sha256=([0-9a-f]{64})\s*-->"
 )
 STRATEGIES = {"pointer", "materialized", "manual"}
+MANIFEST_FIELDS = {"schema", "source", "entries"}
 ENTRY_FIELDS = {"id", "runtime", "path", "strategy", "required", "evidence"}
 POINTER_TOKEN_RE = re.compile(r"@([^@\s\"'`<>|;,()\[\]]+)")
 EXIT_CODES = {"pass": 0, "blocked": 1, "tool_error": 2, "human_review": 3}
@@ -247,6 +248,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("manifest_shape_invalid")
+    if set(payload) - MANIFEST_FIELDS:
+        raise ValueError("manifest_fields_unknown")
     if payload.get("schema") != SCHEMA:
         raise ValueError("manifest_schema_mismatch")
     if not isinstance(payload.get("source"), str) or not payload["source"].strip():

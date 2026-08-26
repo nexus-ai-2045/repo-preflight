@@ -68,6 +68,19 @@ py -3.13 scripts/ai_entry_contract.py `
 - Grokは認識済みの`AGENTS.md`/`CLAUDE.md`を読むが、Claude Codeと同じMarkdown importを前提にしない。Grokはmaterialized戦略で明示的に検証する。
 - Cursorのglobal User Rulesは製品UI経路を含むため、ファイル存在だけで完了扱いせず、manual evidenceで止める。project `.cursor/rules` を採用する場合は、project scopeの別manifestを作る。
 
+## 先行実装との関係
+
+独自概念を作らないため、各要素の既存慣行を確認しています。
+
+| 本契約の要素 | 対応する既存概念 | 差分 |
+|---|---|---|
+| marker で囲んだ生成ブロック | Ansible `blockinfile` の managed block (`# BEGIN ANSIBLE MANAGED BLOCK`) | 慣行どおり。Ansible は marker の一意性を呼び出し側責任にしているが、本契約は検査側で一意性を強制する |
+| source hash をヘッダに埋めた drift 検出 | 先行なし (codegen の `DO NOT EDIT` は宣言のみで改変検知を持たない) | 本契約の拡張 |
+| `pointer` / `materialized` | dotfile 管理の symlink strategy / copy strategy (chezmoi 等) | 対応する。ただし `materialized` はDBのmaterialized viewと違い自動再計算はしない |
+| `manual` | 先行なし (dotfile 管理は常に機械書込可を前提とするため) | 本契約の区分 |
+| exit code 0/1/2/3 | `terraform plan -detailed-exitcode` 等の「0=合否, 1=内容起因, 2=ツール起因」慣行 | 同系統。`sysexits.h` (64番台) とは別体系。3=human_review は本契約の拡張で、深刻度でなく対応主体で並べている |
+| marker 曖昧時の停止 | fail-closed (fail-secure) | 標準用語どおり。可用性より破壊防止を優先する意味で fail-safe ではない |
+
 ## 保証境界
 
 この契約が保証するのは、sourceと宣言された入口の存在・pointer・生成本文・hashの整合です。AI製品が毎回同じ推論をすること、UI設定が有効であること、mergeや公開を許可することは保証しません。

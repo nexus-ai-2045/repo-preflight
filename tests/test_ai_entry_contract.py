@@ -481,6 +481,28 @@ def test_manifest_rejects_unknown_entry_fields(tmp_path: Path) -> None:
     assert report["findings"] == ["manifest_entry_fields_unknown:cursor"]
 
 
+def test_manifest_rejects_unknown_top_level_fields(tmp_path: Path) -> None:
+    # schema は root も additionalProperties:false。コード側もそろえる。
+    home = make_home(tmp_path)
+    manifest = tmp_path / "extra.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema": gate.SCHEMA,
+                "source": "{HOME}/AI-CONSTITUTION.md",
+                "entries": [pointer_entry()],
+                "unexpected_extra_key": "x",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["manifest_fields_unknown"]
+
+
 def test_manual_entry_requires_evidence(tmp_path: Path) -> None:
     home = make_home(tmp_path)
     manifest = write_manifest(
