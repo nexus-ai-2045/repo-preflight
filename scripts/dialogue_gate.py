@@ -104,6 +104,46 @@ def build_proposals_from_scan(
     status = scan.get("status")
 
     if status == "tool_error":
+        issues = scan.get("issues") or []
+        if "repo_path_is_not_repository_root" in issues:
+            # 読めないのではなく、別 repository の中を指している。汎用の
+            # 「読める状態に直す」では何を直せばよいか伝わらない
+            root = scan.get("repository_root") or "<repository>"
+            proposals.append(
+                _proposal(
+                    id="fix_repo_path_not_repository_root",
+                    kind="tool_error",
+                    severity="required",
+                    question=(
+                        f"指定した path は repository root ではなく、repository "
+                        f"`{root}` の中の一部です。`{root}` 全体を検査対象にするか、"
+                        "その path を独立した repository にしてから"
+                        f"「{INTENT_LABELS.get(intent, intent)}」へ進みますか?"
+                    ),
+                    current={
+                        "issues": issues,
+                        "repository_root": root,
+                    },
+                    proposed="retarget_repository_root_then_rerun_preflight",
+                    options=[
+                        {
+                            "id": "retarget_root",
+                            "label": f"`{root}` 全体を対象にして再検査する",
+                        },
+                        {
+                            "id": "init_repository",
+                            "label": "指定した path を独立した repository にする",
+                        },
+                        {"id": "no", "label": "中止する"},
+                    ],
+                    default="no",
+                    why=(
+                        "囲っている repository の判定を、指した path の判定として"
+                        "返さない"
+                    ),
+                )
+            )
+            return proposals
         proposals.append(
             _proposal(
                 id="fix_tool_error",

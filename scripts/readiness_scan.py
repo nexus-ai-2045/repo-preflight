@@ -4,6 +4,7 @@ import argparse
 import difflib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -153,6 +154,16 @@ def sanitized_evidence_label(label: str) -> str:
 
 def repository_evidence_label(repo: Path) -> str:
     return sanitized_evidence_label(repo.name or "<repository>")
+
+
+def same_directory(left: Path, right: Path) -> bool:
+    # Windows では大文字小文字・8.3短縮名・junction で文字列が食い違うため、
+    # 文字列比較ではなく inode 相当で突き合わせる。stat できない場合だけ
+    # normcase による文字列比較へ落とす
+    try:
+        return left.samefile(right)
+    except OSError:
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
 
 
 def effective_identity(value: str) -> str:
@@ -649,7 +660,17 @@ def scan(
     git_code, top = run(repo, "git", "rev-parse", "--show-toplevel")
     if git_code:
         return {"status": "tool_error", "issues": ["not_git_repository"]}
-    repo = Path(top).resolve()
+    root = Path(top).resolve()
+    if not same_directory(repo, root):
+        # --show-toplevel は「そのpathを含むrepo」を返す。囲っているrepoへ黙って
+        # 広げると、利用者が指したのと別のrepositoryの判定を、指したpathの判定と
+        # して返してしまう。公開判定では取り違えが致命的なので閉じる側で止める
+        return {
+            "status": "tool_error",
+            "issues": ["repo_path_is_not_repository_root"],
+            "repository_root": repository_evidence_label(root),
+        }
+    repo = root
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),

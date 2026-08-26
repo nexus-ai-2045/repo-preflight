@@ -583,11 +583,21 @@ def test_cli_json_never_echoes_secret_shaped_checkout_path(tmp_path: Path):
     assert json.loads(result.stdout)["repo"] == "repo"
 
 
-def test_subdirectory_still_scans_repo_root(tmp_path: Path):
+def test_subdirectory_cannot_be_used_to_dodge_a_repo_root_secret(tmp_path: Path):
+    """subdirectory を指しても、repo root の secret を素通りさせない。
+
+    以前は root へ暗黙に広げて検査することでこれを担保していたが、それだと
+    利用者が指したのと別 repository の判定を返してしまうため、今は閉じて止める。
+    どちらにせよ pass は返らない、が守るべき不変条件。
+    """
     repo = make_repo(tmp_path)
     (repo / "nested").mkdir()
     (repo / "leak.txt").write_text("sk-" + "B" * 30, encoding="utf-8")
-    assert MODULE.scan(repo / "nested")["checks"]["secret_scan"]["status"] == "fail"
+
+    report = MODULE.scan(repo / "nested")
+
+    assert report["status"] != "pass"
+    assert report["issues"] == ["repo_path_is_not_repository_root"]
 
 
 def test_remote_credentials_are_redacted(tmp_path: Path):
@@ -693,6 +703,49 @@ def test_missing_repo_returns_sanitized_tool_error(tmp_path: Path):
     report = MODULE.scan(missing)
 
     assert report == {"status": "tool_error", "issues": ["not_git_repository"]}
+
+
+def test_subdirectory_of_a_repo_does_not_silently_scan_the_parent(tmp_path: Path):
+    """--repo に非repositoryのsubdirectoryを渡したら、囲っているrepoへ勝手に広げない。
+
+    git rev-parse --show-toplevel は「そのpathを含むrepo」を返すため、放置すると
+    利用者が指したのと別のrepositoryの判定を、指したpathの判定として返してしまう。
+    """
+    repo = make_repo(tmp_path)
+    subdir = repo / "deploy-site"
+    subdir.mkdir()
+    (subdir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    report = MODULE.scan(subdir)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["repo_path_is_not_repository_root"]
+    # 解決先を伝えないと利用者は再実行のしようがない。ただし個人pathは出さない
+    assert report["repository_root"] == repo.name
+    assert "checks" not in report
+
+
+def test_repository_root_evidence_does_not_leak_the_absolute_path(tmp_path: Path):
+    """解決先を伝えるときも、個人pathを含む絶対pathは出さない。"""
+    repo = make_repo(tmp_path)
+    subdir = repo / "deploy-site"
+    subdir.mkdir()
+
+    report = MODULE.scan(subdir)
+
+    assert str(tmp_path) not in json.dumps(report)
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, json.dumps(report).encode("utf-8"))
+
+
+def test_worktree_root_is_accepted_as_repository_root(tmp_path: Path):
+    """git worktree の root は .git が file でも repository root として扱う。"""
+    repo = make_repo(tmp_path)
+    worktree = tmp_path / "wt"
+    git(repo, "worktree", "add", "-b", "probe", str(worktree))
+
+    report = MODULE.scan(worktree)
+
+    assert report["status"] != "tool_error"
 
 
 def clear_local_identity(repo: Path, tmp_path: Path, monkeypatch) -> None:
