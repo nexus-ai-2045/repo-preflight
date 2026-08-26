@@ -13,11 +13,16 @@ Claude Code/Gemini CLIのpointer入口、Grokの`AGENTS.md`/`CLAUDE.md`全文読
 
 `repo-preflight`は共通正本とruntime入口を、次の戦略で宣言・検査する。
 
-1. `pointer`: runtimeがsource pointer/importを解釈する入口
+1. `pointer`: runtime固有のsource pointer/importまたは明示的な正本読込指示を置く入口。`pointer_kind=import|instruction`で構文を宣言する。`instruction`は正本パスのinline code出現だけでなく、同一行または前後2行以内の肯定的な読込指示（正本の主語、必須・先行条件、読む・参照する動詞）を要求し、否定形は拒否する。
 2. `materialized`: source本文を生成投影し、source hashと共通本文を検査する入口
 3. `manual`: UIや未確認仕様に依存し、機械的に完了扱いしない入口
 
 検査はread-onlyを既定とする。materialized投影の更新は対象entryを1件指定した`--apply`だけで行い、既存の未生成ファイルは上書きしない。
+
+manifestは採用するruntime入口の集合を宣言するもので、`repo-preflight` CLIの実行依存を
+増やさない。`required` はmanifest内のentry単位で評価し、未導入または採用しないruntimeは
+entryを省略するか `required: false` とする。任意entryの状態はreportに残すが、任意entryの
+失敗だけではmanifest全体を`blocked`にしない。
 
 ## Rejected alternatives
 

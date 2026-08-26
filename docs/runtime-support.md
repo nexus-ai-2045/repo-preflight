@@ -42,13 +42,19 @@
 runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届くことは別の契約です。
 `scripts/ai_entry_contract.py` は、共通正本と入口の関係を次の3戦略で検査します。
 
-- `pointer`: runtimeが文書内のsource pointer/importを解釈する場合
+- `pointer`: runtime固有のsource pointer/importまたは、正本パスだけでなく肯定的な読込指示を伴う明示的な正本読込指示を検査する場合
 - `materialized`: import非対応runtime向けに生成した共通本文とsource hashを検査する場合
 - `manual`: 製品UIや未確認仕様に依存し、自動完了扱いしない場合
 
 検査は既定で読み取り専用です。Grok/Cursorへ新しいglobal設定を勝手に作らず、
 未確認の入口は`blocked`または`human_review`として返します。詳細は
 [AI憲法入口契約](ai-constitution-entry-contract.md)を参照してください。
+
+このmanifestはruntimeの選択的な採用を表す契約であり、Codexを含むadapterの存在は
+`repo-preflight` CLIの必須依存を意味しません。`required` はそのmanifestで宣言した
+entry単位の必須性です。未導入または採用しないruntimeはentryを省略するか
+`required: false` にできます。任意entryの状態もreportには残り、採用した必須entryの
+判定だけがmanifest全体の `blocked` / `pass` を決めます。
 
 ## 保証しないこと
 
