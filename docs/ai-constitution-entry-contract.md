@@ -6,6 +6,12 @@
 
 正本は1つだけ持ち、runtimeごとの差は入口戦略として宣言します。
 
+このmanifestは、利用環境が採用する入口の集合を宣言するものであり、
+`repo-preflight` CLIの実行依存を意味しません。`required` は採用したmanifest内の
+entry単位にだけ適用されます。未導入または今回の環境で使わないruntimeは、entryを
+manifestから省略するか、`required: false` として任意entryにします。`assets/` の
+exampleは対応runtimeを並べた全体例であり、全runtimeを自動的に有効化する設定ではありません。
+
 | 戦略 | 意味 | 適用例 |
 |---|---|---|
 | `pointer` | runtime固有のsource pointer/importまたは明示的な読込指示を入口に置く | Codex、Claude Code、Gemini CLI |
@@ -29,6 +35,10 @@ py -3.13 scripts/ai_entry_contract.py `
 ```
 
 既定は読み取り専用です。結果が `blocked` のときは、未確認のruntimeを「対応済み」と扱いません。
+
+`required: false` のentryが `missing`、`stale`、または `human_review` でも、
+そのentryだけを理由にmanifest全体を `blocked` にはしません。ただし、reportには
+entryごとの状態を残すため、任意entryの未整備を見えない成功として扱うことはできません。
 
 ## 投影の更新
 

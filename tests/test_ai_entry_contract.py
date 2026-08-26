@@ -468,6 +468,41 @@ def test_manifest_required_must_be_boolean(tmp_path: Path) -> None:
     assert report["findings"] == ["manifest_required_invalid:grok"]
 
 
+def test_optional_entry_does_not_block_selected_manifest(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "AI-CONSTITUTION.md").write_text("source\n", encoding="utf-8")
+    (home / "CLAUDE.md").write_text(
+        "@" + str(home / "AI-CONSTITUTION.md") + "\n", encoding="utf-8"
+    )
+    manifest = write_manifest(
+        tmp_path,
+        [
+            {
+                "id": "claude",
+                "runtime": "claude-code",
+                "path": "{HOME}/CLAUDE.md",
+                "strategy": "pointer",
+            },
+            {
+                "id": "codex",
+                "runtime": "codex",
+                "path": "{HOME}/AGENTS.md",
+                "strategy": "pointer",
+                "pointer_kind": "instruction",
+                "required": False,
+            },
+        ],
+    )
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "pass"
+    assert report["entries"][0]["status"] == "pass"
+    assert report["entries"][1]["status"] == "missing"
+    assert report["findings"] == []
+
+
 def test_manifest_non_string_source_is_structured_error(tmp_path: Path) -> None:
     home = tmp_path / "home"
     home.mkdir()

@@ -19,6 +19,11 @@ Claude Code/Gemini CLIのpointer入口、Grokの`AGENTS.md`/`CLAUDE.md`全文読
 
 検査はread-onlyを既定とする。materialized投影の更新は対象entryを1件指定した`--apply`だけで行い、既存の未生成ファイルは上書きしない。
 
+manifestは採用するruntime入口の集合を宣言するもので、`repo-preflight` CLIの実行依存を
+増やさない。`required` はmanifest内のentry単位で評価し、未導入または採用しないruntimeは
+entryを省略するか `required: false` とする。任意entryの状態はreportに残すが、任意entryの
+失敗だけではmanifest全体を`blocked`にしない。
+
 ## Rejected alternatives
 
 - 全AI入口へ同じ`@<absolute-path>`を配る: runtimeごとの構文差を隠し、Grok/Cursorでfalse greenになる。

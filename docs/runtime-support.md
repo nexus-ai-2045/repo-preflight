@@ -50,6 +50,12 @@ runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届�
 未確認の入口は`blocked`または`human_review`として返します。詳細は
 [AI憲法入口契約](ai-constitution-entry-contract.md)を参照してください。
 
+このmanifestはruntimeの選択的な採用を表す契約であり、Codexを含むadapterの存在は
+`repo-preflight` CLIの必須依存を意味しません。`required` はそのmanifestで宣言した
+entry単位の必須性です。未導入または採用しないruntimeはentryを省略するか
+`required: false` にできます。任意entryの状態もreportには残り、採用した必須entryの
+判定だけがmanifest全体の `blocked` / `pass` を決めます。
+
 ## 保証しないこと
 
 1. Claude Code / Grok が **skill を自動インストール**すること（導入は `install_runtime_skills.py` または手動）。
