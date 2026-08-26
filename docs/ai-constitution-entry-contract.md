@@ -6,13 +6,25 @@
 
 正本は1つだけ持ち、runtimeごとの差は入口戦略として宣言します。
 
+このmanifestは、利用環境が採用する入口の集合を宣言するものであり、
+`repo-preflight` CLIの実行依存を意味しません。`required` は採用したmanifest内の
+entry単位にだけ適用されます。未導入または今回の環境で使わないruntimeは、entryを
+manifestから省略するか、`required: false` として任意entryにします。`assets/` の
+exampleは対応runtimeを並べた全体例であり、全runtimeを自動的に有効化する設定ではありません。
+
 | 戦略 | 意味 | 適用例 |
 |---|---|---|
-| `pointer` | runtimeが文書内のsource pointer/importを解釈する | Claude Code、Gemini CLI |
-| `materialized` | source本文を生成投影し、hashと本文を検査する | Codex、Grok |
+| `pointer` | runtime固有のsource pointer/importまたは明示的な読込指示を入口に置く | Codex、Claude Code、Gemini CLI |
+| `materialized` | source本文を生成投影し、hashと本文を検査する | Grok |
 | `manual` | 製品UIや未確認仕様に依存し、機械的に完了扱いしない | Cursor User Rules |
 
-`@` は製品ごとに意味が異なります。Claude Code/Geminiのimportとして使える入口と、Grok/Cursorのファイル添付・rule参照を同じ構文として扱いません。
+`@` は製品ごとに意味が異なります。manifestの`pointer_kind`で、`import`（`@` import）と
+`instruction`（Codexのように入口が正本を先に読む明示指示）を区別します。Grok/Cursorの
+ファイル添付・rule参照を同じ構文として扱いません。
+
+`instruction` は正本パスがinline codeに現れるだけでは合格にしません。パスの同一行または
+前後2行以内に、正本を示す主語、必須・先行条件、読む・参照する動詞を含む肯定的な読込指示が
+必要です。`読まない`、`do not read` などの否定形はfail-closedで不合格にします。
 
 ## 検査
 
@@ -23,6 +35,10 @@ py -3.13 scripts/ai_entry_contract.py `
 ```
 
 既定は読み取り専用です。結果が `blocked` のときは、未確認のruntimeを「対応済み」と扱いません。
+
+`required: false` のentryが `missing`、`stale`、または `human_review` でも、
+そのentryだけを理由にmanifest全体を `blocked` にはしません。ただし、reportには
+entryごとの状態を残すため、任意entryの未整備を見えない成功として扱うことはできません。
 
 ## 投影の更新
 
@@ -47,6 +63,7 @@ py -3.13 scripts/ai_entry_contract.py `
 ## 現在の判断
 
 - Claude Codeはpointer戦略を使えるが、live checkoutがremoteのマージ結果へ同期済みかは別に検査する。
+- Codexは階層入口の明示的な正本読込指示を`pointer_kind=instruction`で検査する。本文を複製する`materialized`とは区別する。
 - Grokは認識済みの`AGENTS.md`/`CLAUDE.md`を読むが、Claude Codeと同じMarkdown importを前提にしない。Grokはmaterialized戦略で明示的に検証する。
 - Cursorのglobal User Rulesは製品UI経路を含むため、ファイル存在だけで完了扱いせず、manual evidenceで止める。project `.cursor/rules` を採用する場合は、project scopeの別manifestを作る。
 
