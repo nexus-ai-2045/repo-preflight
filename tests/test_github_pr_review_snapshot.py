@@ -503,3 +503,84 @@ def test_collect_rejects_thread_surface_drift(monkeypatch) -> None:
         assert str(error) == "github_thread_surface_changed_during_collection"
     else:
         raise AssertionError("RuntimeError was not raised")
+
+
+def test_draft_merge_state_prevents_pass() -> None:
+    pr = {
+        "headRefOid": HEAD,
+        "reviews": [
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
+        ],
+        "comments": [],
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "DRAFT",
+    }
+    report = MODULE.evaluate_snapshot(
+        pr, [], expected_head=HEAD, required_reviewer="chatgpt-codex-connector"
+    )
+    assert report["status"] == "blocked"
+    assert "merge_state_blocked" in report["reasons"]
+
+
+def test_same_second_decisive_reviews_use_connection_order() -> None:
+    timestamp = "2026-08-27T00:01:00Z"
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "APPROVED",
+                "submittedAt": timestamp,
+            },
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": timestamp,
+            },
+        ],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "blocked"
+    assert "changes_requested" in report["reasons"]
+
+
+def test_collect_uses_raw_fields_for_repo_identifiers(monkeypatch) -> None:
+    calls = []
+    stable_pr = {
+        "headRefOid": HEAD,
+        "reviews": [],
+        "comments": [],
+        "statusCheckRollup": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+
+    def fake_gh(args):
+        calls.append(args)
+        if args[:2] == ["pr", "view"]:
+            return stable_pr
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(MODULE, "_gh_json", fake_gh)
+    MODULE.collect("true/123", 42)
+    graph_args = next(args for args in calls if args[:2] == ["api", "graphql"])
+    assert graph_args[graph_args.index("owner=true") - 1] == "-f"
+    assert graph_args[graph_args.index("name=123") - 1] == "-f"
+    assert graph_args[graph_args.index("number=42") - 1] == "-F"

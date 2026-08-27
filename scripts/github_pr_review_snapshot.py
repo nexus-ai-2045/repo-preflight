@@ -77,8 +77,9 @@ def evaluate_snapshot(
         if str(item.get("state", "")).upper() in {"APPROVED", "CHANGES_REQUESTED"}
     ]
     if decisive_reviews:
-        latest_decisive_review = max(
-            decisive_reviews, key=lambda item: str(item.get("submittedAt", ""))
+        _, latest_decisive_review = max(
+            enumerate(decisive_reviews),
+            key=lambda pair: (str(pair[1].get("submittedAt", "")), pair[0]),
         )
         review_state = str(latest_decisive_review.get("state", "")).upper()
 
@@ -132,7 +133,7 @@ def evaluate_snapshot(
     elif pr.get("mergeable") not in {None, "MERGEABLE"}:
         reasons.append("not_mergeable")
         status = "blocked"
-    if pr.get("mergeStateStatus") == "BLOCKED":
+    if pr.get("mergeStateStatus") in {"BLOCKED", "DRAFT"}:
         reasons.append("merge_state_blocked")
         status = "blocked"
 
@@ -193,9 +194,9 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
                 "graphql",
                 "-f",
                 f"query={query}",
-                "-F",
+                "-f",
                 f"owner={owner}",
-                "-F",
+                "-f",
                 f"name={name}",
                 "-F",
                 f"number={number}",
