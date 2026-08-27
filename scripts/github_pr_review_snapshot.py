@@ -33,12 +33,21 @@ def evaluate_snapshot(
         }
 
     unresolved = sorted(
-        str(item.get("id"))
-        for item in threads
-        if not item.get("isResolved") and not item.get("isOutdated")
+        str(item.get("id")) for item in threads if not item.get("isResolved")
     )
     reviews = pr.get("reviews") if isinstance(pr.get("reviews"), list) else []
+    comments = pr.get("comments") if isinstance(pr.get("comments"), list) else []
+    request_times = sorted(
+        str(comment.get("createdAt"))
+        for comment in comments
+        if isinstance(comment, dict)
+        and "@codex review" in str(comment.get("body", "")).lower()
+        and comment.get("createdAt")
+    )
+    latest_request = request_times[-1] if request_times else None
     reviewed_head = None
+    review_state = None
+    matching_reviews: list[dict[str, Any]] = []
     for review in reviews:
         author = review.get("author") if isinstance(review, dict) else None
         commit = review.get("commit") if isinstance(review, dict) else None
@@ -47,23 +56,42 @@ def evaluate_snapshot(
             and _login(author.get("login")) == _login(required_reviewer)
             and isinstance(commit, dict)
             and commit.get("oid") == expected_head
+            and (
+                latest_request is None
+                or str(review.get("submittedAt", "")) >= latest_request
+            )
         ):
-            reviewed_head = expected_head
+            matching_reviews.append(review)
+    if matching_reviews:
+        latest_review = max(
+            matching_reviews, key=lambda item: str(item.get("submittedAt", ""))
+        )
+        reviewed_head = expected_head
+        review_state = str(latest_review.get("state", "")).upper()
 
     checks = (
         pr.get("statusCheckRollup")
         if isinstance(pr.get("statusCheckRollup"), list)
         else []
     )
-    ci_failed = any(
-        item.get("status") == "COMPLETED"
-        and item.get("conclusion") not in {"SUCCESS", "SKIPPED", "NEUTRAL"}
-        for item in checks
-        if isinstance(item, dict)
-    )
-    ci_pending = not checks or any(
-        item.get("status") != "COMPLETED" for item in checks if isinstance(item, dict)
-    )
+
+    def check_state(item: dict[str, Any]) -> str:
+        if "state" in item and "status" not in item:
+            state = str(item.get("state", "")).upper()
+            if state == "SUCCESS":
+                return "success"
+            if state in {"ERROR", "FAILURE"}:
+                return "failed"
+            return "pending"
+        if item.get("status") != "COMPLETED":
+            return "pending"
+        if item.get("conclusion") in {"SUCCESS", "SKIPPED", "NEUTRAL"}:
+            return "success"
+        return "failed"
+
+    check_states = [check_state(item) for item in checks if isinstance(item, dict)]
+    ci_failed = "failed" in check_states
+    ci_pending = not checks or "pending" in check_states
 
     reasons: list[str] = []
     status = "pass"
@@ -81,6 +109,9 @@ def evaluate_snapshot(
         reasons.append("required_review_pending")
         if status == "pass":
             status = "pending"
+    elif review_state == "CHANGES_REQUESTED":
+        reasons.append("changes_requested")
+        status = "blocked"
     if pr.get("mergeable") not in {None, "MERGEABLE"}:
         reasons.append("not_mergeable")
         status = "blocked"
@@ -101,9 +132,12 @@ def evaluate_snapshot(
 
 
 def _gh_json(args: list[str]) -> Any:
-    completed = subprocess.run(
-        ["gh", *args], capture_output=True, text=True, encoding="utf-8", check=False
-    )
+    try:
+        completed = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, encoding="utf-8", check=False
+        )
+    except OSError as error:
+        raise RuntimeError("github_cli_unavailable") from error
     if completed.returncode:
         raise RuntimeError("github_snapshot_failed")
     return json.loads(completed.stdout)
@@ -122,9 +156,11 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
         ]
     )
     owner, name = repo.split("/", 1)
-    query = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated}}}}}"""
-    graph = _gh_json(
-        [
+    query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated} pageInfo{hasNextPage endCursor}}}}}"""
+    threads: list[dict[str, Any]] = []
+    cursor = None
+    while True:
+        graph_args = [
             "api",
             "graphql",
             "-f",
@@ -136,8 +172,21 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
             "-F",
             f"number={number}",
         ]
-    )
-    threads = graph["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+        if cursor:
+            graph_args.extend(["-F", f"cursor={cursor}"])
+        graph = _gh_json(graph_args)
+        page = graph["data"]["repository"]["pullRequest"]["reviewThreads"]
+        threads.extend(page["nodes"])
+        if not page["pageInfo"]["hasNextPage"]:
+            break
+        cursor = page["pageInfo"]["endCursor"]
+        if not cursor:
+            raise RuntimeError("github_thread_pagination_failed")
+    final_head = _gh_json(
+        ["pr", "view", str(number), "--repo", repo, "--json", "headRefOid"]
+    )["headRefOid"]
+    if final_head != pr.get("headRefOid"):
+        pr["headRefOid"] = final_head
     return pr, threads
 
 
@@ -161,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
             expected_head=args.expected_head,
             required_reviewer=args.required_reviewer,
         )
-        if report["status"] == "pending" and args.grace_seconds:
+        first_status = report["status"]
+        if report["status"] in {"pending", "pass"} and args.grace_seconds:
             time.sleep(args.grace_seconds)
             pr, threads = collect(args.repo, args.pr)
             report = evaluate_snapshot(
@@ -170,6 +220,15 @@ def main(argv: list[str] | None = None) -> int:
                 expected_head=args.expected_head,
                 required_reviewer=args.required_reviewer,
             )
+            if first_status != "pass" and report["status"] == "pass":
+                time.sleep(args.grace_seconds)
+                pr, threads = collect(args.repo, args.pr)
+                report = evaluate_snapshot(
+                    pr,
+                    threads,
+                    expected_head=args.expected_head,
+                    required_reviewer=args.required_reviewer,
+                )
     except (RuntimeError, ValueError, KeyError, json.JSONDecodeError) as error:
         report = {
             "schema": "repo-preflight.pr-review-snapshot/v1",
