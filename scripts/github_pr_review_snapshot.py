@@ -66,7 +66,7 @@ def evaluate_snapshot(
         in {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
         and (
             latest_request is None
-            or str(review.get("submittedAt", "")) >= latest_request
+            or str(review.get("submittedAt", "")) > latest_request
         )
     ]
     if matching_reviews:
@@ -74,8 +74,7 @@ def evaluate_snapshot(
     decisive_reviews = [
         item
         for item in same_head_reviews
-        if str(item.get("state", "")).upper()
-        in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+        if str(item.get("state", "")).upper() in {"APPROVED", "CHANGES_REQUESTED"}
     ]
     if decisive_reviews:
         latest_decisive_review = max(
@@ -155,8 +154,15 @@ def evaluate_snapshot(
 def _gh_json(args: list[str]) -> Any:
     try:
         completed = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, encoding="utf-8", check=False
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
         )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("github_cli_timeout") from error
     except OSError as error:
         raise RuntimeError("github_cli_unavailable") from error
     if completed.returncode:
@@ -177,34 +183,42 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
     pr = _gh_json(pr_args)
     owner, name = repo.split("/", 1)
     query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated} pageInfo{hasNextPage endCursor}}}}}"""
-    threads: list[dict[str, Any]] = []
-    cursor = None
-    while True:
-        graph_args = [
-            "api",
-            "graphql",
-            "-f",
-            f"query={query}",
-            "-F",
-            f"owner={owner}",
-            "-F",
-            f"name={name}",
-            "-F",
-            f"number={number}",
-        ]
-        if cursor:
-            graph_args.extend(["-F", f"cursor={cursor}"])
-        graph = _gh_json(graph_args)
-        page = graph["data"]["repository"]["pullRequest"]["reviewThreads"]
-        threads.extend(page["nodes"])
-        if not page["pageInfo"]["hasNextPage"]:
-            break
-        cursor = page["pageInfo"]["endCursor"]
-        if not cursor:
-            raise RuntimeError("github_thread_pagination_failed")
+
+    def collect_threads() -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        cursor = None
+        while True:
+            graph_args = [
+                "api",
+                "graphql",
+                "-f",
+                f"query={query}",
+                "-F",
+                f"owner={owner}",
+                "-F",
+                f"name={name}",
+                "-F",
+                f"number={number}",
+            ]
+            if cursor:
+                graph_args.extend(["-F", f"cursor={cursor}"])
+            graph = _gh_json(graph_args)
+            page = graph["data"]["repository"]["pullRequest"]["reviewThreads"]
+            result.extend(page["nodes"])
+            if not page["pageInfo"]["hasNextPage"]:
+                return result
+            cursor = page["pageInfo"]["endCursor"]
+            if not cursor:
+                raise RuntimeError("github_thread_pagination_failed")
+
+    threads = collect_threads()
+    middle_pr = _gh_json(pr_args)
+    final_threads = collect_threads()
     final_pr = _gh_json(pr_args)
-    if final_pr != pr:
+    if middle_pr != pr or final_pr != pr:
         raise RuntimeError("github_pr_surface_changed_during_collection")
+    if final_threads != threads:
+        raise RuntimeError("github_thread_surface_changed_during_collection")
     return pr, threads
 
 

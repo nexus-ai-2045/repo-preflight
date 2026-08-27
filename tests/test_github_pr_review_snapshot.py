@@ -406,3 +406,100 @@ def test_blocked_merge_state_prevents_pass() -> None:
     )
     assert report["status"] == "blocked"
     assert "merge_state_blocked" in report["reasons"]
+
+
+def test_same_second_review_does_not_satisfy_new_request() -> None:
+    timestamp = "2026-08-27T00:01:00Z"
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+                "submittedAt": timestamp,
+            }
+        ],
+        comments=[{"body": "@codex review", "createdAt": timestamp}],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "pending"
+    assert "required_review_pending" in report["reasons"]
+
+
+def test_dismissed_approval_reveals_prior_change_request() -> None:
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-08-27T00:01:00Z",
+            },
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "DISMISSED",
+                "submittedAt": "2026-08-27T00:02:00Z",
+            },
+        ],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "blocked"
+    assert "changes_requested" in report["reasons"]
+
+
+def test_gh_timeout_is_reported_as_runtime_error(monkeypatch) -> None:
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("gh", 30)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    try:
+        MODULE._gh_json(["version"])
+    except RuntimeError as error:
+        assert str(error) == "github_cli_timeout"
+    else:
+        raise AssertionError("RuntimeError was not raised")
+
+
+def test_collect_rejects_thread_surface_drift(monkeypatch) -> None:
+    graph_calls = 0
+    stable_pr = {
+        "headRefOid": HEAD,
+        "reviews": [],
+        "comments": [],
+        "statusCheckRollup": [],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+    }
+
+    def fake_gh(args):
+        nonlocal graph_calls
+        if args[:2] == ["pr", "view"]:
+            return stable_pr
+        graph_calls += 1
+        return {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "id": "T1",
+                                    "isResolved": graph_calls == 1,
+                                    "isOutdated": False,
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(MODULE, "_gh_json", fake_gh)
+    try:
+        MODULE.collect("owner/repo", 42)
+    except RuntimeError as error:
+        assert str(error) == "github_thread_surface_changed_during_collection"
+    else:
+        raise AssertionError("RuntimeError was not raised")
