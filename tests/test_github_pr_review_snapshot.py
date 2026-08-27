@@ -42,7 +42,11 @@ def test_fails_closed_when_head_changes() -> None:
 def test_blocks_unresolved_inline_thread_even_when_ci_and_review_pass() -> None:
     report = snapshot(
         reviews=[
-            {"author": {"login": "chatgpt-codex-connector"}, "commit": {"oid": HEAD}}
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
         ],
         threads=[{"id": "T1", "isResolved": False, "isOutdated": False}],
         checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
@@ -69,7 +73,11 @@ def test_review_for_old_head_does_not_satisfy_current_head() -> None:
 def test_pass_requires_exact_review_clean_threads_and_green_ci() -> None:
     report = snapshot(
         reviews=[
-            {"author": {"login": "chatgpt-codex-connector"}, "commit": {"oid": HEAD}}
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
         ],
         threads=[{"id": "T1", "isResolved": True, "isOutdated": False}],
         checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
@@ -137,7 +145,11 @@ def test_new_same_head_request_requires_newer_review() -> None:
 def test_legacy_status_context_states_are_classified() -> None:
     success = snapshot(
         reviews=[
-            {"author": {"login": "chatgpt-codex-connector"}, "commit": {"oid": HEAD}}
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
         ],
         checks=[{"state": "SUCCESS"}],
     )
@@ -157,7 +169,8 @@ def test_collect_paginates_threads_and_rejects_head_drift(monkeypatch) -> None:
 
     def fake_gh(args):
         calls.append(args)
-        if args[:2] == ["pr", "view"] and "headRefOid,reviews" in args[-1]:
+        pr_call_count = len([call for call in calls if call[:2] == ["pr", "view"]])
+        if args[:2] == ["pr", "view"] and pr_call_count == 1:
             return {
                 "headRefOid": HEAD,
                 "reviews": [],
@@ -165,7 +178,12 @@ def test_collect_paginates_threads_and_rejects_head_drift(monkeypatch) -> None:
                 "statusCheckRollup": [],
             }
         if args[:2] == ["pr", "view"]:
-            return {"headRefOid": "b" * 40}
+            return {
+                "headRefOid": "b" * 40,
+                "reviews": [],
+                "comments": [],
+                "statusCheckRollup": [],
+            }
         cursor = next((value for value in args if value.startswith("cursor=")), None)
         nodes = [{"id": "T2"}] if cursor else [{"id": "T1"}]
         return {
@@ -188,7 +206,7 @@ def test_collect_paginates_threads_and_rejects_head_drift(monkeypatch) -> None:
     try:
         MODULE.collect("owner/repo", 42)
     except RuntimeError as error:
-        assert str(error) == "github_head_changed_during_collection"
+        assert str(error) == "github_pr_surface_changed_during_collection"
     else:
         raise AssertionError("RuntimeError was not raised")
 
@@ -304,3 +322,87 @@ def test_only_exact_non_minimized_comment_creates_review_generation() -> None:
     )
     assert discussed["status"] == "pass"
     assert minimized["status"] == "pass"
+
+
+def test_change_request_survives_new_review_generation() -> None:
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-08-27T00:01:00Z",
+            },
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+                "submittedAt": "2026-08-27T00:03:00Z",
+            },
+        ],
+        comments=[{"body": "@codex review", "createdAt": "2026-08-27T00:02:00Z"}],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "blocked"
+    assert "changes_requested" in report["reasons"]
+
+
+def test_pending_draft_review_does_not_satisfy_requirement() -> None:
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "PENDING",
+                "submittedAt": "2026-08-27T00:01:00Z",
+            }
+        ],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "pending"
+    assert "required_review_pending" in report["reasons"]
+
+
+def test_reviewer_login_is_case_insensitive() -> None:
+    report = MODULE.evaluate_snapshot(
+        {
+            "headRefOid": HEAD,
+            "reviews": [
+                {
+                    "author": {"login": "ChatGPT-Codex-Connector"},
+                    "commit": {"oid": HEAD},
+                    "state": "COMMENTED",
+                }
+            ],
+            "comments": [],
+            "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+        },
+        [],
+        expected_head=HEAD,
+        required_reviewer="chatgpt-codex-connector",
+    )
+    assert report["status"] == "pass"
+
+
+def test_blocked_merge_state_prevents_pass() -> None:
+    pr = {
+        "headRefOid": HEAD,
+        "reviews": [
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
+        ],
+        "comments": [],
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "BLOCKED",
+    }
+    report = MODULE.evaluate_snapshot(
+        pr, [], expected_head=HEAD, required_reviewer="chatgpt-codex-connector"
+    )
+    assert report["status"] == "blocked"
+    assert "merge_state_blocked" in report["reasons"]

@@ -12,7 +12,7 @@ from typing import Any
 
 
 def _login(value: object) -> str:
-    return value.removesuffix("[bot]") if isinstance(value, str) else ""
+    return value.removesuffix("[bot]").casefold() if isinstance(value, str) else ""
 
 
 def evaluate_snapshot(
@@ -48,7 +48,7 @@ def evaluate_snapshot(
     latest_request = request_times[-1] if request_times else None
     reviewed_head = None
     review_state = None
-    matching_reviews: list[dict[str, Any]] = []
+    same_head_reviews: list[dict[str, Any]] = []
     for review in reviews:
         author = review.get("author") if isinstance(review, dict) else None
         commit = review.get("commit") if isinstance(review, dict) else None
@@ -57,24 +57,31 @@ def evaluate_snapshot(
             and _login(author.get("login")) == _login(required_reviewer)
             and isinstance(commit, dict)
             and commit.get("oid") == expected_head
-            and (
-                latest_request is None
-                or str(review.get("submittedAt", "")) >= latest_request
-            )
         ):
-            matching_reviews.append(review)
+            same_head_reviews.append(review)
+    matching_reviews = [
+        review
+        for review in same_head_reviews
+        if str(review.get("state", "")).upper()
+        in {"COMMENTED", "APPROVED", "CHANGES_REQUESTED"}
+        and (
+            latest_request is None
+            or str(review.get("submittedAt", "")) >= latest_request
+        )
+    ]
     if matching_reviews:
         reviewed_head = expected_head
-        decisive_reviews = [
-            item
-            for item in matching_reviews
-            if str(item.get("state", "")).upper() in {"APPROVED", "CHANGES_REQUESTED"}
-        ]
-        if decisive_reviews:
-            latest_decisive_review = max(
-                decisive_reviews, key=lambda item: str(item.get("submittedAt", ""))
-            )
-            review_state = str(latest_decisive_review.get("state", "")).upper()
+    decisive_reviews = [
+        item
+        for item in same_head_reviews
+        if str(item.get("state", "")).upper()
+        in {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+    ]
+    if decisive_reviews:
+        latest_decisive_review = max(
+            decisive_reviews, key=lambda item: str(item.get("submittedAt", ""))
+        )
+        review_state = str(latest_decisive_review.get("state", "")).upper()
 
     checks = (
         pr.get("statusCheckRollup")
@@ -126,6 +133,9 @@ def evaluate_snapshot(
     elif pr.get("mergeable") not in {None, "MERGEABLE"}:
         reasons.append("not_mergeable")
         status = "blocked"
+    if pr.get("mergeStateStatus") == "BLOCKED":
+        reasons.append("merge_state_blocked")
+        status = "blocked"
 
     return {
         "schema": "repo-preflight.pr-review-snapshot/v1",
@@ -155,17 +165,16 @@ def _gh_json(args: list[str]) -> Any:
 
 
 def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    pr = _gh_json(
-        [
-            "pr",
-            "view",
-            str(number),
-            "--repo",
-            repo,
-            "--json",
-            "headRefOid,reviews,comments,statusCheckRollup,mergeable,mergeStateStatus",
-        ]
-    )
+    pr_args = [
+        "pr",
+        "view",
+        str(number),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,reviews,comments,statusCheckRollup,mergeable,mergeStateStatus",
+    ]
+    pr = _gh_json(pr_args)
     owner, name = repo.split("/", 1)
     query = """query($owner:String!,$name:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$cursor){nodes{id isResolved isOutdated} pageInfo{hasNextPage endCursor}}}}}"""
     threads: list[dict[str, Any]] = []
@@ -193,11 +202,9 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
         cursor = page["pageInfo"]["endCursor"]
         if not cursor:
             raise RuntimeError("github_thread_pagination_failed")
-    final_head = _gh_json(
-        ["pr", "view", str(number), "--repo", repo, "--json", "headRefOid"]
-    )["headRefOid"]
-    if final_head != pr.get("headRefOid"):
-        raise RuntimeError("github_head_changed_during_collection")
+    final_pr = _gh_json(pr_args)
+    if final_pr != pr:
+        raise RuntimeError("github_pr_surface_changed_during_collection")
     return pr, threads
 
 
