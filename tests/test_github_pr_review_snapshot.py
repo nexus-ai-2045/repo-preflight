@@ -152,7 +152,7 @@ def test_legacy_status_context_states_are_classified() -> None:
     assert "ci_failed" in failure["reasons"]
 
 
-def test_collect_paginates_threads_and_revalidates_head(monkeypatch) -> None:
+def test_collect_paginates_threads_and_rejects_head_drift(monkeypatch) -> None:
     calls = []
 
     def fake_gh(args):
@@ -185,9 +185,12 @@ def test_collect_paginates_threads_and_revalidates_head(monkeypatch) -> None:
         }
 
     monkeypatch.setattr(MODULE, "_gh_json", fake_gh)
-    pr, threads = MODULE.collect("owner/repo", 42)
-    assert [thread["id"] for thread in threads] == ["T1", "T2"]
-    assert pr["headRefOid"] == "b" * 40
+    try:
+        MODULE.collect("owner/repo", 42)
+    except RuntimeError as error:
+        assert str(error) == "github_head_changed_during_collection"
+    else:
+        raise AssertionError("RuntimeError was not raised")
 
 
 def test_missing_gh_is_reported_as_runtime_error(monkeypatch) -> None:
@@ -226,3 +229,78 @@ def test_grace_requires_two_settled_pass_samples(monkeypatch, capsys) -> None:
         == 0
     )
     assert '"status": "pass"' in capsys.readouterr().out
+
+
+def test_commented_review_does_not_clear_changes_requested() -> None:
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-08-27T00:01:00Z",
+            },
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+                "submittedAt": "2026-08-27T00:02:00Z",
+            },
+        ],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "blocked"
+    assert "changes_requested" in report["reasons"]
+
+
+def test_unknown_mergeability_is_pending() -> None:
+    pr = {
+        "headRefOid": HEAD,
+        "reviews": [
+            {"author": {"login": "chatgpt-codex-connector"}, "commit": {"oid": HEAD}}
+        ],
+        "comments": [],
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": "UNKNOWN",
+        "mergeStateStatus": "UNKNOWN",
+    }
+    report = MODULE.evaluate_snapshot(
+        pr, [], expected_head=HEAD, required_reviewer="chatgpt-codex-connector"
+    )
+    assert report["status"] == "pending"
+    assert "mergeability_pending" in report["reasons"]
+
+
+def test_only_exact_non_minimized_comment_creates_review_generation() -> None:
+    reviews = [
+        {
+            "author": {"login": "chatgpt-codex-connector"},
+            "commit": {"oid": HEAD},
+            "state": "COMMENTED",
+            "submittedAt": "2026-08-27T00:01:00Z",
+        }
+    ]
+    checks = [{"status": "COMPLETED", "conclusion": "SUCCESS"}]
+    discussed = snapshot(
+        reviews=reviews,
+        comments=[
+            {
+                "body": "Do not run @codex review yet",
+                "createdAt": "2026-08-27T00:02:00Z",
+            }
+        ],
+        checks=checks,
+    )
+    minimized = snapshot(
+        reviews=reviews,
+        comments=[
+            {
+                "body": "@codex review",
+                "createdAt": "2026-08-27T00:02:00Z",
+                "isMinimized": True,
+            }
+        ],
+        checks=checks,
+    )
+    assert discussed["status"] == "pass"
+    assert minimized["status"] == "pass"

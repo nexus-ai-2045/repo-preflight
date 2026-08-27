@@ -41,7 +41,8 @@ def evaluate_snapshot(
         str(comment.get("createdAt"))
         for comment in comments
         if isinstance(comment, dict)
-        and "@codex review" in str(comment.get("body", "")).lower()
+        and str(comment.get("body", "")).strip().casefold() == "@codex review"
+        and not comment.get("isMinimized")
         and comment.get("createdAt")
     )
     latest_request = request_times[-1] if request_times else None
@@ -63,11 +64,17 @@ def evaluate_snapshot(
         ):
             matching_reviews.append(review)
     if matching_reviews:
-        latest_review = max(
-            matching_reviews, key=lambda item: str(item.get("submittedAt", ""))
-        )
         reviewed_head = expected_head
-        review_state = str(latest_review.get("state", "")).upper()
+        decisive_reviews = [
+            item
+            for item in matching_reviews
+            if str(item.get("state", "")).upper() in {"APPROVED", "CHANGES_REQUESTED"}
+        ]
+        if decisive_reviews:
+            latest_decisive_review = max(
+                decisive_reviews, key=lambda item: str(item.get("submittedAt", ""))
+            )
+            review_state = str(latest_decisive_review.get("state", "")).upper()
 
     checks = (
         pr.get("statusCheckRollup")
@@ -112,7 +119,11 @@ def evaluate_snapshot(
     elif review_state == "CHANGES_REQUESTED":
         reasons.append("changes_requested")
         status = "blocked"
-    if pr.get("mergeable") not in {None, "MERGEABLE"}:
+    if pr.get("mergeable") == "UNKNOWN":
+        reasons.append("mergeability_pending")
+        if status == "pass":
+            status = "pending"
+    elif pr.get("mergeable") not in {None, "MERGEABLE"}:
         reasons.append("not_mergeable")
         status = "blocked"
 
@@ -186,7 +197,7 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
         ["pr", "view", str(number), "--repo", repo, "--json", "headRefOid"]
     )["headRefOid"]
     if final_head != pr.get("headRefOid"):
-        pr["headRefOid"] = final_head
+        raise RuntimeError("github_head_changed_during_collection")
     return pr, threads
 
 
