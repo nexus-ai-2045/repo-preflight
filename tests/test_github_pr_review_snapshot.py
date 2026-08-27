@@ -584,3 +584,65 @@ def test_collect_uses_raw_fields_for_repo_identifiers(monkeypatch) -> None:
     assert graph_args[graph_args.index("owner=true") - 1] == "-f"
     assert graph_args[graph_args.index("name=123") - 1] == "-f"
     assert graph_args[graph_args.index("number=42") - 1] == "-F"
+
+
+def test_old_head_change_request_remains_blocking() -> None:
+    report = snapshot(
+        reviews=[
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": "b" * 40},
+                "state": "CHANGES_REQUESTED",
+                "submittedAt": "2026-08-27T00:01:00Z",
+            },
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+                "submittedAt": "2026-08-27T00:02:00Z",
+            },
+        ],
+        checks=[{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+    )
+    assert report["status"] == "blocked"
+    assert "changes_requested" in report["reasons"]
+
+
+def test_capped_gh_surfaces_fail_closed() -> None:
+    for field in ("reviews", "comments", "statusCheckRollup"):
+        pr = {
+            "headRefOid": HEAD,
+            "reviews": [],
+            "comments": [],
+            "statusCheckRollup": [],
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+        }
+        pr[field] = [{} for _ in range(100)]
+        report = MODULE.evaluate_snapshot(
+            pr, [], expected_head=HEAD, required_reviewer="chatgpt-codex-connector"
+        )
+        assert report["status"] == "tool_error"
+        assert report["reasons"] == ["github_surface_completeness_unknown"]
+
+
+def test_unknown_merge_state_is_pending() -> None:
+    pr = {
+        "headRefOid": HEAD,
+        "reviews": [
+            {
+                "author": {"login": "chatgpt-codex-connector"},
+                "commit": {"oid": HEAD},
+                "state": "COMMENTED",
+            }
+        ],
+        "comments": [],
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "UNKNOWN",
+    }
+    report = MODULE.evaluate_snapshot(
+        pr, [], expected_head=HEAD, required_reviewer="chatgpt-codex-connector"
+    )
+    assert report["status"] == "pending"
+    assert "merge_state_pending" in report["reasons"]

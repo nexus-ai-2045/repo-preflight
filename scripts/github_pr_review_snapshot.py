@@ -37,6 +37,29 @@ def evaluate_snapshot(
     )
     reviews = pr.get("reviews") if isinstance(pr.get("reviews"), list) else []
     comments = pr.get("comments") if isinstance(pr.get("comments"), list) else []
+    checks = (
+        pr.get("statusCheckRollup")
+        if isinstance(pr.get("statusCheckRollup"), list)
+        else []
+    )
+    truncated_surfaces = [
+        name
+        for name, items in (
+            ("reviews", reviews),
+            ("comments", comments),
+            ("status_contexts", checks),
+        )
+        if len(items) >= 100
+    ]
+    if truncated_surfaces:
+        return {
+            "schema": "repo-preflight.pr-review-snapshot/v1",
+            "status": "tool_error",
+            "expected_head": expected_head,
+            "actual_head": actual_head,
+            "reasons": ["github_surface_completeness_unknown"],
+            "incomplete_surfaces": truncated_surfaces,
+        }
     request_times = sorted(
         str(comment.get("createdAt"))
         for comment in comments
@@ -48,7 +71,7 @@ def evaluate_snapshot(
     latest_request = request_times[-1] if request_times else None
     reviewed_head = None
     review_state = None
-    same_head_reviews: list[dict[str, Any]] = []
+    reviewer_reviews: list[dict[str, Any]] = []
     for review in reviews:
         author = review.get("author") if isinstance(review, dict) else None
         commit = review.get("commit") if isinstance(review, dict) else None
@@ -56,9 +79,14 @@ def evaluate_snapshot(
             isinstance(author, dict)
             and _login(author.get("login")) == _login(required_reviewer)
             and isinstance(commit, dict)
-            and commit.get("oid") == expected_head
         ):
-            same_head_reviews.append(review)
+            reviewer_reviews.append(review)
+    same_head_reviews = [
+        review
+        for review in reviewer_reviews
+        if isinstance(review.get("commit"), dict)
+        and review["commit"].get("oid") == expected_head
+    ]
     matching_reviews = [
         review
         for review in same_head_reviews
@@ -73,7 +101,7 @@ def evaluate_snapshot(
         reviewed_head = expected_head
     decisive_reviews = [
         item
-        for item in same_head_reviews
+        for item in reviewer_reviews
         if str(item.get("state", "")).upper() in {"APPROVED", "CHANGES_REQUESTED"}
     ]
     if decisive_reviews:
@@ -82,12 +110,6 @@ def evaluate_snapshot(
             key=lambda pair: (str(pair[1].get("submittedAt", "")), pair[0]),
         )
         review_state = str(latest_decisive_review.get("state", "")).upper()
-
-    checks = (
-        pr.get("statusCheckRollup")
-        if isinstance(pr.get("statusCheckRollup"), list)
-        else []
-    )
 
     def check_state(item: dict[str, Any]) -> str:
         if "state" in item and "status" not in item:
@@ -136,6 +158,10 @@ def evaluate_snapshot(
     if pr.get("mergeStateStatus") in {"BLOCKED", "DRAFT"}:
         reasons.append("merge_state_blocked")
         status = "blocked"
+    elif pr.get("mergeStateStatus") == "UNKNOWN":
+        reasons.append("merge_state_pending")
+        if status == "pass":
+            status = "pending"
 
     return {
         "schema": "repo-preflight.pr-review-snapshot/v1",
