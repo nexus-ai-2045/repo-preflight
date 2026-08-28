@@ -27,10 +27,23 @@
   の一致を検査し、手編集を止めるようにした。判断根拠はADR-0002に記録した。
 - PRのCI、review、inline threadをexact HEADへ束縛してread-only判定するreview snapshotを追加した。
 - 未解決thread、古いHEADのreview、CI待ちをreview完了と誤認しないfail-closed契約を追加した。
+- `install_runtime_skills.py --check` を追加した。ホームへ配布した skill コピーが
+  repo 正本から drift していないかを sha256 で検査する。書き込みをしない read-only
+  検査で、標準ライブラリのみを使う。比較前に install と同じ射影
+  (`REPO_PREFLIGHT_ROOT=` 行の除去) を通すため、install 直後に誤検知しない。
+- 併せて `docs/runtime-support.md` の誤りを訂正した。`git pull` で追従するのは
+  `checkout/` link だけで、`SKILL.md` / `run_preflight.py` / `README.md` は物理
+  コピーのため追従しない。
 
 ### 保証境界
 
 - 保証: `docs/pr-self-review.md` がこのrepositoryで改変されていないこと。
+- 保証: `install_runtime_skills.py --check` は install 済みコピーの 4 対象
+  (SKILL.md / run_preflight.py / README.md / checkout link) を repo 正本と
+  sha256 で突き合わせる。
+- 非保証: `install_runtime_skills.py --check` は install していないマシンの状態を
+  検査しない (`not_installed` を返して pass)。repo 正本そのものの正しさ、および
+  CI 上での検査も対象外 (CI に install 済みコピーは存在しない)。
 - 保証: GitHub 採用（`create_repo` / `push` / `open_pr` / `merge`）の直前に `--intent` を付けると `dialogue/v3` の質問リストが機械生成されること。
 - 非保証: 生成元の正本が正しいこと、配布物が最新の正本から生成されたこと。
   後者は正本側の配布台帳が担当する。

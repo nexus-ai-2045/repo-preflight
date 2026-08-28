@@ -36,6 +36,10 @@
    `create_repo` / `push` / `open_pr` / `merge` の直前に `--intent` を実行すると  
    `repo-preflight.dialogue/v3` が返り、質問が機械生成される。これが GitHub 採用時の契約。  
    clone や GitHub ページ閲覧だけでは対話は走らない。
+7. **install 済みコピーの drift 検知**
+   `install_runtime_skills.py --check` が、ホームへ配布した `SKILL.md` /
+   `run_preflight.py` / `README.md` / `checkout` link を repo 正本と sha256 で
+   突き合わせ、ずれていれば `drift` と exit code 1 を返す。書き込みはしない。
 
 ## AI憲法の入口保証
 
@@ -107,7 +111,34 @@ python ~/.claude/skills/repo-preflight/run_preflight.py --repo /path/to/app --in
 | Grok / shared agents | `~/.agents/skills/repo-preflight/` |
 | Grok (user skills) | `~/.grok/skills/repo-preflight/` (ディレクトリが存在するとき) |
 
-正本の更新は clone 側を `git pull` すれば反映されます（`checkout` link が追従）。
+### 正本の更新と drift（重要）
+
+`git pull` で追従するのは `checkout/` link **だけ**です。`SKILL.md` /
+`run_preflight.py` / `README.md` は install 時の**物理コピー**なので、clone 側を
+更新してもホーム側は古いまま残ります。
+
+コピーが正本からずれていないかは、書き込まずに検査できます:
+
+```bash
+# install 済みコピーを repo 正本と sha256 で突き合わせる (read-only)
+python scripts/install_runtime_skills.py --repo . --check
+```
+
+`status: drift` なら `--apply` で再配布してください。検査対象と検出名:
+
+| 検査対象 | 検出名 |
+|---|---|
+| `SKILL.md`（`REPO_PREFLIGHT_ROOT=` 行を落とした射影で比較） | `skill_md_drift` / `skill_md_missing` |
+| `run_preflight.py` | `run_preflight_drift` / `run_preflight_missing` |
+| `README.md`（検出した link mode で再生成して比較） | `readme_drift` / `readme_missing` |
+| `checkout/` link | `checkout_missing` / `checkout_dangling` / `checkout_foreign` |
+
+exit code は drift 検出で `1`、正常および未 install で `0`、`--check --apply`
+同時指定など引数エラーで `2`。install していないマシンでは `not_installed` を
+返して `pass` になります。
+
+CI ゲートには載せていません。CI には install 済みコピーが存在しないため、
+そこで検査しても常に `not_installed` にしかならないからです。
 
 プロジェクト限定にしたい場合:
 

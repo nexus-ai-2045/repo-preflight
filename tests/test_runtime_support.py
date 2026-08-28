@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -168,3 +169,161 @@ def test_install_runtime_skills_portable_layout(tmp_path: Path):
     report = json.loads(launched.stdout)
     assert report["schema"] == "repo-preflight.dialogue/v3"
     assert report["intent"] == "create_repo"
+
+
+def _install(home: Path) -> None:
+    applied = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+
+
+def _check(home: Path) -> tuple[int, dict]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, json.loads(result.stdout)
+
+
+def _fresh_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills").mkdir(parents=True)
+    return home
+
+
+def test_check_reports_not_installed_without_copies(tmp_path: Path):
+    code, payload = _check(_fresh_home(tmp_path))
+    assert code == 0
+    assert payload["schema"] == "repo-preflight.check-runtime-skills/v1"
+    assert payload["status"] == "pass"
+    assert payload["read_only"] is True
+    assert {item["status"] for item in payload["results"]} == {"not_installed"}
+
+
+def test_check_passes_right_after_install(tmp_path: Path):
+    """射影 (REPO_PREFLIGHT_ROOT= 行の除去) を通さないと必ず誤検知する回帰."""
+    home = _fresh_home(tmp_path)
+    _install(home)
+    code, payload = _check(home)
+    assert code == 0, payload
+    assert payload["status"] == "pass"
+    for item in payload["results"]:
+        assert item["status"] == "ok", item
+        assert item["findings"] == []
+
+
+def test_check_detects_skill_md_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    assert payload["status"] == "drift"
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    assert len(drifted) == 1
+    assert drifted[0]["runtime"] == "claude-code"
+    assert drifted[0]["findings"] == ["skill_md_drift"]
+
+
+def test_check_detects_run_preflight_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    run = home / ".agents" / "skills" / "repo-preflight" / "run_preflight.py"
+    run.write_text(run.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    assert [i["runtime"] for i in drifted] == ["agents"]
+    assert drifted[0]["findings"] == ["run_preflight_drift"]
+
+
+def test_check_detects_missing_and_dangling_checkout(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    checkout = dest / "checkout"
+    if checkout.is_symlink() or checkout.exists():
+        if checkout.is_symlink():
+            checkout.unlink()
+        elif checkout.is_dir():
+            shutil.rmtree(checkout)
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["link"] == "missing"
+    assert "checkout_missing" in entry["findings"]
+
+
+def test_check_detects_readme_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    readme = home / ".claude" / "skills" / "repo-preflight" / "README.md"
+    readme.write_text("# tampered\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["findings"] == ["readme_drift"]
+
+
+def test_check_is_read_only(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    before = {
+        p: p.read_bytes()
+        for p in sorted(home.rglob("*"))
+        if p.is_file() and not p.is_symlink()
+    }
+    _check(home)
+    after = {
+        p: p.read_bytes()
+        for p in sorted(home.rglob("*"))
+        if p.is_file() and not p.is_symlink()
+    }
+    assert before == after
+
+
+def test_check_and_apply_are_mutually_exclusive(tmp_path: Path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(_fresh_home(tmp_path)),
+            "--check",
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
