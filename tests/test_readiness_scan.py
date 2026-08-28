@@ -1192,3 +1192,84 @@ def test_configure_settings_still_reviews_a_real_repository_root(tmp_path: Path)
 def test_repository_root_error_returns_none_for_a_real_root(tmp_path: Path):
     repo = make_repo(tmp_path)
     assert MODULE.repository_root_error(repo) is None
+
+
+def test_git_dir_env_cannot_substitute_another_repository(tmp_path: Path, monkeypatch):
+    """GIT_DIR で別 repository を指しても、--repo の判定を差し替えない。
+
+    subdirectory を囲っている repo へ広げるのと同じ取り違えの変種。
+    親プロセスの GIT_DIR が別 repo の object DB を指すと、secret 判定まで
+    差し替わる。#44 の保証「指定 path と異なる repository の判定を返さない」
+    の残ギャップ。
+    """
+    clean_home = tmp_path / "clean"
+    dirty_home = tmp_path / "dirty"
+    clean_home.mkdir()
+    dirty_home.mkdir()
+    clean = make_repo(clean_home)
+    dirty = make_repo(dirty_home)
+    (dirty / "leak.txt").write_text("sk-" + "D" * 30, encoding="utf-8")
+    git(dirty, "add", "leak.txt")
+    git(dirty, "commit", "-m", "leak")
+
+    clean_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=clean,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=dirty,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert clean_head != dirty_head
+
+    monkeypatch.setenv("GIT_DIR", str(dirty / ".git"))
+    report = MODULE.scan(clean)
+
+    assert report["head"] == clean_head
+    assert report["head"] != dirty_head
+    assert report["checks"]["secret_scan"]["status"] == "pass"
+    assert report.get("repo") == clean.name
+
+
+def test_git_dir_env_cannot_make_a_non_repo_look_scannable(tmp_path: Path, monkeypatch):
+    """GIT_DIR があっても、.git の無い path を repository として通さない。"""
+    outer = make_repo(tmp_path)
+    lonely = tmp_path / "lonely"
+    lonely.mkdir()
+    (lonely / "x.txt").write_text("hi", encoding="utf-8")
+
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    report = MODULE.scan(lonely)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["not_git_repository"]
+    assert "checks" not in report
+
+
+def test_configure_settings_origin_ignores_git_dir_override(
+    tmp_path: Path, monkeypatch
+):
+    """configure_settings の origin 解決も GIT_DIR で差し替えない。"""
+    target_home = tmp_path / "target"
+    other_home = tmp_path / "other"
+    target_home.mkdir()
+    other_home.mkdir()
+    target = make_repo(target_home)
+    other = make_repo(other_home)
+    git(target, "remote", "set-url", "origin", "https://github.com/someone/TARGET.git")
+    git(other, "remote", "set-url", "origin", "https://github.com/someone/OTHER.git")
+
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=target, intent="configure_settings")
+    )
+
+    packet = json.dumps(dialogue, ensure_ascii=False)
+    assert "OTHER" not in packet
+    assert dialogue["github_settings_review"]["repository"] == "someone/TARGET"

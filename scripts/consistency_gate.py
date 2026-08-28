@@ -4,12 +4,39 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
 SCHEMA = "repo-preflight.consistency/v1"
+
+# readiness_scan と同じ。GIT_DIR 等で別 repository の判定を返さない。
+_GIT_REPO_OVERRIDE_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_INDEX_FILE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    for key in _GIT_REPO_OVERRIDE_VARS:
+        env.pop(key, None)
+    return env
+
+
+def run_subprocess(*args, **kwargs):
+    cmd = args[0] if args else kwargs.get("args")
+    if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+        kwargs["env"] = git_isolation_env(kwargs.get("env"))
+    return subprocess.run(*args, **kwargs)
+
+
 CONFIG_NAME = ".repo-preflight-consistency.json"
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")
 ACTION_USES_RE = re.compile(
@@ -227,7 +254,7 @@ def _ratchet_result(config: dict, findings: list[str]) -> dict:
 
 
 def _tracked_files(repo: Path) -> list[str]:
-    result = subprocess.run(
+    result = run_subprocess(
         ["git", "ls-files", "-z", "--stage"], cwd=repo, capture_output=True
     )
     if result.returncode:
@@ -252,7 +279,7 @@ def _tracked_files(repo: Path) -> list[str]:
 def _changed_files(repo: Path, base_ref: str | None) -> list[str]:
     if not base_ref:
         return []
-    result = subprocess.run(
+    result = run_subprocess(
         ["git", "diff", "--name-status", "-z", base_ref, "--"],
         cwd=repo,
         capture_output=True,
@@ -460,17 +487,17 @@ def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
         }
     ):
         return False
-    base_entry = subprocess.run(
+    base_entry = run_subprocess(
         ["git", "ls-tree", "-z", base_ref, "--", rel],
         cwd=repo,
         capture_output=True,
     )
-    index_entry = subprocess.run(
+    index_entry = run_subprocess(
         ["git", "ls-files", "-s", "-z", "--", rel],
         cwd=repo,
         capture_output=True,
     )
-    working_diff = subprocess.run(
+    working_diff = run_subprocess(
         ["git", "diff", "--raw", "-z", base_ref, "--", rel],
         cwd=repo,
         capture_output=True,
@@ -500,7 +527,7 @@ def _github_action_ref_update_only(repo: Path, base_ref: str, rel: str) -> bool:
         or (repo / rel).is_symlink()
     ):
         return False
-    result = subprocess.run(
+    result = run_subprocess(
         ["git", "show", f"{base_ref}:{rel}"], cwd=repo, capture_output=True
     )
     if result.returncode:
