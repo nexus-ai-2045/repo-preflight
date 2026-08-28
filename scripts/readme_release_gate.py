@@ -96,7 +96,7 @@ def _first_summary(lines: list[str]) -> str:
     # インデントされた fence の中身が要約に混ざる (2026-08-16 review F6)
     after_title = False
     paragraph: list[str] = []
-    for _, line in _outside_fences(lines):
+    for _, line in outside_fences(lines):
         if not after_title:
             if line.startswith("# "):
                 after_title = True
@@ -110,8 +110,14 @@ def _first_summary(lines: list[str]) -> str:
     return " ".join(paragraph)
 
 
-def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
-    """コードブロックの外にある行だけを (行番号, 本文) で返す。"""
+def outside_fences(lines: list[str]) -> list[tuple[int, str]]:
+    """コードブロックの外にある行だけを (行番号, 本文) で返す。
+
+    この repo における fence 判定の正本。`~~~` と入れ子、インデントされた
+    fence まで扱う。別の場所で fence を数え直さないこと
+    (2026-08-16 review F6 で同じ誤検知の事故がある)。
+    consistency_gate はこの関数を読み込んで使う。
+    """
     result: list[tuple[int, str]] = []
     fence_marker: str | None = None
     for number, line in enumerate(lines, start=1):
@@ -131,7 +137,7 @@ def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
 
 def _is_japanese_document(lines: list[str]) -> bool:
     """日本語で書かれたREADMEか。英語READMEへ日本語向けの基準を当てないための判定。"""
-    body = "".join(line for _, line in _outside_fences(lines))
+    body = "".join(line for _, line in outside_fences(lines))
     body = CODE_SPAN_RE.sub("", body)
     body = LINK_DESTINATION_RE.sub("", body)
     japanese = len(JAPANESE_RE.findall(body))
@@ -183,7 +189,7 @@ def _code_span_width(cell: str) -> int:
 def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
     """表のセルのうちコードを含むものを (行番号, セル) で返す。"""
     cells: list[tuple[int, str]] = []
-    outside = _outside_fences(lines)
+    outside = outside_fences(lines)
     divider_indexes = {
         index
         for index, (_, line) in enumerate(outside)
@@ -342,9 +348,13 @@ def _japanese_readability_findings(
     return findings, recommendations, metrics
 
 
+# 旧名。外部参照が残っている場合に備えて維持する。
+_outside_fences = outside_fences
+
+
 def _headings_outside_fences(lines: list[str]) -> list[tuple[int, str, int]]:
     result: list[tuple[int, str, int]] = []
-    for number, line in _outside_fences(lines):
+    for number, line in outside_fences(lines):
         match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
         if match:
             result.append((len(match.group(1)), match.group(2).strip(), number))
@@ -394,7 +404,7 @@ def _is_evidence_target(target: str) -> bool:
 
 def _visible_markdown(lines: list[str]) -> str:
     return HTML_COMMENT_RE.sub(
-        "", "\n".join(line for _, line in _outside_fences(lines))
+        "", "\n".join(line for _, line in outside_fences(lines))
     )
 
 

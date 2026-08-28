@@ -864,3 +864,47 @@ def test_html_comment_github_url_is_not_a_paste_target(tmp_path: Path):
     )
     report = MODULE.review(path)
     assert "quickstart_missing_ai_paste" in _codes(report)
+
+
+# --- fence 判定の公開 API ---------------------------------------------------
+#
+# fence の数え方を各所で作り直すと実装が割れる。この repo では
+# readme_release_gate.outside_fences を正本とし、consistency_gate は
+# それを読み込んで使う。ここが壊れると向こうの Markdown リンク検査も壊れる。
+
+
+def test_outside_fences_is_public():
+    """consistency_gate が読み込む公開名であること。"""
+    assert hasattr(MODULE, "outside_fences")
+    assert MODULE.outside_fences.__name__ == "outside_fences"
+
+
+def test_outside_fences_keeps_the_legacy_private_alias():
+    """旧名で参照している箇所が残っていても壊れないこと。"""
+    assert MODULE._outside_fences is MODULE.outside_fences
+
+
+def test_outside_fences_drops_backtick_fence_bodies():
+    lines = ["外", "```md", "内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_drops_tilde_fence_bodies():
+    lines = ["外", "~~~md", "内", "~~~", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_handles_indented_fences():
+    """2026-08-16 review F6 の再発防止。"""
+    lines = ["外", "   ```md", "   内", "   ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_handles_nested_fences():
+    lines = ["外", "````md", "```", "内", "```", "````", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_reports_original_line_numbers():
+    lines = ["外", "```", "内", "```", "外2"]
+    assert MODULE.outside_fences(lines) == [(1, "外"), (5, "外2")]

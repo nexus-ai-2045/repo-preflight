@@ -803,3 +803,72 @@ def test_git_dir_env_does_not_inventory_another_repository(tmp_path: Path, monke
     tracked = MODULE._tracked_files(left)
     assert "only-in-right.md" not in tracked
     assert "README.md" in tracked
+
+
+# --- fence 内のリンク例を実在要求しない回帰 --------------------------------
+#
+# 以前は fence の内外を区別せず本文全体から [x](path) を拾っていたため、
+# Markdown の書き方を例示している文書が enforce を通れなかった。
+# fence 判定は readme_release_gate.outside_fences を正本として再利用する。
+
+
+def _write_guide(repo: Path, body: str) -> None:
+    (repo / "docs" / "guide.md").write_text(body, encoding="utf-8")
+
+
+def test_link_example_inside_a_fence_is_not_required_to_exist(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n```markdown\n[書き方の例](docs/does-not-exist.md)\n```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_link_outside_a_fence_is_still_reported(tmp_path: Path):
+    """fence 対応で検知力を落としていないこと。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n[本物のリンク切れ](docs/missing-real.md)\n\n"
+        "```markdown\n[例示](docs/example-only.md)\n```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/missing-real.md"]
+
+
+def test_tilde_fence_is_honoured(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(repo, "# ガイド\n\n~~~markdown\n[例](docs/tilde.md)\n~~~\n")
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_indented_fence_is_honoured(tmp_path: Path):
+    """インデントされた fence。2026-08-16 review F6 で事故った形。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n1. 手順\n\n   ```markdown\n   [例](docs/indented.md)\n   ```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_nested_fence_is_honoured(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n````markdown\n```\n[入れ子](docs/nested.md)\n```\n````\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_fence_reader_is_the_readme_release_gate_one(tmp_path: Path):
+    """fence 判定を consistency_gate 側で数え直していないこと。"""
+    reader = MODULE._load_fence_reader()
+    assert reader.__module__ == "readme_release_gate"
+    assert reader.__name__ == "outside_fences"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -310,10 +311,26 @@ def _changed_files(repo: Path, base_ref: str | None) -> list[str]:
     return changed
 
 
+def _load_fence_reader():
+    """fence 判定は readme_release_gate を正本として読み込む。
+
+    ここで数え直すと実装が 2 つに割れる。`~~~`・入れ子・インデント fence の
+    扱いは向こうに寄せる (2026-08-16 review F6)。
+    """
+    script = Path(__file__).resolve().parent / "readme_release_gate.py"
+    spec = importlib.util.spec_from_file_location("readme_release_gate", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load readme_release_gate")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.outside_fences
+
+
 def _markdown_findings(
     repo: Path, files: list[str], tracked_files: set[str], patterns: list[str]
 ) -> list[str]:
     findings: list[str] = []
+    outside_fences = _load_fence_reader()
     for rel in files:
         if not _matches(rel, patterns):
             continue
@@ -325,7 +342,14 @@ def _markdown_findings(
         except (OSError, UnicodeDecodeError):
             findings.append(f"markdown_unreadable:{rel}")
             continue
-        for raw_target in LINK_RE.findall(text):
+        # コードブロック内は「書き方の例」であって実在を要求しない。
+        # fence を跨いで拾うと、Markdown 記法を説明する文書が通らなくなる
+        targets = [
+            raw
+            for _, line in outside_fences(text.splitlines())
+            for raw in LINK_RE.findall(line)
+        ]
+        for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
             parts = urlsplit(target)
             if parts.scheme or parts.netloc or target.startswith(("#", "mailto:")):
