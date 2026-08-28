@@ -12,6 +12,8 @@
   含まない。
 - 上記は外部生成の配布物なので、`documentation-contract` で本文hashと `rules_version`
   の一致を検査し、手編集を止めるようにした。判断根拠はADR-0002に記録した。
+- PRのCI、review、inline threadをexact HEADへ束縛してread-only判定するreview snapshotを追加した。
+- 未解決thread、古いHEADのreview、CI待ちをreview完了と誤認しないfail-closed契約を追加した。
 
 ### 保証境界
 
