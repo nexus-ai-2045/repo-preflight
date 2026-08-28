@@ -43,6 +43,7 @@ SCRIPT_OWNERS = (
     "runtime_smoke.py",
     "dialogue_gate.py",
     "preferences.py",
+    "github_pr_review_snapshot.py",
 )
 
 
