@@ -20,6 +20,10 @@
           "strategy": {
             "enum": ["pointer", "materialized", "manual"]
           },
+          "pointer_kind": {
+            "enum": ["import", "instruction"],
+            "default": "import"
+          },
           "required": { "type": "boolean", "default": true },
           "evidence": { "type": "string" }
         },
@@ -35,6 +39,14 @@
               }
             },
             "then": { "required": ["path"] }
+          },
+          {
+            "if": { "required": ["pointer_kind"] },
+            "then": {
+              "properties": {
+                "strategy": { "const": "pointer" }
+              }
+            }
           }
         ],
         "additionalProperties": false

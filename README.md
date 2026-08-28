@@ -32,6 +32,23 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 **開発・テスト・CI**では `pip install -e ".[test]"` が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
+### PRレビューの収束確認
+
+GitHub CLIで認証済みの環境では、CI、review、inline threadを同じPR HEADへ束縛して確認できます。
+
+```bash
+python scripts/github_pr_review_snapshot.py \
+  --repo owner/name \
+  --pr 123 \
+  --expected-head <40文字のcommit SHA> \
+  --required-reviewer chatgpt-codex-connector \
+  --grace-seconds 30
+```
+
+通常コメント、review概要、CI、GraphQL review threadを別々のsurfaceとして読みます。HEAD不一致は
+`tool_error`、未解決threadやCI失敗は`blocked`、review待ちやCI実行中は`pending`です。
+`pass`はreview snapshotの機械検査結果であり、merge承認ではありません。
+
 ### 結果の読み方
 
 同じ CLI でも、返す JSON の schema と `status` 語彙が分かれます。混ぜて読まないでください。

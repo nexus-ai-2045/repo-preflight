@@ -2,9 +2,9 @@
 """Check and safely materialize AI constitution entry points.
 
 The common constitution is a source document. Runtime entry points may either
-support a source pointer (for example Claude/Gemini ``@`` imports), contain a
-generated copy of the source (for runtimes without import semantics), or need
-manual product-level evidence (for example Cursor user settings).
+support a source pointer (for example Claude/Gemini ``@`` imports or a Codex
+instruction pointer), contain a generated copy of the source, or need manual
+product-level evidence (for example Cursor user settings).
 
 The command is read-only by default. ``--apply --entry-id`` is required for a
 single, explicitly selected materialized target. Existing non-generated files
@@ -29,6 +29,26 @@ HEADER_RE = re.compile(
     r"<!--\s*repo-preflight:ai-constitution source-sha256=([0-9a-f]{64})\s*-->"
 )
 STRATEGIES = {"pointer", "materialized", "manual"}
+POINTER_KINDS = {"import", "instruction"}
+INSTRUCTION_SUBJECT_RE = re.compile(
+    r"(?:共通原則|正本|\b(?:constitution|canonical|source)\b)",
+    re.IGNORECASE,
+)
+INSTRUCTION_ACTION_RE = re.compile(
+    r"(?:読|参照|\b(?:read|load|consult)\b)", re.IGNORECASE
+)
+INSTRUCTION_ORDER_RE = re.compile(
+    r"(?:必ず|先に|開始前|最初|\b(?:must|before|first)\b)",
+    re.IGNORECASE,
+)
+INSTRUCTION_NEGATIVE_RE = re.compile(
+    r"(?:読まない|読み込まない|参照しない|"
+    r"\bdo\s+not\s+(?:read|load|consult)\b|"
+    r"\bdon['’]t\s+(?:read|load|consult)\b|"
+    r"\bnever\s+(?:read|load|consult)\b|"
+    r"\bnot\s+(?:read|load|consult)\b)",
+    re.IGNORECASE,
+)
 
 
 def normalize_text(value: str) -> str:
@@ -66,18 +86,67 @@ def path_forms(path: Path) -> set[str]:
     return {form.casefold() for form in forms} if os.name == "nt" else forms
 
 
-def has_pointer(text: str, source: Path) -> bool:
-    """Check for an explicit ``@<source>`` pointer without reading content."""
+def _has_instruction_semantics(lines: list[str], path_line: int) -> bool:
+    """Require a nearby, affirmative instruction to read the canonical source."""
+
+    context = "\n".join(lines[max(0, path_line - 2) : path_line + 3])
+    if INSTRUCTION_NEGATIVE_RE.search(context):
+        return False
+    return bool(
+        INSTRUCTION_SUBJECT_RE.search(context)
+        and INSTRUCTION_ACTION_RE.search(context)
+        and INSTRUCTION_ORDER_RE.search(context)
+    )
+
+
+def has_pointer(text: str, source: Path, *, pointer_kind: str = "import") -> bool:
+    """Check a runtime-specific explicit pointer without reading source content."""
 
     forms = path_forms(source)
-    for line in normalize_text(text).splitlines():
-        normalized = line.replace("\\", "/")
+    lines: list[str] = []
+    for raw_line in normalize_text(text).splitlines():
+        line = raw_line.replace("\\", "/")
         if os.name == "nt":
-            normalized = normalized.casefold()
-        pointer_forms = ["@" + form.replace("\\", "/") for form in forms]
-        if any(pointer in normalized for pointer in pointer_forms):
-            return True
+            line = line.casefold()
+        lines.append(line)
+
+    for line_number, normalized in enumerate(lines):
+        normalized_forms = {form.replace("\\", "/") for form in forms}
+        if pointer_kind == "import":
+            pointer_forms = ["@" + form for form in normalized_forms]
+            if any(pointer in normalized for pointer in pointer_forms):
+                return True
+        elif pointer_kind == "instruction":
+            code_spans = re.findall(r"`([^`]+)`", normalized)
+            if any(
+                span in normalized_forms for span in code_spans
+            ) and _has_instruction_semantics(lines, line_number):
+                return True
+        else:
+            raise ValueError("pointer_kind_invalid")
     return False
+
+
+def _validate_pointer_kind(entry: dict[str, Any]) -> None:
+    """Validate the optional pointer syntax discriminator."""
+
+    pointer_kind = entry.get("pointer_kind", "import")
+    if entry["strategy"] != "pointer" and "pointer_kind" in entry:
+        raise ValueError(f"manifest_pointer_kind_invalid:{entry['id']}")
+    if not isinstance(pointer_kind, str) or pointer_kind not in POINTER_KINDS:
+        raise ValueError(f"manifest_pointer_kind_invalid:{entry['id']}")
+
+
+def _entry_fields() -> set[str]:
+    return {
+        "id",
+        "runtime",
+        "path",
+        "strategy",
+        "pointer_kind",
+        "required",
+        "evidence",
+    }
 
 
 def generated_common_block(text: str) -> tuple[str, str] | None:
@@ -134,23 +203,51 @@ def _entry_result(
 
 def load_manifest(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("manifest_shape_invalid")
+    if set(payload) != {"schema", "source", "entries"}:
+        raise ValueError("manifest_fields_mismatch")
     if payload.get("schema") != SCHEMA:
         raise ValueError("manifest_schema_mismatch")
+    if not isinstance(payload.get("source"), str) or not payload["source"].strip():
+        raise ValueError("manifest_source_invalid")
     entries = payload.get("entries")
     if not isinstance(entries, list) or not entries:
         raise ValueError("manifest_entries_missing")
-    ids = [entry.get("id") for entry in entries if isinstance(entry, dict)]
-    if len(ids) != len(entries) or len(set(ids)) != len(ids):
-        raise ValueError("manifest_entry_ids_invalid")
+
+    ids: list[str] = []
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("manifest_entry_ids_invalid")
+        entry_id = entry.get("id")
+        if not isinstance(entry_id, str) or not entry_id.strip():
+            raise ValueError("manifest_entry_ids_invalid")
+        ids.append(entry_id)
+        if set(entry) - _entry_fields():
+            raise ValueError(f"manifest_entry_fields_invalid:{entry_id}")
+        if not isinstance(entry.get("runtime"), str) or not entry["runtime"].strip():
+            raise ValueError(f"manifest_runtime_missing:{entry_id}")
+        if not isinstance(entry.get("strategy"), str):
+            raise ValueError(f"manifest_strategy_invalid:{entry_id}")
         if "required" in entry and not isinstance(entry["required"], bool):
-            raise ValueError(f"manifest_required_invalid:{entry.get('id')}")
+            raise ValueError(f"manifest_required_invalid:{entry_id}")
         if entry.get("strategy") not in STRATEGIES:
-            raise ValueError(f"manifest_strategy_invalid:{entry.get('id')}")
-        if not entry.get("runtime"):
-            raise ValueError(f"manifest_runtime_missing:{entry.get('id')}")
-        if entry.get("strategy") != "manual" and not entry.get("path"):
-            raise ValueError(f"manifest_path_missing:{entry.get('id')}")
+            raise ValueError(f"manifest_strategy_invalid:{entry_id}")
+        _validate_pointer_kind(entry)
+        if entry["strategy"] == "manual":
+            if (
+                not isinstance(entry.get("evidence"), str)
+                or not entry["evidence"].strip()
+            ):
+                raise ValueError(f"manifest_evidence_missing:{entry_id}")
+        elif "path" not in entry or not entry["path"]:
+            raise ValueError(f"manifest_path_missing:{entry_id}")
+        elif not isinstance(entry["path"], str):
+            raise ValueError(f"manifest_path_invalid:{entry_id}")
+        if "evidence" in entry and not isinstance(entry["evidence"], str):
+            raise ValueError(f"manifest_evidence_invalid:{entry_id}")
+    if len(set(ids)) != len(ids):
+        raise ValueError("manifest_entry_ids_invalid")
     return payload
 
 
@@ -162,7 +259,7 @@ def check_manifest(
     try:
         manifest = load_manifest(manifest_path)
         source = resolve_template(manifest["source"], home=home, project=project)
-    except (OSError, ValueError, json.JSONDecodeError, KeyError) as exc:
+    except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
         return {
             "schema": SCHEMA,
             "status": "tool_error",
@@ -208,7 +305,7 @@ def check_manifest(
 
         try:
             target = resolve_template(entry["path"], home=home, project=project)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             return {
                 "schema": SCHEMA,
                 "status": "tool_error",
@@ -234,7 +331,11 @@ def check_manifest(
             continue
 
         if strategy == "pointer":
-            ok = has_pointer(target_text, source)
+            ok = has_pointer(
+                target_text,
+                source,
+                pointer_kind=entry.get("pointer_kind", "import"),
+            )
             results.append(
                 _entry_result(
                     entry,
@@ -315,7 +416,14 @@ def apply_entry(
             "status": "tool_error",
             "findings": ["entry_id_unknown"],
         }
-    except (OSError, ValueError, json.JSONDecodeError, KeyError, UnicodeError) as exc:
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        KeyError,
+        UnicodeError,
+    ) as exc:
         return {"schema": SCHEMA, "status": "tool_error", "findings": [str(exc)]}
 
     fd: int | None = None

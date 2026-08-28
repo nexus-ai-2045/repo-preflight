@@ -49,6 +49,8 @@ intent 対話は設定提案までで、push/PR/public の実行そのものは�
 - 信頼しない入力: `--repo`で指定されたrepository、ファイル名、ファイル内容、Git履歴、remote URL、Git command output
 - 信頼する境界: ローカルPython runtime、ローカルGit executable、scannerの固定コマンド引数、実行ユーザーのfilesystem権限
 - 外部境界: GitHub Settingsは`configure_settings` intentで`gh api`から現在値を取得する。実CI結果やorganization/enterprise policyの全体は別証拠を要求する
+- 外部境界: ローカルscanner単体はGitHub状態を証明しない。明示的なreview snapshotは`gh`で
+  CI、review、inline threadをread-only取得し、期待HEADへ束縛する
 - 権限境界: scannerは読み取り専用とし、commit、push、設定変更、削除、visibility変更を実装しない
 
 ## 制約
