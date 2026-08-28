@@ -646,6 +646,29 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     return module.check(repo, base_ref=base_ref)
 
 
+def repository_root_error(repo: Path) -> dict | None:
+    """repo が repository root でなければ tool_error を返す。root なら None。
+
+    --show-toplevel は「そのpathを含むrepo」を返す。囲っているrepoへ黙って
+    広げると、利用者が指したのと別のrepositoryの判定を、指したpathの判定と
+    して返してしまう。公開判定では取り違えが致命的なので閉じる側で止める。
+    """
+    repo = repo.resolve()
+    if not repo.is_dir():
+        return {"status": "tool_error", "issues": ["not_git_repository"]}
+    git_code, top = run(repo, "git", "rev-parse", "--show-toplevel")
+    if git_code:
+        return {"status": "tool_error", "issues": ["not_git_repository"]}
+    root = Path(top).resolve()
+    if not same_directory(repo, root):
+        return {
+            "status": "tool_error",
+            "issues": ["repo_path_is_not_repository_root"],
+            "repository_root": repository_evidence_label(root),
+        }
+    return None
+
+
 def scan(
     repo: Path,
     expected_identity: str | None = None,
@@ -655,22 +678,10 @@ def scan(
     consistency_base_ref: str | None = None,
 ) -> dict:
     repo = repo.resolve()
-    if not repo.is_dir():
-        return {"status": "tool_error", "issues": ["not_git_repository"]}
-    git_code, top = run(repo, "git", "rev-parse", "--show-toplevel")
-    if git_code:
-        return {"status": "tool_error", "issues": ["not_git_repository"]}
-    root = Path(top).resolve()
-    if not same_directory(repo, root):
-        # --show-toplevel は「そのpathを含むrepo」を返す。囲っているrepoへ黙って
-        # 広げると、利用者が指したのと別のrepositoryの判定を、指したpathの判定と
-        # して返してしまう。公開判定では取り違えが致命的なので閉じる側で止める
-        return {
-            "status": "tool_error",
-            "issues": ["repo_path_is_not_repository_root"],
-            "repository_root": repository_evidence_label(root),
-        }
-    repo = root
+    root_error = repository_root_error(repo)
+    if root_error is not None:
+        return root_error
+    repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
@@ -1117,6 +1128,16 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
     )
     github_settings_review: dict | None = None
     if options.intent == "configure_settings" and options.repo is not None:
+        # origin 解決は repo path から git に委ねるため、root でない path を渡すと
+        # 囲っている repository へ広がる。解決の前に閉じる側で止める。
+        root_error = repository_root_error(options.repo)
+        if root_error is not None:
+            scan_report = root_error
+    if (
+        options.intent == "configure_settings"
+        and options.repo is not None
+        and scan_report is None
+    ):
         settings_mod = load_github_settings_module()
         repository = settings_mod.repository_from_repo(options.repo)
         if repository is None:

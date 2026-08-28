@@ -1151,3 +1151,44 @@ def test_base_ref_and_consistency_base_ref_are_exclusive(tmp_path: Path):
 def test_history_hits_with_empty_revision_range_returns_no_hits(tmp_path: Path):
     repo = make_repo(tmp_path)
     assert MODULE.history_hits(repo, ("HEAD..HEAD",)) == ([], [])
+
+
+def test_configure_settings_does_not_widen_to_the_enclosing_repository(tmp_path: Path):
+    """configure_settings に subdirectory を渡しても囲っている repo を対象にしない。
+
+    build_dialogue は configure_settings で local scan を意図的に飛ばすため、
+    scan() 側の root 検証だけでは素通りする。origin 解決の前に閉じる側で止める。
+    """
+    repo = make_repo(tmp_path)
+    git(repo, "remote", "set-url", "origin", "https://github.com/someone/OUTER.git")
+    subdir = repo / "nested"
+    subdir.mkdir()
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=subdir, intent="configure_settings")
+    )
+
+    assert dialogue["status"] == "blocked"
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" in ids
+    # 別 repository の識別子が packet のどこにも載らないことが本体
+    assert "OUTER" not in json.dumps(dialogue, ensure_ascii=False)
+
+
+def test_configure_settings_still_reviews_a_real_repository_root(tmp_path: Path):
+    """root を指した通常経路は従来どおり settings review へ進む。"""
+    repo = make_repo(tmp_path)
+    git(repo, "remote", "set-url", "origin", "https://github.com/someone/OUTER.git")
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=repo, intent="configure_settings")
+    )
+
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" not in ids
+    assert dialogue["github_settings_review"]["repository"] == "someone/OUTER"
+
+
+def test_repository_root_error_returns_none_for_a_real_root(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    assert MODULE.repository_root_error(repo) is None
