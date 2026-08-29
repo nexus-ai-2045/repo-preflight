@@ -11,7 +11,7 @@ PR（プルリクエスト）をマージする前に、README・docs・実装�
 
 README の自由文からコマンドを推測すると誤検知が増えるため、契約対象だけを `readme_contracts` に宣言します。外部 URL はネットワーク状態に依存するため検査しません。任意コマンドも実行せず、repo 設定からのコード実行を防ぎます。
 
-コードブロック（fence）の中に書かれたリンクは検査しません。Markdown の書き方を例示する文書が、例に使った存在しない path のせいで gate を通れなくなるためです。fence の判定は `scripts/readme_release_gate.py` の `outside_fences` を正本として読み込みます。`~~~`・入れ子・インデントされた fence を扱い、consistency_gate 側で数え直しません。fence の数え方を 2 箇所に持つと片方だけが直り、実際に誤検知の事故が起きています（2026-08-16 review F6）。
+コードブロック（fence）の中に書かれたリンクは検査しません。Markdown の書き方を例示する文書が、例に使った存在しない path のせいで gate を通れなくなるためです。fence の判定は `scripts/readme_release_gate.py` の `outside_fences` を正本として読み込みます。`~~~`・インデントされた fence・**外側を長くした**入れ子（```` の中の ``` は閉じない）を扱い、consistency_gate 側で数え直しません。同じ長さでの入れ子は CommonMark でも閉じるため扱いません。fence の数え方を 2 箇所に持つと片方だけが直り、実際に誤検知の事故が起きています（2026-08-16 review F6）。
 
 ## 導入手順
 

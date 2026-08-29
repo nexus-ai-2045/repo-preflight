@@ -113,10 +113,18 @@ def _first_summary(lines: list[str]) -> str:
 def outside_fences(lines: list[str]) -> list[tuple[int, str]]:
     """コードブロックの外にある行だけを (行番号, 本文) で返す。
 
-    この repo における fence 判定の正本。`~~~` と入れ子、インデントされた
-    fence まで扱う。別の場所で fence を数え直さないこと
+    この repo における fence 判定の正本。別の場所で fence を数え直さないこと
     (2026-08-16 review F6 で同じ誤検知の事故がある)。
     consistency_gate はこの関数を読み込んで使う。
+
+    扱うもの: ``` と ~~~、インデントされた fence、外側を長くした入れ子
+    (````  の中の ``` は閉じない)。
+
+    扱わないもの: 同じ長さでの入れ子。CommonMark でも ``` の中の ``` は
+    閉じるので、これは仕様どおり。fence を入れ子にする文書は外側を
+    長くする必要がある。閉じ fence の info string
+    (```` ```python ```` が閉じ扱いになる) は CommonMark と挙動が異なるが、
+    その形になる文書は元から壊れているので追随していない。
     """
     result: list[tuple[int, str]] = []
     fence_marker: str | None = None

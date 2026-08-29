@@ -872,3 +872,67 @@ def test_fence_reader_is_the_readme_release_gate_one(tmp_path: Path):
     reader = MODULE._load_fence_reader()
     assert reader.__module__ == "readme_release_gate"
     assert reader.__name__ == "outside_fences"
+
+
+def test_link_label_wrapping_across_lines_is_still_reported(tmp_path: Path):
+    """fence 対応で行またぎラベルを取り落とさないこと (2026-08-29 review)。
+
+    LINK_RE のラベル部は改行を跨げる。行ごとに findall すると、
+    fence を正しく除外する代わりにこの形の検知を静かに失う。
+    """
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n[長いラベルが\n行をまたぐ](docs/wrapped-missing.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/wrapped-missing.md"]
+
+
+def test_fence_masking_does_not_leak_links_out_of_a_fence(tmp_path: Path):
+    """行を空行へ潰す実装が、fence 内のリンクを外へ漏らさないこと。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n```markdown\n[例](docs/inside-only.md)\n```\n\n本文\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_missing_fence_reader_becomes_tool_error_not_a_traceback(
+    tmp_path: Path, monkeypatch
+):
+    """正本が読めない時に scan 全体を道連れにしないこと。
+
+    check() の契約は「所見を JSON で返す」。traceback を投げると
+    readiness_scan.run_consistency_gate 側に受け口が無く scan が落ちる。
+    """
+    repo, base = make_repo(tmp_path)
+
+    def _boom():
+        raise RuntimeError("fence_reader_unavailable:FileNotFoundError")
+
+    monkeypatch.setattr(MODULE, "_load_fence_reader", _boom)
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["fence_reader_unavailable:FileNotFoundError"]
+
+
+def test_fence_reader_loader_raises_runtime_error_when_the_file_is_gone(tmp_path: Path):
+    """実際に file を消した時に出るのが RuntimeError であること。"""
+    fake_scripts = tmp_path / "scripts"
+    fake_scripts.mkdir()
+    source = Path(MODULE.__file__).read_text(encoding="utf-8")
+    (fake_scripts / "consistency_gate.py").write_text(source, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "cg_without_sibling", fake_scripts / "consistency_gate.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with pytest.raises(RuntimeError, match="fence_reader_unavailable"):
+        module._load_fence_reader()

@@ -322,8 +322,17 @@ def _load_fence_reader():
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load readme_release_gate")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.outside_fences
+    # 正本が欠けている・壊れている時に traceback で落ちると、この gate の
+    # 「所見は JSON で返す」契約と readiness_scan 側の scan 全体が道連れになる。
+    # RuntimeError へ寄せて check() の tool_error に乗せる
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 - 失敗の種類ではなく契約を守る
+        raise RuntimeError(f"fence_reader_unavailable:{type(exc).__name__}") from exc
+    reader = getattr(module, "outside_fences", None)
+    if reader is None:
+        raise RuntimeError("fence_reader_unavailable:outside_fences_missing")
+    return reader
 
 
 def _markdown_findings(
@@ -343,12 +352,13 @@ def _markdown_findings(
             findings.append(f"markdown_unreadable:{rel}")
             continue
         # コードブロック内は「書き方の例」であって実在を要求しない。
-        # fence を跨いで拾うと、Markdown 記法を説明する文書が通らなくなる
-        targets = [
-            raw
-            for _, line in outside_fences(text.splitlines())
-            for raw in LINK_RE.findall(line)
-        ]
+        # fence を跨いで拾うと、Markdown 記法を説明する文書が通らなくなる。
+        # 行を捨てずに空行へ潰すのは、LINK_RE のラベル部が改行を跨げるため。
+        # 行ごとに findall すると `[長い\nラベル](path)` を取り落とす
+        lines = text.splitlines()
+        kept = dict(outside_fences(lines))
+        masked = "\n".join(kept.get(number, "") for number in range(1, len(lines) + 1))
+        targets = LINK_RE.findall(masked)
         for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
             parts = urlsplit(target)
