@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -14,9 +15,25 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-
 SCHEMA_VERSION = "repo-preflight.github-settings-review/v1"
 PROFILES = ("solo_public", "team_public", "high_risk_public")
+
+# readiness_scan と同じ。GIT_DIR 等で別 repository の origin を読まない。
+_GIT_REPO_OVERRIDE_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_INDEX_FILE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base is None else base)
+    for key in _GIT_REPO_OVERRIDE_VARS:
+        env.pop(key, None)
+    return env
 
 
 class ApiUnavailable(RuntimeError):
@@ -56,6 +73,7 @@ def repository_from_repo(repo: Path) -> str | None:
         errors="backslashreplace",
         capture_output=True,
         shell=False,
+        env=git_isolation_env(),
     )
     if result.returncode != 0:
         return None

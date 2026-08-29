@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### 修正
+
+- `--repo` に repository root ではない path を渡したとき、囲っている repository へ
+  暗黙に対象を広げるのをやめ、`repo_path_is_not_repository_root` で閉じるようにした。
+  `git rev-parse --show-toplevel` は「その path を含む repository」を返すため、
+  従来は利用者が指したのと別の repository の判定を、指した path の判定として
+  返していた。大きな monorepo の一部を指した場合は全履歴走査に入り、無出力のまま
+  数分待たされる形で表面化する。
+- 親プロセスの `GIT_DIR` / `GIT_WORK_TREE` 等で別 repository の object DB を指して
+  いても、`--repo` で指した path から見える repository 以外の判定を返さないように
+  した。subdirectory の暗黙拡大と同じ取り違えの変種で、secret 判定や HEAD まで
+  差し替わっていた。
+
 ### 追加
 
 - 日本語READMEのクイックスタートを、AIへ貼る URL と危険レビュー指示にする契約を warning として検知する。

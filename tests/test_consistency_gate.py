@@ -782,3 +782,24 @@ def test_empty_ratchet_object_requires_baseline(tmp_path: Path):
     config_path.write_text(json.dumps(config), encoding="utf-8")
     report = MODULE.check(repo, base_ref=base)
     assert report["status"] == "tool_error"
+
+
+def test_git_dir_env_does_not_inventory_another_repository(tmp_path: Path, monkeypatch):
+    """GIT_DIR で別 repository を指しても、--repo 側の inventory を差し替えない。"""
+    left_home = tmp_path / "left"
+    right_home = tmp_path / "right"
+    left_home.mkdir()
+    right_home.mkdir()
+    left, base = make_repo(left_home)
+    right, _ = make_repo(right_home)
+    (right / "only-in-right.md").write_text("secret-side\n", encoding="utf-8")
+    git(right, "add", "only-in-right.md")
+    git(right, "commit", "-m", "right-only")
+
+    monkeypatch.setenv("GIT_DIR", str(right / ".git"))
+    report = MODULE.check(left, base_ref=base)
+
+    assert report["status"] == "pass"
+    tracked = MODULE._tracked_files(left)
+    assert "only-in-right.md" not in tracked
+    assert "README.md" in tracked

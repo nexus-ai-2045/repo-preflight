@@ -92,6 +92,41 @@ def _intent_release_mode(intent: str) -> bool:
     return intent in {"publish", "release"}
 
 
+def repo_root_error_proposal(*, intent: str, scan: dict[str, Any]) -> dict | None:
+    """指した path が repository root でないときの提案。該当しなければ None。
+
+    「読めない」のではなく「別 repository の中を指している」なので、汎用の
+    「読める状態に直す」では何を直せばよいか伝わらない。
+    """
+    issues = scan.get("issues") or []
+    if "repo_path_is_not_repository_root" not in issues:
+        return None
+    root = scan.get("repository_root") or "<repository>"
+    return _proposal(
+        id="fix_repo_path_not_repository_root",
+        kind="tool_error",
+        severity="required",
+        question=(
+            f"指定した path は repository root ではなく、repository "
+            f"`{root}` の中の一部です。`{root}` 全体を検査対象にするか、"
+            "その path を独立した repository にしてから"
+            f"「{INTENT_LABELS.get(intent, intent)}」へ進みますか?"
+        ),
+        current={"issues": issues, "repository_root": root},
+        proposed="retarget_repository_root_then_rerun_preflight",
+        options=[
+            {"id": "retarget_root", "label": f"`{root}` 全体を対象にして再検査する"},
+            {
+                "id": "init_repository",
+                "label": "指定した path を独立した repository にする",
+            },
+            {"id": "no", "label": "中止する"},
+        ],
+        default="no",
+        why="囲っている repository の判定を、指した path の判定として返さない",
+    )
+
+
 def build_proposals_from_scan(
     *,
     intent: str,
@@ -104,6 +139,10 @@ def build_proposals_from_scan(
     status = scan.get("status")
 
     if status == "tool_error":
+        root_proposal = repo_root_error_proposal(intent=intent, scan=scan)
+        if root_proposal is not None:
+            proposals.append(root_proposal)
+            return proposals
         proposals.append(
             _proposal(
                 id="fix_tool_error",
@@ -764,7 +803,13 @@ def build_dialogue(
     elif intent == "configure_settings":
         # remote Settings review はlocal repository scanと独立したread-only gate。
         # repo pathはorigin解決にだけ使い、既存local baselineを設定確認へ混ぜない。
-        pass
+        # ただし「指した path が repository root でない」だけは別。origin 解決が
+        # 囲っている repository へ広がり、利用者が指したのと別 repository の
+        # Settings を preview してしまうため、ここで止める。
+        if scan is not None:
+            root_proposal = repo_root_error_proposal(intent=intent, scan=scan)
+            if root_proposal is not None:
+                proposals.append(root_proposal)
     elif scan is not None:
         proposals.extend(
             build_proposals_from_scan(intent=intent, scan=scan, audience=audience)
