@@ -40,7 +40,11 @@
 - 保証: `docs/pr-self-review.md` がこのrepositoryで改変されていないこと。
 - 保証: `install_runtime_skills.py --check` は install 済みコピーの 4 対象
   (SKILL.md / run_preflight.py / README.md / checkout link) を repo 正本と
-  sha256 で突き合わせる。
+  sha256 で突き合わせる。`README.md` の検査は `checkout/` の状態に依存しない。
+- 保証: install 済み file が UTF-8 として読めない場合も traceback にせず
+  `*_unreadable` を返し、残りの target の検査を続ける。
+- 保証: 何も検査できなかった run (`missing_adapter`) の `status` は `pass` に
+  ならない (`tool_error`・exit 2)。JSON を読む側が fail-open しないため。
 - 非保証: `install_runtime_skills.py --check` は install していないマシンの状態を
   検査しない (`not_installed` を返して pass)。repo 正本そのものの正しさ、および
   CI 上での検査も対象外 (CI に install 済みコピーは存在しない)。

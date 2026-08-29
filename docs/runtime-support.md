@@ -128,14 +128,25 @@ python scripts/install_runtime_skills.py --repo . --check
 
 | 検査対象 | 検出名 |
 |---|---|
-| `SKILL.md`（`REPO_PREFLIGHT_ROOT=` 行を落とした射影で比較） | `skill_md_drift` / `skill_md_missing` |
-| `run_preflight.py` | `run_preflight_drift` / `run_preflight_missing` |
-| `README.md`（検出した link mode で再生成して比較） | `readme_drift` / `readme_missing` |
+| `SKILL.md`（`REPO_PREFLIGHT_ROOT=` 行を落とした射影で比較） | `skill_md_drift` / `skill_md_missing` / `skill_md_unreadable` |
+| `run_preflight.py` | `run_preflight_drift` / `run_preflight_missing` / `run_preflight_unreadable` |
+| `README.md`（install が作りうる link mode のいずれかと一致すれば ok） | `readme_drift` / `readme_missing` / `readme_unreadable` |
 | `checkout/` link | `checkout_missing` / `checkout_dangling` / `checkout_foreign` |
+
+**`README.md` の検査は `checkout/` の状態に依存しません。**install 時の link mode は
+どこにも記録されていないため、今の `checkout/` から検出した mode で期待値を作ると、
+`checkout/` を壊しただけで無傷の README が `readme_drift` になり、`checkout/` を消すと
+README が一切検査されなくなります。install が作りうる mode（`symlink` / `junction` /
+`path-file`）のいずれかと一致すれば ok とします。
+
+`*_unreadable` は install 済み file が UTF-8 として読めない場合です。1 file の破損で
+run 全体を止めず、JSON を返して残りの target も検査します。
 
 exit code は drift 検出で `1`、正常および未 install で `0`、`--check --apply`
 同時指定など引数エラーで `2`。install していないマシンでは `not_installed` を
-返して `pass` になります。
+返して `pass` になります。`--repo` が repo-preflight checkout でない場合は
+`missing_adapter` になり、**`status` は `pass` ではなく `tool_error`**、exit code は `2` です
+（何も検査できなかった run を `pass` と書くと、JSON を読む側が fail-open するため）。
 
 CI ゲートには載せていません。CI には install 済みコピーが存在しないため、
 そこで検査しても常に `not_installed` にしかならないからです。

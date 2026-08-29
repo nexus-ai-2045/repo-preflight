@@ -131,6 +131,24 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# install が実際に作りうる link mode。detect_link_mode はこれ以外に
+# "missing" / "unknown" も返すが、それは install の産物ではなく異常側
+INSTALLABLE_LINK_MODES = ("symlink", "junction", "path-file")
+
+
+def _read_installed(path: Path) -> str | None:
+    """install 済み file を読む。読めなければ None を返す。
+
+    ここで例外を上げると 1 file の破損で run 全体が traceback になり、
+    残りの target が未検査のまま JSON も出ない。read-only の検査が
+    落ちる理由にはしない (2026-08-29 review)。
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def install_one(
     *,
     repo: Path,
@@ -187,7 +205,10 @@ def detect_link_mode(dest_checkout: Path, repo: Path) -> tuple[str, str | None]:
     if dest_checkout.is_dir():
         root_file = dest_checkout / "ROOT_PATH.txt"
         if root_file.is_file():
-            recorded = root_file.read_text(encoding="utf-8").strip()
+            raw = _read_installed(root_file)
+            if raw is None:
+                return "path-file", "checkout_foreign"
+            recorded = raw.strip()
             if not recorded:
                 return "path-file", "checkout_foreign"
             if Path(recorded).resolve() != want:
@@ -224,15 +245,23 @@ def check_one(*, repo: Path, runtime: str, dest: Path) -> dict:
     dest_skill = dest / "SKILL.md"
     if not dest_skill.is_file():
         findings.append("skill_md_missing")
-    elif _digest(dest_skill.read_text(encoding="utf-8")) != expected_skill:
-        findings.append("skill_md_drift")
+    else:
+        body = _read_installed(dest_skill)
+        if body is None:
+            findings.append("skill_md_unreadable")
+        elif _digest(body) != expected_skill:
+            findings.append("skill_md_drift")
 
     expected_run = _digest(run_src.read_text(encoding="utf-8"))
     dest_run = dest / "run_preflight.py"
     if not dest_run.is_file():
         findings.append("run_preflight_missing")
-    elif _digest(dest_run.read_text(encoding="utf-8")) != expected_run:
-        findings.append("run_preflight_drift")
+    else:
+        body = _read_installed(dest_run)
+        if body is None:
+            findings.append("run_preflight_unreadable")
+        elif _digest(body) != expected_run:
+            findings.append("run_preflight_drift")
 
     link_mode, link_finding = detect_link_mode(dest / "checkout", repo)
     result["link"] = link_mode
@@ -242,11 +271,21 @@ def check_one(*, repo: Path, runtime: str, dest: Path) -> dict:
     dest_readme = dest / "README.md"
     if not dest_readme.is_file():
         findings.append("readme_missing")
-    elif link_mode not in {"missing", "unknown"}:
-        # README は install 時の link mode を本文に含むため、検出した mode で再生成して比べる
-        expected_readme = _digest(render_readme(link_mode))
-        if _digest(dest_readme.read_text(encoding="utf-8")) != expected_readme:
-            findings.append("readme_drift")
+    else:
+        body = _read_installed(dest_readme)
+        if body is None:
+            findings.append("readme_unreadable")
+        else:
+            # README は install 時の link mode を本文に含むが、その mode は
+            # どこにも記録されていない。今の checkout から検出した mode で
+            # 再生成すると、checkout を壊しただけで README が drift 判定になり、
+            # checkout を消すと README が一切検査されなくなる。
+            # install が作りうる mode のどれかと一致すれば ok とする
+            expected_readmes = {
+                _digest(render_readme(mode)) for mode in INSTALLABLE_LINK_MODES
+            }
+            if _digest(body) not in expected_readmes:
+                findings.append("readme_drift")
 
     result["status"] = "drift" if findings else "ok"
     result["findings"] = findings
@@ -295,11 +334,22 @@ def main() -> int:
             for runtime, dest in default_targets(args.home.resolve())
         ]
         drifted = [item for item in checks if item.get("status") == "drift"]
+        unusable = [item for item in checks if item.get("status") == "missing_adapter"]
+        # 何も検査できなかったのを "pass" と書くと JSON を読む側が fail-open する
+        if unusable:
+            top_status = "tool_error"
+            next_action = "--repo が repo-preflight checkout を指しているか確認する"
+        elif drifted:
+            top_status = "drift"
+            next_action = "python scripts/install_runtime_skills.py --apply で再配布する"
+        else:
+            top_status = "pass"
+            next_action = "no action"
         payload = {
             "schema": "repo-preflight.check-runtime-skills/v1",
             "repo": str(repo),
             "read_only": True,
-            "status": "drift" if drifted else "pass",
+            "status": top_status,
             "results": checks,
             "guarantee": (
                 "install 済み skill コピーの SKILL.md / run_preflight.py / README.md / "
@@ -309,14 +359,10 @@ def main() -> int:
                 "install していないマシンの状態; repo 正本そのものの正しさ; "
                 "CI 上での実行 (CI に install 済みコピーは存在しない)"
             ),
-            "next": (
-                "python scripts/install_runtime_skills.py --apply で再配布する"
-                if drifted
-                else "no action"
-            ),
+            "next": next_action,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        if any(item.get("status") == "missing_adapter" for item in checks):
+        if unusable:
             return 2
         return 1 if drifted else 0
 
