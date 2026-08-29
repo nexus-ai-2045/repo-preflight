@@ -4,6 +4,7 @@ import argparse
 import difflib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -94,13 +95,41 @@ PATH_PATTERNS = (
     re.compile(r"/ho" + r"me/[^/\s]+"),
 )
 
+# 親プロセスの GIT_DIR / GIT_WORK_TREE 等は、--repo で指した path と別の
+# repository へ判定対象を飛ばす。subdirectory を囲っている repo へ広げるのと
+# 同じ取り違えなので、git 呼び出しには継承しない。
+_GIT_REPO_OVERRIDE_VARS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_INDEX_FILE",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+)
+
+
+def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """cwd から見える repository 以外へ、判定対象を飛ばさない環境を返す。"""
+    env = dict(os.environ if base is None else base)
+    for key in _GIT_REPO_OVERRIDE_VARS:
+        env.pop(key, None)
+    return env
+
+
+def run_subprocess(*args, **kwargs):
+    """subprocess.run 互換。git 呼び出しから repository 上書き環境を除く。"""
+    cmd = args[0] if args else kwargs.get("args")
+    if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
+        kwargs["env"] = git_isolation_env(kwargs.get("env"))
+    return subprocess.run(*args, **kwargs)
+
 
 def run(repo: Path, *args: str) -> tuple[int, str]:
     # git側の出力encodingをUTF-8に固定してから読む。i18n.logOutputEncodingが
     # 非UTF-8のrepositoryでも作者名を壊さない。不正byteはfail-closed比較に残す
     if args and args[0] == "git":
         args = (args[0], "-c", "i18n.logOutputEncoding=UTF-8", *args[1:])
-    result = subprocess.run(
+    result = run_subprocess(
         args,
         cwd=repo,
         text=True,
@@ -155,6 +184,16 @@ def repository_evidence_label(repo: Path) -> str:
     return sanitized_evidence_label(repo.name or "<repository>")
 
 
+def same_directory(left: Path, right: Path) -> bool:
+    # Windows では大文字小文字・8.3短縮名・junction で文字列が食い違うため、
+    # 文字列比較ではなく inode 相当で突き合わせる。stat できない場合だけ
+    # normcase による文字列比較へ落とす
+    try:
+        return left.samefile(right)
+    except OSError:
+        return os.path.normcase(str(left)) == os.path.normcase(str(right))
+
+
 def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
@@ -162,7 +201,7 @@ def effective_identity(value: str) -> str:
 def history_hits(
     repo: Path, rev_args: tuple[str, ...] = ("--all",)
 ) -> tuple[list[str], list[str]]:
-    objects = subprocess.run(
+    objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *rev_args],
         cwd=repo,
         capture_output=True,
@@ -186,7 +225,7 @@ def history_hits(
     if not inventory:
         return [], []
     object_ids = [object_id for object_id, _ in inventory]
-    check = subprocess.run(
+    check = run_subprocess(
         ["git", "cat-file", "--batch-check"],
         cwd=repo,
         input="\n".join(object_ids) + "\n",
@@ -222,7 +261,7 @@ def history_hits(
             item = eligible.pop()
             chunk.append(item)
             chunk_bytes += item[2]
-        batch = subprocess.run(
+        batch = run_subprocess(
             ["git", "cat-file", "--batch"],
             cwd=repo,
             input=("\n".join(object_id for object_id, _, _ in chunk) + "\n").encode(
@@ -269,7 +308,7 @@ def diff_added_lines_have(
     its file also contains a new, unrelated line.  Patch metadata is excluded;
     only actual ``+`` lines are decoded by ``text_has``.
     """
-    result = subprocess.run(
+    result = run_subprocess(
         [
             "git",
             "diff",
@@ -303,7 +342,7 @@ def diff_added_lines_have(
     # Git omits patch lines for UTF-16 and attribute-classified binary text.
     # Inspect only those binary entries and compare decoded blob lines, so an
     # unchanged baseline path in a modified file is not reclassified as new.
-    numstat = subprocess.run(
+    numstat = run_subprocess(
         [
             "git",
             "diff",
@@ -331,7 +370,7 @@ def diff_added_lines_have(
         if not separator or not separator2 or additions != b"-" or deletions != b"-":
             continue
         path = raw_path.decode("utf-8", errors="surrogateescape")
-        old_blob = subprocess.run(
+        old_blob = run_subprocess(
             ["git", "show", f"{old_revision}:{path}"],
             cwd=repo,
             capture_output=True,
@@ -346,7 +385,7 @@ def diff_added_lines_have(
             except OSError as exc:
                 raise RuntimeError("git_target_diff_inventory_failed") from exc
         else:
-            new_blob = subprocess.run(
+            new_blob = run_subprocess(
                 ["git", "show", f"{new_revision}:{path}"],
                 cwd=repo,
                 capture_output=True,
@@ -408,7 +447,7 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
 
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
     """Choose the parent containing the scanned base, or the empty tree."""
-    parents = subprocess.run(
+    parents = run_subprocess(
         ["git", "show", "-s", "--format=%P", commit],
         cwd=repo,
         text=True,
@@ -420,7 +459,7 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
         raise RuntimeError("git_target_diff_inventory_failed")
     candidates = parents.stdout.split()
     if not candidates:
-        empty_tree = subprocess.run(
+        empty_tree = run_subprocess(
             ["git", "hash-object", "-t", "tree", "--stdin"],
             cwd=repo,
             input=b"",
@@ -430,7 +469,7 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
             raise RuntimeError("git_target_diff_inventory_failed")
         return empty_tree.stdout.decode("ascii").strip()
     for parent in candidates:
-        contains_base = subprocess.run(
+        contains_base = run_subprocess(
             ["git", "merge-base", "--is-ancestor", base_ref, parent],
             cwd=repo,
             capture_output=True,
@@ -450,7 +489,7 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
     checked separately.  Evidence labels intentionally avoid file contents and
     checkout paths.
     """
-    commits = subprocess.run(
+    commits = run_subprocess(
         ["git", "rev-list", "--reverse", f"{base_ref}..HEAD"],
         cwd=repo,
         text=True,
@@ -467,7 +506,7 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
             hits.add(f"target-diff:commit:{commit[:12]}")
     if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
         hits.add("target-diff:working-tree")
-    untracked = subprocess.run(
+    untracked = run_subprocess(
         ["git", "ls-files", "-z", "--others", "--exclude-standard"],
         cwd=repo,
         capture_output=True,
@@ -492,12 +531,12 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
 
 
 def working_tree_files(repo: Path) -> list[Path]:
-    tracked = subprocess.run(
+    tracked = run_subprocess(
         ["git", "ls-files", "-z", "-v", "--stage"],
         cwd=repo,
         capture_output=True,
     )
-    untracked = subprocess.run(
+    untracked = run_subprocess(
         ["git", "ls-files", "-z", "--others", "--exclude-standard"],
         cwd=repo,
         capture_output=True,
@@ -531,7 +570,7 @@ def working_tree_files(repo: Path) -> list[Path]:
 
 
 def deleted_working_tree_files(repo: Path) -> set[Path]:
-    result = subprocess.run(
+    result = run_subprocess(
         ["git", "ls-files", "-z", "--deleted"], cwd=repo, capture_output=True
     )
     if result.returncode:
@@ -546,7 +585,7 @@ def deleted_working_tree_files(repo: Path) -> set[Path]:
 def changed_working_tree_files(
     repo: Path, base_ref: str
 ) -> tuple[list[Path], set[Path]]:
-    result = subprocess.run(
+    result = run_subprocess(
         ["git", "diff", "--name-only", "-z", f"{base_ref}...HEAD"],
         cwd=repo,
         capture_output=True,
@@ -561,7 +600,7 @@ def changed_working_tree_files(
         rel = raw_name.decode("utf-8", errors="surrogateescape")
         path = repo / rel
         if path.exists():
-            mode_probe = subprocess.run(
+            mode_probe = run_subprocess(
                 ["git", "ls-files", "--stage", "--", rel],
                 cwd=repo,
                 text=True,
@@ -635,6 +674,29 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     return module.check(repo, base_ref=base_ref)
 
 
+def repository_root_error(repo: Path) -> dict | None:
+    """repo が repository root でなければ tool_error を返す。root なら None。
+
+    --show-toplevel は「そのpathを含むrepo」を返す。囲っているrepoへ黙って
+    広げると、利用者が指したのと別のrepositoryの判定を、指したpathの判定と
+    して返してしまう。公開判定では取り違えが致命的なので閉じる側で止める。
+    """
+    repo = repo.resolve()
+    if not repo.is_dir():
+        return {"status": "tool_error", "issues": ["not_git_repository"]}
+    git_code, top = run(repo, "git", "rev-parse", "--show-toplevel")
+    if git_code:
+        return {"status": "tool_error", "issues": ["not_git_repository"]}
+    root = Path(top).resolve()
+    if not same_directory(repo, root):
+        return {
+            "status": "tool_error",
+            "issues": ["repo_path_is_not_repository_root"],
+            "repository_root": repository_evidence_label(root),
+        }
+    return None
+
+
 def scan(
     repo: Path,
     expected_identity: str | None = None,
@@ -644,12 +706,10 @@ def scan(
     consistency_base_ref: str | None = None,
 ) -> dict:
     repo = repo.resolve()
-    if not repo.is_dir():
-        return {"status": "tool_error", "issues": ["not_git_repository"]}
-    git_code, top = run(repo, "git", "rev-parse", "--show-toplevel")
-    if git_code:
-        return {"status": "tool_error", "issues": ["not_git_repository"]}
-    repo = Path(top).resolve()
+    root_error = repository_root_error(repo)
+    if root_error is not None:
+        return root_error
+    repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
@@ -1096,6 +1156,16 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
     )
     github_settings_review: dict | None = None
     if options.intent == "configure_settings" and options.repo is not None:
+        # origin 解決は repo path から git に委ねるため、root でない path を渡すと
+        # 囲っている repository へ広がる。解決の前に閉じる側で止める。
+        root_error = repository_root_error(options.repo)
+        if root_error is not None:
+            scan_report = root_error
+    if (
+        options.intent == "configure_settings"
+        and options.repo is not None
+        and scan_report is None
+    ):
         settings_mod = load_github_settings_module()
         repository = settings_mod.repository_from_repo(options.repo)
         if repository is None:

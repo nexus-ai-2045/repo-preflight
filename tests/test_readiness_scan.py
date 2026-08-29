@@ -583,11 +583,21 @@ def test_cli_json_never_echoes_secret_shaped_checkout_path(tmp_path: Path):
     assert json.loads(result.stdout)["repo"] == "repo"
 
 
-def test_subdirectory_still_scans_repo_root(tmp_path: Path):
+def test_subdirectory_cannot_be_used_to_dodge_a_repo_root_secret(tmp_path: Path):
+    """subdirectory を指しても、repo root の secret を素通りさせない。
+
+    以前は root へ暗黙に広げて検査することでこれを担保していたが、それだと
+    利用者が指したのと別 repository の判定を返してしまうため、今は閉じて止める。
+    どちらにせよ pass は返らない、が守るべき不変条件。
+    """
     repo = make_repo(tmp_path)
     (repo / "nested").mkdir()
     (repo / "leak.txt").write_text("sk-" + "B" * 30, encoding="utf-8")
-    assert MODULE.scan(repo / "nested")["checks"]["secret_scan"]["status"] == "fail"
+
+    report = MODULE.scan(repo / "nested")
+
+    assert report["status"] != "pass"
+    assert report["issues"] == ["repo_path_is_not_repository_root"]
 
 
 def test_remote_credentials_are_redacted(tmp_path: Path):
@@ -693,6 +703,49 @@ def test_missing_repo_returns_sanitized_tool_error(tmp_path: Path):
     report = MODULE.scan(missing)
 
     assert report == {"status": "tool_error", "issues": ["not_git_repository"]}
+
+
+def test_subdirectory_of_a_repo_does_not_silently_scan_the_parent(tmp_path: Path):
+    """--repo に非repositoryのsubdirectoryを渡したら、囲っているrepoへ勝手に広げない。
+
+    git rev-parse --show-toplevel は「そのpathを含むrepo」を返すため、放置すると
+    利用者が指したのと別のrepositoryの判定を、指したpathの判定として返してしまう。
+    """
+    repo = make_repo(tmp_path)
+    subdir = repo / "deploy-site"
+    subdir.mkdir()
+    (subdir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    report = MODULE.scan(subdir)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["repo_path_is_not_repository_root"]
+    # 解決先を伝えないと利用者は再実行のしようがない。ただし個人pathは出さない
+    assert report["repository_root"] == repo.name
+    assert "checks" not in report
+
+
+def test_repository_root_evidence_does_not_leak_the_absolute_path(tmp_path: Path):
+    """解決先を伝えるときも、個人pathを含む絶対pathは出さない。"""
+    repo = make_repo(tmp_path)
+    subdir = repo / "deploy-site"
+    subdir.mkdir()
+
+    report = MODULE.scan(subdir)
+
+    assert str(tmp_path) not in json.dumps(report)
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, json.dumps(report).encode("utf-8"))
+
+
+def test_worktree_root_is_accepted_as_repository_root(tmp_path: Path):
+    """git worktree の root は .git が file でも repository root として扱う。"""
+    repo = make_repo(tmp_path)
+    worktree = tmp_path / "wt"
+    git(repo, "worktree", "add", "-b", "probe", str(worktree))
+
+    report = MODULE.scan(worktree)
+
+    assert report["status"] != "tool_error"
 
 
 def clear_local_identity(repo: Path, tmp_path: Path, monkeypatch) -> None:
@@ -1098,3 +1151,125 @@ def test_base_ref_and_consistency_base_ref_are_exclusive(tmp_path: Path):
 def test_history_hits_with_empty_revision_range_returns_no_hits(tmp_path: Path):
     repo = make_repo(tmp_path)
     assert MODULE.history_hits(repo, ("HEAD..HEAD",)) == ([], [])
+
+
+def test_configure_settings_does_not_widen_to_the_enclosing_repository(tmp_path: Path):
+    """configure_settings に subdirectory を渡しても囲っている repo を対象にしない。
+
+    build_dialogue は configure_settings で local scan を意図的に飛ばすため、
+    scan() 側の root 検証だけでは素通りする。origin 解決の前に閉じる側で止める。
+    """
+    repo = make_repo(tmp_path)
+    git(repo, "remote", "set-url", "origin", "https://github.com/someone/OUTER.git")
+    subdir = repo / "nested"
+    subdir.mkdir()
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=subdir, intent="configure_settings")
+    )
+
+    assert dialogue["status"] == "blocked"
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" in ids
+    # 別 repository の識別子が packet のどこにも載らないことが本体
+    assert "OUTER" not in json.dumps(dialogue, ensure_ascii=False)
+
+
+def test_configure_settings_still_reviews_a_real_repository_root(tmp_path: Path):
+    """root を指した通常経路は従来どおり settings review へ進む。"""
+    repo = make_repo(tmp_path)
+    git(repo, "remote", "set-url", "origin", "https://github.com/someone/OUTER.git")
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=repo, intent="configure_settings")
+    )
+
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" not in ids
+    assert dialogue["github_settings_review"]["repository"] == "someone/OUTER"
+
+
+def test_repository_root_error_returns_none_for_a_real_root(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    assert MODULE.repository_root_error(repo) is None
+
+
+def test_git_dir_env_cannot_substitute_another_repository(tmp_path: Path, monkeypatch):
+    """GIT_DIR で別 repository を指しても、--repo の判定を差し替えない。
+
+    subdirectory を囲っている repo へ広げるのと同じ取り違えの変種。
+    親プロセスの GIT_DIR が別 repo の object DB を指すと、secret 判定まで
+    差し替わる。#44 の保証「指定 path と異なる repository の判定を返さない」
+    の残ギャップ。
+    """
+    clean_home = tmp_path / "clean"
+    dirty_home = tmp_path / "dirty"
+    clean_home.mkdir()
+    dirty_home.mkdir()
+    clean = make_repo(clean_home)
+    dirty = make_repo(dirty_home)
+    (dirty / "leak.txt").write_text("sk-" + "D" * 30, encoding="utf-8")
+    git(dirty, "add", "leak.txt")
+    git(dirty, "commit", "-m", "leak")
+
+    clean_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=clean,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dirty_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=dirty,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert clean_head != dirty_head
+
+    monkeypatch.setenv("GIT_DIR", str(dirty / ".git"))
+    report = MODULE.scan(clean)
+
+    assert report["head"] == clean_head
+    assert report["head"] != dirty_head
+    assert report["checks"]["secret_scan"]["status"] == "pass"
+    assert report.get("repo") == clean.name
+
+
+def test_git_dir_env_cannot_make_a_non_repo_look_scannable(tmp_path: Path, monkeypatch):
+    """GIT_DIR があっても、.git の無い path を repository として通さない。"""
+    outer = make_repo(tmp_path)
+    lonely = tmp_path / "lonely"
+    lonely.mkdir()
+    (lonely / "x.txt").write_text("hi", encoding="utf-8")
+
+    monkeypatch.setenv("GIT_DIR", str(outer / ".git"))
+    report = MODULE.scan(lonely)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["not_git_repository"]
+    assert "checks" not in report
+
+
+def test_configure_settings_origin_ignores_git_dir_override(
+    tmp_path: Path, monkeypatch
+):
+    """configure_settings の origin 解決も GIT_DIR で差し替えない。"""
+    target_home = tmp_path / "target"
+    other_home = tmp_path / "other"
+    target_home.mkdir()
+    other_home.mkdir()
+    target = make_repo(target_home)
+    other = make_repo(other_home)
+    git(target, "remote", "set-url", "origin", "https://github.com/someone/TARGET.git")
+    git(other, "remote", "set-url", "origin", "https://github.com/someone/OTHER.git")
+
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=target, intent="configure_settings")
+    )
+
+    packet = json.dumps(dialogue, ensure_ascii=False)
+    assert "OTHER" not in packet
+    assert dialogue["github_settings_review"]["repository"] == "someone/TARGET"

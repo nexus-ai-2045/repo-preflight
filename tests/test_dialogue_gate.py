@@ -390,3 +390,63 @@ def test_configure_settings_surfaces_stale_github_guidance():
 
     ids = {item["id"] for item in dialogue["proposals"]}
     assert "refresh_github_settings_baseline" in ids
+
+
+def test_non_root_repo_path_gets_its_own_actionable_question():
+    """subdirectory を指した場合は『読めない』ではなく『root を指せ』と言う。"""
+    dialogue = DIALOGUE.build_dialogue(
+        intent="publish",
+        scan={
+            "status": "tool_error",
+            "issues": ["repo_path_is_not_repository_root"],
+            "repository_root": "Projects",
+        },
+    )
+
+    proposals = {item["id"]: item for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" in proposals
+    assert "fix_tool_error" not in proposals
+
+    item = proposals["fix_repo_path_not_repository_root"]
+    assert item["severity"] == "required"
+    assert item["blocks_intent"] is True
+    assert item["dismissible"] is False
+    # 解決先 repo 名を出さないと、利用者は何を指し直せばよいか判断できない
+    assert "Projects" in json.dumps(item, ensure_ascii=False)
+    assert dialogue["status"] == "blocked"
+
+
+def test_configure_settings_also_stops_on_non_root_repo_path():
+    """configure_settings は local scan を混ぜないが、対象取り違えだけは止める。
+
+    origin 解決は repo path から git に委ねるため、root でない path を渡すと
+    囲っている repository へ広がり、利用者が指したのと別 repository の Settings
+    を preview してしまう。#44 の root 検証がこの intent を素通りしていた回帰。
+    """
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        scan={
+            "status": "tool_error",
+            "issues": ["repo_path_is_not_repository_root"],
+            "repository_root": "Projects",
+        },
+    )
+
+    proposals = {item["id"]: item for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" in proposals
+    assert dialogue["status"] == "blocked"
+    assert "Projects" in json.dumps(
+        proposals["fix_repo_path_not_repository_root"], ensure_ascii=False
+    )
+
+
+def test_configure_settings_does_not_mix_in_unrelated_local_scan():
+    """対象取り違え以外の local scan 所見は configure_settings へ持ち込まない。"""
+    dialogue = DIALOGUE.build_dialogue(
+        intent="configure_settings",
+        scan={"status": "blocked", "issues": ["secret_candidate"]},
+    )
+
+    ids = {item["id"] for item in dialogue["proposals"]}
+    assert "fix_repo_path_not_repository_root" not in ids
+    assert "fix_tool_error" not in ids

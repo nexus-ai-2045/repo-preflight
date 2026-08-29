@@ -35,6 +35,7 @@
 | regex外secret | false negative | gitleaks等の専門scannerと人間レビューを併用 |
 | remote credential | report経由の漏えい | userinfoを除去してURLを返す |
 | 古いreview/CI | 別の差分を誤承認 | 対象HEAD、日時、CI runをreview記録へ固定 |
+| `GIT_DIR`等による対象差し替え | 別repositoryの判定を`--repo`の結果として返す | git呼び出しから repository 上書き環境を除く |
 | dependency/action改ざん | CI上のcode execution | 最小権限、credential非保持、Actions full SHA固定、dependency audit |
 | 誤ったGitHub account | owner境界違反 | 操作前にactive accountと`owner/name`を再測定 |
 
