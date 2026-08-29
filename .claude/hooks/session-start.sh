@@ -9,7 +9,8 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
-# CLAUDE_PROJECT_DIR は remote でも未設定のことがあるため script 位置から解決する
+# settings.json は CLAUDE_PROJECT_DIR に依存せず相対パスで本 script を起動する。
+# remote では CLAUDE_PROJECT_DIR が空のことがあるため、repo root は script 位置から解決する。
 repo_root="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$repo_root"
 
