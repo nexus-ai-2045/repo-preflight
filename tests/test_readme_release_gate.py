@@ -582,7 +582,7 @@ def test_japanese_command_quickstart_without_paste_url_is_flagged(tmp_path: Path
         tmp_path,
         JAPANESE_BODY.replace(
             "説明のとおりに実行します。",
-            "python -m pip install -e \".[test]\"\n",
+            'python -m pip install -e ".[test]"\n',
         ),
     )
     report = MODULE.review(path)
@@ -639,8 +639,7 @@ def test_bare_figure_without_evidence_link_is_flagged(tmp_path: Path):
 def test_figure_linked_to_decision_is_clean(tmp_path: Path):
     path = write_readme(
         tmp_path,
-        JAPANESE_BODY
-        + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
+        JAPANESE_BODY + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
     )
     report = MODULE.review(path)
     assert "figure_not_linked_to_evidence" not in _codes(report)
@@ -793,8 +792,7 @@ def test_fenced_heading_does_not_cut_quickstart_paste(tmp_path: Path):
 def test_reference_style_bare_image_is_flagged(tmp_path: Path):
     path = write_readme(
         tmp_path,
-        JAPANESE_BODY
-        + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
+        JAPANESE_BODY + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
     )
     report = MODULE.review(path)
     assert "figure_not_linked_to_evidence" in _codes(report)

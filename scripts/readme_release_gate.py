@@ -22,7 +22,9 @@ JAPANESE_MIN_RATIO = 0.1
 JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
 CODE_SPAN_RE = re.compile(r"`[^`]+`")
 LINK_DESTINATION_RE = re.compile(r"(?<=\])\([^)]*\)")
-FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^`]*)$")  # CommonMark: 開きは先頭スペース 0–3 のみ
+FENCE_RE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})([^`]*)$"
+)  # CommonMark: 開きは先頭スペース 0–3 のみ
 # mermaid のラベル抽出。行を先に「図の種類」と「行の種類」で分類してから
 # 抽出する (2026-08-16 review F4/F5/F8: regex 継ぎ足しで境界が壊れていた)。
 # node ラベルは | を含んでよい ({Yes|No})。edge ラベルは矢印の直後の |..| だけ。
@@ -415,9 +417,7 @@ def _is_evidence_target(target: str) -> bool:
 
 
 def _visible_markdown(lines: list[str]) -> str:
-    return HTML_COMMENT_RE.sub(
-        "", "\n".join(line for _, line in outside_fences(lines))
-    )
+    return HTML_COMMENT_RE.sub("", "\n".join(line for _, line in outside_fences(lines)))
 
 
 def _reference_targets(text: str) -> dict[str, str]:

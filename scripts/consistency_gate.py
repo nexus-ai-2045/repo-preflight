@@ -359,9 +359,7 @@ def _markdown_findings(
         # 結合されてしまうので、] を境界として置く (Codex P2)。
         lines = text.splitlines()
         kept = dict(outside_fences(lines))
-        masked = "\n".join(
-            kept.get(number, "]") for number in range(1, len(lines) + 1)
-        )
+        masked = "\n".join(kept.get(number, "]") for number in range(1, len(lines) + 1))
         targets = LINK_RE.findall(masked)
         for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")

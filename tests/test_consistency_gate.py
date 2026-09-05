@@ -937,9 +937,7 @@ def test_four_space_indented_fence_marker_does_not_swallow_later_links(
     )
     report = MODULE.check(repo, base_ref=base)
     missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
-    assert missing == [
-        "markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"
-    ]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"]
 
 
 def test_missing_fence_reader_becomes_tool_error_not_a_traceback(
