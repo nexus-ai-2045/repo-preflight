@@ -901,6 +901,47 @@ def test_fence_masking_does_not_leak_links_out_of_a_fence(tmp_path: Path):
     assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
 
 
+def test_fence_masking_does_not_join_link_fragments_across_a_fence(tmp_path: Path):
+    """fence 前後の未完結 `[` と `](path)` を結合しないこと (Codex P2)。
+
+    空行マスクだと LINK_RE のラベル部が fence を跨いでマッチし、
+    実在しないリンク切れを誤検知する。
+    """
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n"
+        "未完結の括弧 [\n"
+        "```markdown\n"
+        "fence 内\n"
+        "```\n"
+        "](docs/should-not-join.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == []
+
+
+def test_four_space_indented_fence_marker_does_not_swallow_later_links(
+    tmp_path: Path,
+):
+    """4 空白インデントの ``` は fence にならず、後続のリンク切れを隠さない (Codex P2)。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n"
+        "    ```\n"
+        "    indented code looking like a fence\n"
+        "\n"
+        "[後続の本物](docs/after-fake-fence.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == [
+        "markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"
+    ]
+
+
 def test_missing_fence_reader_becomes_tool_error_not_a_traceback(
     tmp_path: Path, monkeypatch
 ):

@@ -353,11 +353,15 @@ def _markdown_findings(
             continue
         # コードブロック内は「書き方の例」であって実在を要求しない。
         # fence を跨いで拾うと、Markdown 記法を説明する文書が通らなくなる。
-        # 行を捨てずに空行へ潰すのは、LINK_RE のラベル部が改行を跨げるため。
-        # 行ごとに findall すると `[長い\nラベル](path)` を取り落とす
+        # 行番号を保ったままマスクするのは、LINK_RE のラベル部が改行を跨げるため。
+        # 行ごとに findall すると `[長い\nラベル](path)` を取り落とす。
+        # fence 行を空行へ潰すと、fence 前の未完結 `[` と後の `](path)` が
+        # 結合されてしまうので、] を境界として置く (Codex P2)。
         lines = text.splitlines()
         kept = dict(outside_fences(lines))
-        masked = "\n".join(kept.get(number, "") for number in range(1, len(lines) + 1))
+        masked = "\n".join(
+            kept.get(number, "]") for number in range(1, len(lines) + 1)
+        )
         targets = LINK_RE.findall(masked)
         for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")

@@ -895,9 +895,21 @@ def test_outside_fences_drops_tilde_fence_bodies():
 
 
 def test_outside_fences_handles_indented_fences():
-    """2026-08-16 review F6 の再発防止。"""
+    """2026-08-16 review F6 の再発防止。CommonMark の 0–3 空白インデント。"""
     lines = ["外", "   ```md", "   内", "   ```", "外2"]
     assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_three_space_indent_is_still_a_fence():
+    """3 空白インデントの fence は CommonMark どおり fence 扱い。"""
+    lines = ["外", "   ```", "内", "   ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_four_space_indent_is_not_a_fence():
+    """4 空白以上は indented code であり fence-mode に入らない (Codex P2)。"""
+    lines = ["外", "    ```md", "    内", "    ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == lines
 
 
 def test_outside_fences_handles_nested_fences():
@@ -908,3 +920,14 @@ def test_outside_fences_handles_nested_fences():
 def test_outside_fences_reports_original_line_numbers():
     lines = ["外", "```", "内", "```", "外2"]
     assert MODULE.outside_fences(lines) == [(1, "外"), (5, "外2")]
+
+
+def test_outside_fences_does_not_close_on_a_four_space_indented_marker():
+    """閉じ側にも 0-3 space の規則を当てること。"""
+    lines = ["外", "```md", "内", "    ```", "まだ内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_does_not_close_on_a_different_fence_character():
+    lines = ["外", "```md", "~~~", "内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
