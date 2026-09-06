@@ -5,8 +5,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = ROOT / ".claude" / "settings.json"
 
 # remote container の ~/.claude は session ごとに作り直されるため、user scope に
-# 置いた設定は残らない。時刻を JST に固定できる durable な層は git 管理下の
-# この project settings だけなので、消えたら test で落とす。
+# 置いた設定は残らない。tool 側は公式の env.TZ で固定する。durable な層は
+# git 管理下のこの project settings だけなので、消えたら test で落とす。
 EXPECTED_ZONE = "Asia/Tokyo"
 
 
@@ -25,10 +25,6 @@ def test_tool_env_pins_jst():
     assert _settings().get("env", {}).get("TZ") == EXPECTED_ZONE
 
 
-def test_ui_timezone_pins_jst():
-    # UI 表示側の時刻。env とは別系統なので両方必要。
-    assert _settings().get("timeZone") == EXPECTED_ZONE
-
 
 def test_session_start_hook_is_preserved():
     # TZ を足すときに hook を落とす事故（merge ではなく replace）を防ぐ。
@@ -37,3 +33,4 @@ def test_session_start_hook_is_preserved():
         inner.get("command", "") for entry in hooks for inner in entry.get("hooks", [])
     ]
     assert any("session-start.sh" in command for command in commands)
+
