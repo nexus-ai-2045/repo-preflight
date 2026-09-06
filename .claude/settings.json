@@ -1,4 +1,7 @@
 {
+  "env": {
+    "TZ": "Asia/Tokyo"
+  },
   "hooks": {
     "SessionStart": [
       {
