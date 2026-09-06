@@ -2,8 +2,6 @@
   "env": {
     "TZ": "Asia/Tokyo"
   },
-  "timeZone": "Asia/Tokyo",
-  "timeFormat": "24-hour",
   "hooks": {
     "SessionStart": [
       {
