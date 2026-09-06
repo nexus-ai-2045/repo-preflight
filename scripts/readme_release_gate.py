@@ -22,7 +22,9 @@ JAPANESE_MIN_RATIO = 0.1
 JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
 CODE_SPAN_RE = re.compile(r"`[^`]+`")
 LINK_DESTINATION_RE = re.compile(r"(?<=\])\([^)]*\)")
-FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})([^`]*)$")
+FENCE_RE = re.compile(
+    r"^ {0,3}(`{3,}|~{3,})([^`]*)$"
+)  # CommonMark: 開きは先頭スペース 0–3 のみ
 # mermaid のラベル抽出。行を先に「図の種類」と「行の種類」で分類してから
 # 抽出する (2026-08-16 review F4/F5/F8: regex 継ぎ足しで境界が壊れていた)。
 # node ラベルは | を含んでよい ({Yes|No})。edge ラベルは矢印の直後の |..| だけ。
@@ -96,7 +98,7 @@ def _first_summary(lines: list[str]) -> str:
     # インデントされた fence の中身が要約に混ざる (2026-08-16 review F6)
     after_title = False
     paragraph: list[str] = []
-    for _, line in _outside_fences(lines):
+    for _, line in outside_fences(lines):
         if not after_title:
             if line.startswith("# "):
                 after_title = True
@@ -110,8 +112,24 @@ def _first_summary(lines: list[str]) -> str:
     return " ".join(paragraph)
 
 
-def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
-    """コードブロックの外にある行だけを (行番号, 本文) で返す。"""
+def outside_fences(lines: list[str]) -> list[tuple[int, str]]:
+    """コードブロックの外にある行だけを (行番号, 本文) で返す。
+
+    この repo における fence 判定の正本。別の場所で fence を数え直さないこと
+    (2026-08-16 review F6 で同じ誤検知の事故がある)。
+    consistency_gate はこの関数を読み込んで使う。
+
+    扱うもの: ``` と ~~~、0-3 space 字下げされた fence、外側を長くした入れ子
+    (````  の中の ``` は閉じない)。開き・閉じのどちらも 0-3 space まで。
+    4 space 以上は CommonMark では indented code block なので fence にしない。
+    閉じ fence は開きと同じ文字で、同じ長さ以上のものだけ。
+
+    扱わないもの: 同じ長さでの入れ子。CommonMark でも ``` の中の ``` は
+    閉じるので、これは仕様どおり。fence を入れ子にする文書は外側を
+    長くする必要がある。閉じ fence の info string
+    (```` ```python ```` が閉じ扱いになる) は CommonMark と挙動が異なるが、
+    その形になる文書は元から壊れているので追随していない。
+    """
     result: list[tuple[int, str]] = []
     fence_marker: str | None = None
     for number, line in enumerate(lines, start=1):
@@ -119,11 +137,13 @@ def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
         if match and fence_marker is None:
             fence_marker = match.group(1)
             continue
-        if fence_marker and line.lstrip().startswith(
-            fence_marker[0] * len(fence_marker)
-        ):
-            fence_marker = None
-            continue
+        if fence_marker is not None and match:
+            # 閉じも FENCE_RE (0-3 space) で数える。lstrip() で見ると
+            # 開きだけ字下げを絞っても閉じ側から規則が漏れる
+            marker = match.group(1)
+            if marker[0] == fence_marker[0] and len(marker) >= len(fence_marker):
+                fence_marker = None
+                continue
         if fence_marker is None:
             result.append((number, line))
     return result
@@ -131,7 +151,7 @@ def _outside_fences(lines: list[str]) -> list[tuple[int, str]]:
 
 def _is_japanese_document(lines: list[str]) -> bool:
     """日本語で書かれたREADMEか。英語READMEへ日本語向けの基準を当てないための判定。"""
-    body = "".join(line for _, line in _outside_fences(lines))
+    body = "".join(line for _, line in outside_fences(lines))
     body = CODE_SPAN_RE.sub("", body)
     body = LINK_DESTINATION_RE.sub("", body)
     japanese = len(JAPANESE_RE.findall(body))
@@ -183,7 +203,7 @@ def _code_span_width(cell: str) -> int:
 def _table_command_cells(lines: list[str]) -> list[tuple[int, str]]:
     """表のセルのうちコードを含むものを (行番号, セル) で返す。"""
     cells: list[tuple[int, str]] = []
-    outside = _outside_fences(lines)
+    outside = outside_fences(lines)
     divider_indexes = {
         index
         for index, (_, line) in enumerate(outside)
@@ -342,9 +362,13 @@ def _japanese_readability_findings(
     return findings, recommendations, metrics
 
 
+# 旧名。外部参照が残っている場合に備えて維持する。
+_outside_fences = outside_fences
+
+
 def _headings_outside_fences(lines: list[str]) -> list[tuple[int, str, int]]:
     result: list[tuple[int, str, int]] = []
-    for number, line in _outside_fences(lines):
+    for number, line in outside_fences(lines):
         match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
         if match:
             result.append((len(match.group(1)), match.group(2).strip(), number))
@@ -393,9 +417,7 @@ def _is_evidence_target(target: str) -> bool:
 
 
 def _visible_markdown(lines: list[str]) -> str:
-    return HTML_COMMENT_RE.sub(
-        "", "\n".join(line for _, line in _outside_fences(lines))
-    )
+    return HTML_COMMENT_RE.sub("", "\n".join(line for _, line in outside_fences(lines)))
 
 
 def _reference_targets(text: str) -> dict[str, str]:

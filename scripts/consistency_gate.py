@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -310,10 +311,35 @@ def _changed_files(repo: Path, base_ref: str | None) -> list[str]:
     return changed
 
 
+def _load_fence_reader():
+    """fence 判定は readme_release_gate を正本として読み込む。
+
+    ここで数え直すと実装が 2 つに割れる。`~~~`・入れ子・インデント fence の
+    扱いは向こうに寄せる (2026-08-16 review F6)。
+    """
+    script = Path(__file__).resolve().parent / "readme_release_gate.py"
+    spec = importlib.util.spec_from_file_location("readme_release_gate", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load readme_release_gate")
+    module = importlib.util.module_from_spec(spec)
+    # 正本が欠けている・壊れている時に traceback で落ちると、この gate の
+    # 「所見は JSON で返す」契約と readiness_scan 側の scan 全体が道連れになる。
+    # RuntimeError へ寄せて check() の tool_error に乗せる
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 - 失敗の種類ではなく契約を守る
+        raise RuntimeError(f"fence_reader_unavailable:{type(exc).__name__}") from exc
+    reader = getattr(module, "outside_fences", None)
+    if reader is None:
+        raise RuntimeError("fence_reader_unavailable:outside_fences_missing")
+    return reader
+
+
 def _markdown_findings(
     repo: Path, files: list[str], tracked_files: set[str], patterns: list[str]
 ) -> list[str]:
     findings: list[str] = []
+    outside_fences = _load_fence_reader()
     for rel in files:
         if not _matches(rel, patterns):
             continue
@@ -325,7 +351,17 @@ def _markdown_findings(
         except (OSError, UnicodeDecodeError):
             findings.append(f"markdown_unreadable:{rel}")
             continue
-        for raw_target in LINK_RE.findall(text):
+        # コードブロック内は「書き方の例」であって実在を要求しない。
+        # fence を跨いで拾うと、Markdown 記法を説明する文書が通らなくなる。
+        # 行番号を保ったままマスクするのは、LINK_RE のラベル部が改行を跨げるため。
+        # 行ごとに findall すると `[長い\nラベル](path)` を取り落とす。
+        # fence 行を空行へ潰すと、fence 前の未完結 `[` と後の `](path)` が
+        # 結合されてしまうので、] を境界として置く (Codex P2)。
+        lines = text.splitlines()
+        kept = dict(outside_fences(lines))
+        masked = "\n".join(kept.get(number, "]") for number in range(1, len(lines) + 1))
+        targets = LINK_RE.findall(masked)
+        for raw_target in targets:
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
             parts = urlsplit(target)
             if parts.scheme or parts.netloc or target.startswith(("#", "mailto:")):

@@ -803,3 +803,175 @@ def test_git_dir_env_does_not_inventory_another_repository(tmp_path: Path, monke
     tracked = MODULE._tracked_files(left)
     assert "only-in-right.md" not in tracked
     assert "README.md" in tracked
+
+
+# --- fence 内のリンク例を実在要求しない回帰 --------------------------------
+#
+# 以前は fence の内外を区別せず本文全体から [x](path) を拾っていたため、
+# Markdown の書き方を例示している文書が enforce を通れなかった。
+# fence 判定は readme_release_gate.outside_fences を正本として再利用する。
+
+
+def _write_guide(repo: Path, body: str) -> None:
+    (repo / "docs" / "guide.md").write_text(body, encoding="utf-8")
+
+
+def test_link_example_inside_a_fence_is_not_required_to_exist(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n```markdown\n[書き方の例](docs/does-not-exist.md)\n```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_link_outside_a_fence_is_still_reported(tmp_path: Path):
+    """fence 対応で検知力を落としていないこと。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n[本物のリンク切れ](docs/missing-real.md)\n\n"
+        "```markdown\n[例示](docs/example-only.md)\n```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/missing-real.md"]
+
+
+def test_tilde_fence_is_honoured(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(repo, "# ガイド\n\n~~~markdown\n[例](docs/tilde.md)\n~~~\n")
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_indented_fence_is_honoured(tmp_path: Path):
+    """インデントされた fence。2026-08-16 review F6 で事故った形。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n1. 手順\n\n   ```markdown\n   [例](docs/indented.md)\n   ```\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_nested_fence_is_honoured(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n````markdown\n```\n[入れ子](docs/nested.md)\n```\n````\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_fence_reader_is_the_readme_release_gate_one(tmp_path: Path):
+    """fence 判定を consistency_gate 側で数え直していないこと。"""
+    reader = MODULE._load_fence_reader()
+    assert reader.__module__ == "readme_release_gate"
+    assert reader.__name__ == "outside_fences"
+
+
+def test_link_label_wrapping_across_lines_is_still_reported(tmp_path: Path):
+    """fence 対応で行またぎラベルを取り落とさないこと (2026-08-29 review)。
+
+    LINK_RE のラベル部は改行を跨げる。行ごとに findall すると、
+    fence を正しく除外する代わりにこの形の検知を静かに失う。
+    """
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n[長いラベルが\n行をまたぐ](docs/wrapped-missing.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/wrapped-missing.md"]
+
+
+def test_fence_masking_does_not_leak_links_out_of_a_fence(tmp_path: Path):
+    """行を空行へ潰す実装が、fence 内のリンクを外へ漏らさないこと。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n```markdown\n[例](docs/inside-only.md)\n```\n\n本文\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    assert not [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+
+
+def test_fence_masking_does_not_join_link_fragments_across_a_fence(tmp_path: Path):
+    """fence 前後の未完結 `[` と `](path)` を結合しないこと (Codex P2)。
+
+    空行マスクだと LINK_RE のラベル部が fence を跨いでマッチし、
+    実在しないリンク切れを誤検知する。
+    """
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n"
+        "未完結の括弧 [\n"
+        "```markdown\n"
+        "fence 内\n"
+        "```\n"
+        "](docs/should-not-join.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == []
+
+
+def test_four_space_indented_fence_marker_does_not_swallow_later_links(
+    tmp_path: Path,
+):
+    """4 空白インデントの ``` は fence にならず、後続のリンク切れを隠さない (Codex P2)。"""
+    repo, base = make_repo(tmp_path)
+    _write_guide(
+        repo,
+        "# ガイド\n\n"
+        "    ```\n"
+        "    indented code looking like a fence\n"
+        "\n"
+        "[後続の本物](docs/after-fake-fence.md)\n",
+    )
+    report = MODULE.check(repo, base_ref=base)
+    missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+    assert missing == ["markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"]
+
+
+def test_missing_fence_reader_becomes_tool_error_not_a_traceback(
+    tmp_path: Path, monkeypatch
+):
+    """正本が読めない時に scan 全体を道連れにしないこと。
+
+    check() の契約は「所見を JSON で返す」。traceback を投げると
+    readiness_scan.run_consistency_gate 側に受け口が無く scan が落ちる。
+    """
+    repo, base = make_repo(tmp_path)
+
+    def _boom():
+        raise RuntimeError("fence_reader_unavailable:FileNotFoundError")
+
+    monkeypatch.setattr(MODULE, "_load_fence_reader", _boom)
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["fence_reader_unavailable:FileNotFoundError"]
+
+
+def test_fence_reader_loader_raises_runtime_error_when_the_file_is_gone(tmp_path: Path):
+    """実際に file を消した時に出るのが RuntimeError であること。"""
+    fake_scripts = tmp_path / "scripts"
+    fake_scripts.mkdir()
+    source = Path(MODULE.__file__).read_text(encoding="utf-8")
+    (fake_scripts / "consistency_gate.py").write_text(source, encoding="utf-8")
+
+    spec = importlib.util.spec_from_file_location(
+        "cg_without_sibling", fake_scripts / "consistency_gate.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    with pytest.raises(RuntimeError, match="fence_reader_unavailable"):
+        module._load_fence_reader()
