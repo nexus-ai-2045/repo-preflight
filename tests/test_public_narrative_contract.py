@@ -308,7 +308,9 @@ def test_readme_and_runtime_docs_match_ci_os_python_matrix(truth):
 
 def test_skill_documents_dialogue_contract(truth):
     skill = _read("SKILL.md")
-    assert_contains_all(skill, truth["dialogue_statuses"], label="SKILL dialogue status")
+    assert_contains_all(
+        skill, truth["dialogue_statuses"], label="SKILL dialogue status"
+    )
     assert_contains_all(
         skill,
         (
@@ -359,9 +361,9 @@ def test_target_diff_is_never_claimed_as_cli_flag():
             start = max(0, match.start() - 80)
             end = min(len(text), match.end() + 80)
             window = text[start:end]
-            assert FLAG_NEGATION_RE.search(window), (
-                f"{rel} claims --target-diff without negation: {window!r}"
-            )
+            assert FLAG_NEGATION_RE.search(
+                window
+            ), f"{rel} claims --target-diff without negation: {window!r}"
 
 
 def test_guarantees_doc_names_both_status_vocabularies(truth):
