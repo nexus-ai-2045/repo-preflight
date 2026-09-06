@@ -582,7 +582,7 @@ def test_japanese_command_quickstart_without_paste_url_is_flagged(tmp_path: Path
         tmp_path,
         JAPANESE_BODY.replace(
             "説明のとおりに実行します。",
-            "python -m pip install -e \".[test]\"\n",
+            'python -m pip install -e ".[test]"\n',
         ),
     )
     report = MODULE.review(path)
@@ -639,8 +639,7 @@ def test_bare_figure_without_evidence_link_is_flagged(tmp_path: Path):
 def test_figure_linked_to_decision_is_clean(tmp_path: Path):
     path = write_readme(
         tmp_path,
-        JAPANESE_BODY
-        + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
+        JAPANESE_BODY + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
     )
     report = MODULE.review(path)
     assert "figure_not_linked_to_evidence" not in _codes(report)
@@ -793,8 +792,7 @@ def test_fenced_heading_does_not_cut_quickstart_paste(tmp_path: Path):
 def test_reference_style_bare_image_is_flagged(tmp_path: Path):
     path = write_readme(
         tmp_path,
-        JAPANESE_BODY
-        + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
+        JAPANESE_BODY + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
     )
     report = MODULE.review(path)
     assert "figure_not_linked_to_evidence" in _codes(report)
@@ -864,3 +862,70 @@ def test_html_comment_github_url_is_not_a_paste_target(tmp_path: Path):
     )
     report = MODULE.review(path)
     assert "quickstart_missing_ai_paste" in _codes(report)
+
+
+# --- fence 判定の公開 API ---------------------------------------------------
+#
+# fence の数え方を各所で作り直すと実装が割れる。この repo では
+# readme_release_gate.outside_fences を正本とし、consistency_gate は
+# それを読み込んで使う。ここが壊れると向こうの Markdown リンク検査も壊れる。
+
+
+def test_outside_fences_is_public():
+    """consistency_gate が読み込む公開名であること。"""
+    assert hasattr(MODULE, "outside_fences")
+    assert MODULE.outside_fences.__name__ == "outside_fences"
+
+
+def test_outside_fences_keeps_the_legacy_private_alias():
+    """旧名で参照している箇所が残っていても壊れないこと。"""
+    assert MODULE._outside_fences is MODULE.outside_fences
+
+
+def test_outside_fences_drops_backtick_fence_bodies():
+    lines = ["外", "```md", "内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_drops_tilde_fence_bodies():
+    lines = ["外", "~~~md", "内", "~~~", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_handles_indented_fences():
+    """2026-08-16 review F6 の再発防止。CommonMark の 0–3 空白インデント。"""
+    lines = ["外", "   ```md", "   内", "   ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_three_space_indent_is_still_a_fence():
+    """3 空白インデントの fence は CommonMark どおり fence 扱い。"""
+    lines = ["外", "   ```", "内", "   ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_four_space_indent_is_not_a_fence():
+    """4 空白以上は indented code であり fence-mode に入らない (Codex P2)。"""
+    lines = ["外", "    ```md", "    内", "    ```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == lines
+
+
+def test_outside_fences_handles_nested_fences():
+    lines = ["外", "````md", "```", "内", "```", "````", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_reports_original_line_numbers():
+    lines = ["外", "```", "内", "```", "外2"]
+    assert MODULE.outside_fences(lines) == [(1, "外"), (5, "外2")]
+
+
+def test_outside_fences_does_not_close_on_a_four_space_indented_marker():
+    """閉じ側にも 0-3 space の規則を当てること。"""
+    lines = ["外", "```md", "内", "    ```", "まだ内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_outside_fences_does_not_close_on_a_different_fence_character():
+    lines = ["外", "```md", "~~~", "内", "```", "外2"]
+    assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
