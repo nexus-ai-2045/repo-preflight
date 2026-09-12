@@ -424,6 +424,7 @@ def test_missing_adapter_is_not_reported_as_pass(tmp_path: Path):
     assert payload["status"] != "pass"
     assert payload["next"] != "no action"
 
+
 # --- 2026-09-12 Codex P2: --check の見逃しを塞ぐ回帰 --------------------------
 
 
