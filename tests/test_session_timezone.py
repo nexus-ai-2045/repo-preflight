@@ -25,6 +25,22 @@ def test_tool_env_pins_jst():
     assert _settings().get("env", {}).get("TZ") == EXPECTED_ZONE
 
 
+def test_ui_timezone_pins_jst():
+    """UI 表示側の時刻。env.TZ とは別系統なので両方必要。
+
+    #47 の review で「inert」として一度削除されたが、CLI 実装を実測すると
+    timeZone は schema 定義があり UI のタイムスタンプ整形が実際に読む。
+    scope 制限のあるキー (managedMcpServers / syncClaudeAiSkills /
+    modelPicker) は実装が明示的に列挙しており、timeZone はそこに無い
+    (2026-09-06 実測)。
+    """
+    assert _settings().get("timeZone") == EXPECTED_ZONE
+
+
+def test_ui_timeformat_is_declared():
+    """timeFormat が消えると表示が locale 依存に戻る。"""
+    assert _settings().get("timeFormat") == "24-hour"
+
 
 def test_session_start_hook_is_preserved():
     # TZ を足すときに hook を落とす事故（merge ではなく replace）を防ぐ。
@@ -33,4 +49,3 @@ def test_session_start_hook_is_preserved():
         inner.get("command", "") for entry in hooks for inner in entry.get("hooks", [])
     ]
     assert any("session-start.sh" in command for command in commands)
-
