@@ -4,6 +4,12 @@
 
 ### 修正
 
+- `install_runtime_skills.py --check` が path-file の相対 `ROOT_PATH.txt` を
+  cwd 依存で ok にせず `checkout_foreign` にするようにした。Windows junction は
+  先に `is_junction()` で識別し、リンク先の `ROOT_PATH.txt` を path-file と
+  取り違えない。配布先が file / dangling symlink のときは `not_installed` ではなく
+  `dest_unexpected` の drift とし、`--apply` はその node を除いて再配布できる。
+  drift 時の `next` は呼び出した script と検査した `--repo` を保持する。
 - `--repo` に repository root ではない path を渡したとき、囲っている repository へ
   暗黙に対象を広げるのをやめ、`repo_path_is_not_repository_root` で閉じるようにした。
   `git rev-parse --show-toplevel` は「その path を含む repository」を返すため、
@@ -27,10 +33,30 @@
   の一致を検査し、手編集を止めるようにした。判断根拠はADR-0002に記録した。
 - PRのCI、review、inline threadをexact HEADへ束縛してread-only判定するreview snapshotを追加した。
 - 未解決thread、古いHEADのreview、CI待ちをreview完了と誤認しないfail-closed契約を追加した。
+- `install_runtime_skills.py --check` を追加した。ホームへ配布した skill コピーが
+  repo 正本から drift していないかを sha256 で検査する。書き込みをしない read-only
+  検査で、標準ライブラリのみを使う。比較前に install と同じ射影
+  (`REPO_PREFLIGHT_ROOT=` 行の除去) を通すため、install 直後に誤検知しない。
+- 併せて `docs/runtime-support.md` の誤りを訂正した。`git pull` で追従するのは
+  `checkout/` link だけで、`SKILL.md` / `run_preflight.py` / `README.md` は物理
+  コピーのため追従しない。
 
 ### 保証境界
 
 - 保証: `docs/pr-self-review.md` がこのrepositoryで改変されていないこと。
+- 保証: `install_runtime_skills.py --check` は install 済みコピーの 4 対象
+  (SKILL.md / run_preflight.py / README.md / checkout link) を repo 正本と
+  sha256 で突き合わせる。`README.md` の検査は `checkout/` の状態に依存しない。
+  path-file の相対 target は `checkout_foreign`。junction は fallback marker より
+  先に判定する。配布先が存在するが directory でないときは `dest_unexpected`。
+  drift 時の `next` は invoked script と `--repo` を含む。
+- 保証: install 済み file が UTF-8 として読めない場合も traceback にせず
+  `*_unreadable` を返し、残りの target の検査を続ける。
+- 保証: 何も検査できなかった run (`missing_adapter`) の `status` は `pass` に
+  ならない (`tool_error`・exit 2)。JSON を読む側が fail-open しないため。
+- 非保証: `install_runtime_skills.py --check` は配布先が存在しないマシンの状態を
+  検査しない (`not_installed` を返して pass)。repo 正本そのものの正しさ、および
+  CI 上での検査も対象外 (CI に install 済みコピーは存在しない)。
 - 保証: GitHub 採用（`create_repo` / `push` / `open_pr` / `merge`）の直前に `--intent` を付けると `dialogue/v3` の質問リストが機械生成されること。
 - 非保証: 生成元の正本が正しいこと、配布物が最新の正本から生成されたこと。
   後者は正本側の配布台帳が担当する。
