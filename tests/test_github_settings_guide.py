@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 GUIDE = (
     Path(__file__).resolve().parents[1] / "references" / "github-settings.md"
 ).read_text(encoding="utf-8")

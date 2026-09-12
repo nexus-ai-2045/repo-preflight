@@ -2,7 +2,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "github_settings_gate.py"
 SPEC = importlib.util.spec_from_file_location("github_settings_gate", SCRIPT)

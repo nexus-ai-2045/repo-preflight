@@ -2,7 +2,6 @@ import re
 import tomllib
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 RELEASE_HEADING = re.compile(
     r"(?m)^## (?P<version>\S+) - (?P<date>\d{4}-\d{2}-\d{2})\s*$"

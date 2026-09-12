@@ -4,7 +4,6 @@ import importlib.util
 import subprocess
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location(
     "github_pr_review_snapshot", ROOT / "scripts" / "github_pr_review_snapshot.py"

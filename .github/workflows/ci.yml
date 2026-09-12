@@ -33,7 +33,9 @@ jobs:
       - run: python -m pip install -e ".[test]"
       - run: python -m pip install --require-hashes -r requirements-tools.txt
       - run: python -m ai_ratchet_gate --repo .
-      - run: python -m black --check scripts/readiness_scan.py scripts/consistency_gate.py tests/test_readiness_scan.py tests/test_consistency_gate.py
+      # ファイル名の直書きにすると、新しく足した script / test が永久に対象外になる。
+      # 実際 tests/test_session_timezone.py (#47) が未整形のまま main へ入った。
+      - run: python -m black --check scripts/ tests/
       - run: python -m pytest -q
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .

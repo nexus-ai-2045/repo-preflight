@@ -12,7 +12,7 @@ Repo Preflightは、ローカルGit repositoryを読み取り、見せる相手�
 - `SKILL.md`と`references/`: 状態、承認手順、必要文書、repository catalog登録の仕様。AI自動発火トリガーを定義
 - `tests/`: 一時Git repositoryを使い、履歴secret、読取不能、壊れたGit object、非ASCII path、gitlink、intent対話などのfail-closed挙動を固定
 - `assets/`: 対象repoへ明示的に適用する文書テンプレート。scannerから自動上書きしない
-- `.github/workflows/ci.yml`: ubuntu / macOS で Python 3.11・3.13、Windows で 3.13 の回帰試験（ubuntu のみ black check も実行）
+- `.github/workflows/ci.yml`: ubuntu / macOS で Python 3.11・3.13、Windows で 3.13 の回帰試験（ubuntu のみ `black --check scripts/ tests/` も実行。ファイル名を直書きせず、新規追加が自動で対象に入るようにしている）
 
 ## データフロー
 
