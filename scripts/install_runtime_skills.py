@@ -139,7 +139,7 @@ def render_readme(link_mode: str) -> str:
         "2. この skill 隣の `checkout/` (install が作る link)\n"
         "3. カレントから repo-preflight root を探索\n\n"
         "```bash\n"
-        "python run_preflight.py --repo \"<TARGET>\" --intent open_pr --human\n"
+        'python run_preflight.py --repo "<TARGET>" --intent open_pr --human\n'
         "python run_preflight.py --intent create_repo --human\n"
         "```\n"
         "\n"
