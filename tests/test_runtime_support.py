@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -422,3 +423,167 @@ def test_missing_adapter_is_not_reported_as_pass(tmp_path: Path):
     assert {i["status"] for i in payload["results"]} == {"missing_adapter"}
     assert payload["status"] != "pass"
     assert payload["next"] != "no action"
+
+# --- 2026-09-12 Codex P2: --check の見逃しを塞ぐ回帰 --------------------------
+
+
+def _load_install():
+    spec = importlib.util.spec_from_file_location("install_runtime_skills", INSTALL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _replace_checkout_with_path_file(dest: Path, recorded: str) -> None:
+    checkout = dest / "checkout"
+    if checkout.is_symlink() or checkout.exists():
+        if checkout.is_symlink() or checkout.is_file():
+            checkout.unlink()
+        else:
+            shutil.rmtree(checkout)
+    checkout.mkdir()
+    (checkout / "ROOT_PATH.txt").write_text(recorded, encoding="utf-8")
+
+
+def test_relative_path_file_target_is_rejected_even_from_repo_cwd(tmp_path: Path):
+    """相対 ROOT_PATH.txt を cwd 依存で ok にしないこと。
+
+    install は絶対 path だけを書く。`.` を repo 直下から resolve すると
+    正本と一致してしまい、launcher は後の別 cwd で解決に失敗する。
+    """
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    _replace_checkout_with_path_file(dest, ".\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["link"] == "path-file"
+    assert "checkout_foreign" in entry["findings"], entry
+
+
+def test_absolute_path_file_target_still_passes(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    _replace_checkout_with_path_file(dest, str(ROOT.resolve()) + "\n")
+
+    code, payload = _check(home)
+    assert code == 0, payload
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["status"] == "ok"
+    assert entry["link"] == "path-file"
+    assert entry["findings"] == []
+
+
+def test_unexpected_dest_node_is_drift_not_not_installed(tmp_path: Path):
+    """dest が file / dangling symlink のとき not_installed にしないこと。"""
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.write_text("not a directory\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    assert payload["status"] == "drift"
+    by_runtime = {i["runtime"]: i for i in payload["results"]}
+    assert by_runtime["claude-code"]["status"] == "drift"
+    assert by_runtime["claude-code"]["findings"] == ["dest_unexpected"]
+    assert by_runtime["agents"]["status"] == "not_installed"
+
+
+def test_dangling_dest_symlink_is_drift_not_not_installed(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.symlink_to(tmp_path / "missing-skill-dir")
+
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["status"] == "drift"
+    assert entry["findings"] == ["dest_unexpected"]
+
+
+def test_apply_replaces_unexpected_dest_file(tmp_path: Path):
+    """file で塞がれた dest でも --apply が再配布できること。"""
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.write_text("blocker\n", encoding="utf-8")
+    _install(home)
+    assert dest.is_dir()
+    assert (dest / "SKILL.md").is_file()
+
+
+def test_detect_link_mode_identifies_junction_before_root_path_marker(
+    tmp_path: Path, monkeypatch
+):
+    """junction 先の ROOT_PATH.txt を path-file marker と取り違えないこと。"""
+    install = _load_install()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ROOT_PATH.txt").write_text("/unrelated/place\n", encoding="utf-8")
+
+    real_is_junction = getattr(Path, "is_junction", lambda self: False)
+
+    def fake_is_junction(self):
+        try:
+            if self.resolve() == repo.resolve():
+                return True
+        except OSError:
+            pass
+        return bool(real_is_junction(self))
+
+    monkeypatch.setattr(Path, "is_junction", fake_is_junction, raising=False)
+
+    mode, finding = install.detect_link_mode(repo, repo)
+    assert mode == "junction"
+    assert finding is None
+
+
+def test_check_remediation_preserves_script_and_repo(tmp_path: Path):
+    """別 cwd から --repo 付きで呼んでも next が script と repo を保持すること。"""
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        cwd=elsewhere,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    nxt = payload["next"]
+    assert str(INSTALL.resolve()) in nxt
+    assert str(ROOT.resolve()) in nxt
+    assert "--apply" in nxt
+    assert "python scripts/install_runtime_skills.py --apply" not in nxt

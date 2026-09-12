@@ -132,6 +132,12 @@ python scripts/install_runtime_skills.py --repo . --check
 | `run_preflight.py` | `run_preflight_drift` / `run_preflight_missing` / `run_preflight_unreadable` |
 | `README.md`（install が作りうる link mode のいずれかと一致すれば ok） | `readme_drift` / `readme_missing` / `readme_unreadable` |
 | `checkout/` link | `checkout_missing` / `checkout_dangling` / `checkout_foreign` |
+| skill 配布先そのもの | `dest_unexpected`（存在するが directory ではない） |
+
+`ROOT_PATH.txt` の値が相対 path のときは `checkout_foreign` です。install は絶対
+path だけを書くため、相対値を `--check` の cwd で resolve して ok にはしません。
+Windows の junction は `ROOT_PATH.txt` を見る前に `is_junction()` で識別します
+（junction 先の repository が `ROOT_PATH.txt` を持っていても path-file と取り違えない）。
 
 **`README.md` の検査は `checkout/` の状態に依存しません。**install 時の link mode は
 どこにも記録されていないため、今の `checkout/` から検出した mode で期待値を作ると、
@@ -143,10 +149,13 @@ README が一切検査されなくなります。install が作りうる mode（
 run 全体を止めず、JSON を返して残りの target も検査します。
 
 exit code は drift 検出で `1`、正常および未 install で `0`、`--check --apply`
-同時指定など引数エラーで `2`。install していないマシンでは `not_installed` を
-返して `pass` になります。`--repo` が repo-preflight checkout でない場合は
-`missing_adapter` になり、**`status` は `pass` ではなく `tool_error`**、exit code は `2` です
-（何も検査できなかった run を `pass` と書くと、JSON を読む側が fail-open するため）。
+同時指定など引数エラーで `2`。`not_installed` は配布先が**存在しない**ときに限ります。
+配布先が file や dangling symlink など directory 以外として存在するときは
+`dest_unexpected` の drift（exit 1）です。`--repo` が repo-preflight checkout でない
+場合は `missing_adapter` になり、**`status` は `pass` ではなく `tool_error`**、
+exit code は `2` です（何も検査できなかった run を `pass` と書くと、JSON を読む側が
+fail-open するため）。`status: drift` の `next` は、呼び出した script の絶対 path と
+検査した `--repo` を含む再配布コマンドです。
 
 CI ゲートには載せていません。CI には install 済みコピーが存在しないため、
 そこで検査しても常に `not_installed` にしかならないからです。

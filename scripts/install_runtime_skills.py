@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -40,10 +41,30 @@ def adapter_source(repo: Path, runtime: str) -> Path:
     raise ValueError(runtime)
 
 
+def _is_junction(path: Path) -> bool:
+    return bool(getattr(path, "is_junction", lambda: False)())
+
+
+def _ensure_dest_dir(dest: Path) -> None:
+    """install 先を directory にする。mkdir が失敗する既存 node だけを除く。"""
+    if dest.is_symlink() and not dest.is_dir():
+        dest.unlink()
+    elif dest.exists() and not dest.is_dir():
+        dest.unlink()
+    dest.mkdir(parents=True, exist_ok=True)
+
+
+def _apply_remediation(repo: Path) -> str:
+    """--check が見た script と repository を保持した再配布コマンド。"""
+    script = shlex.quote(str(Path(__file__).resolve()))
+    checked = shlex.quote(str(repo))
+    return f"python {script} --repo {checked} --apply で再配布する"
+
+
 def link_checkout(dest_checkout: Path, repo: Path) -> str:
     """checkout を repo へリンク。成功した方式名を返す。"""
     if dest_checkout.exists() or dest_checkout.is_symlink():
-        is_junc = bool(getattr(dest_checkout, "is_junction", lambda: False)())
+        is_junc = _is_junction(dest_checkout)
         if dest_checkout.is_symlink() or is_junc:
             dest_checkout.unlink()
         elif dest_checkout.is_dir():
@@ -174,7 +195,7 @@ def install_one(
         action["link"] = "would_link_checkout"
         return action
 
-    dest.mkdir(parents=True, exist_ok=True)
+    _ensure_dest_dir(dest)
     # 絶対 path を焼かない adapter 本文 (check 側と同じ射影を通す)
     body = source.read_text(encoding="utf-8")
     (dest / "SKILL.md").write_text(project_skill_body(body), encoding="utf-8")
@@ -202,6 +223,14 @@ def detect_link_mode(dest_checkout: Path, repo: Path) -> tuple[str, str | None]:
             return "symlink", "checkout_foreign"
         return "symlink", None
 
+    # Windows junction は is_dir() が真で、配下の ROOT_PATH.txt はリンク先
+    # repository を辿る。junction 判定を先にしないと、repo 直下の
+    # ROOT_PATH.txt を path-file marker と取り違える。
+    if _is_junction(dest_checkout):
+        if dest_checkout.resolve() != want:
+            return "junction", "checkout_foreign"
+        return "junction", None
+
     if dest_checkout.is_dir():
         root_file = dest_checkout / "ROOT_PATH.txt"
         if root_file.is_file():
@@ -211,10 +240,15 @@ def detect_link_mode(dest_checkout: Path, repo: Path) -> tuple[str, str | None]:
             recorded = raw.strip()
             if not recorded:
                 return "path-file", "checkout_foreign"
-            if Path(recorded).resolve() != want:
+            recorded_path = Path(recorded)
+            # install は必ず絶対 path を書く。相対値は --check の cwd に
+            # 依存して誤って ok になり、launcher は別 cwd で解決に失敗する。
+            if not recorded_path.is_absolute():
+                return "path-file", "checkout_foreign"
+            if recorded_path.resolve() != want:
                 return "path-file", "checkout_foreign"
             return "path-file", None
-        # junction / 実ディレクトリ
+        # junction 判定 API が無い環境での実ディレクトリ
         if dest_checkout.resolve() != want:
             return "junction", "checkout_foreign"
         return "junction", None
@@ -235,7 +269,12 @@ def check_one(*, repo: Path, runtime: str, dest: Path) -> dict:
         result["status"] = "missing_adapter"
         return result
 
-    if not dest.is_dir():
+    if dest.is_symlink() or dest.exists():
+        if not dest.is_dir():
+            result["status"] = "drift"
+            result["findings"] = ["dest_unexpected"]
+            return result
+    else:
         result["status"] = "not_installed"
         return result
 
@@ -341,7 +380,7 @@ def main() -> int:
             next_action = "--repo が repo-preflight checkout を指しているか確認する"
         elif drifted:
             top_status = "drift"
-            next_action = "python scripts/install_runtime_skills.py --apply で再配布する"
+            next_action = _apply_remediation(repo)
         else:
             top_status = "pass"
             next_action = "no action"
