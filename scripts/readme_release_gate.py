@@ -85,8 +85,11 @@ SAFETY_SUBJECTS = ("write", "visibility", "secret", "unknown")
 
 
 def _headings(lines: list[str]) -> list[tuple[int, str, int]]:
-    result = []
-    for number, line in enumerate(lines, start=1):
+    # fence の判定は outside_fences に一本化する。ここが素の enumerate だと
+    # bash fence 内の `# コメント` が H1 に数えられ、直後の H3 が
+    # heading_level_jump になる (repo-preflight #50)。
+    result: list[tuple[int, str, int]] = []
+    for number, line in outside_fences(lines):
         match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
         if match:
             result.append((len(match.group(1)), match.group(2).strip(), number))
@@ -366,13 +369,8 @@ def _japanese_readability_findings(
 _outside_fences = outside_fences
 
 
-def _headings_outside_fences(lines: list[str]) -> list[tuple[int, str, int]]:
-    result: list[tuple[int, str, int]] = []
-    for number, line in outside_fences(lines):
-        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-        if match:
-            result.append((len(match.group(1)), match.group(2).strip(), number))
-    return result
+# heading の走査も 1 本にする。_headings 自体が fence を除くので別実装を持たない。
+_headings_outside_fences = _headings
 
 
 def _heading_section_body(lines: list[str], aliases: tuple[str, ...]) -> str | None:
@@ -635,7 +633,7 @@ def review(readme: Path) -> dict[str, object]:
     recommendations |= paste_recommendations
 
     emoji_heading = re.compile(r"^#{1,6}\s+[^\w\s`#]", re.UNICODE)
-    if any(emoji_heading.match(line) for line in lines):
+    if any(emoji_heading.match(line) for _, line in outside_fences(lines)):
         add(
             "decorative_heading_emoji",
             "見出し先頭の装飾絵文字は機能的な意味がない限り外してください。",
