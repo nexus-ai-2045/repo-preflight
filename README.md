@@ -26,11 +26,10 @@ APIキーらしき文字列や自分のPCのパスを、今あるファイルだ
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
 cd repo-preflight
 python scripts/readiness_scan.py --repo /path/to/your-repo
-
-# .repo-preflight-consistency.json に impact_map がある repo では、整合性検査に差分の scope が要ります。
-# repo 全体 scan は狭めず、整合性検査にだけ base を渡します:
 python scripts/readiness_scan.py --repo /path/to/your-repo --consistency-base-ref origin/main
 ```
+
+`.repo-preflight-consistency.json` に impact_map がある repo では、整合性検査に差分の scope が要ります。repo 全体 scan は狭めず、整合性検査にだけ base を渡します（上の 2 行目のコマンド）。
 
 調べたいリポジトリは、このツールとは別の場所にあってかまいません。中身は読むだけで、書き換えません。
 
