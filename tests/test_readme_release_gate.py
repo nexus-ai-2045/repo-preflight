@@ -929,3 +929,19 @@ def test_outside_fences_does_not_close_on_a_four_space_indented_marker():
 def test_outside_fences_does_not_close_on_a_different_fence_character():
     lines = ["外", "```md", "~~~", "内", "```", "外2"]
     assert [line for _, line in MODULE.outside_fences(lines)] == ["外", "外2"]
+
+
+def test_hash_comment_inside_fence_is_not_a_heading(tmp_path: Path):
+    # heading の走査が outside_fences を通らず、bash fence 内の `# コメント` を
+    # H1 として数えていた。README に fence 内コメントを足しただけで
+    # heading_level_jump になる (repo-preflight #50 の documentation-contract)。
+    body = (
+        "# Sample\n\nShort summary.\n\n## Why\n\n"
+        "```bash\n# .env の説明コメント\npython scripts/x.py\n```\n\n"
+        "### Deep\n\nText.\n"
+    )
+    report = MODULE.review(write_readme(tmp_path, body))
+    assert "heading_level_jump" not in _codes(report)
+    # 同じ穴が装飾絵文字の検査にもある。`# .env` の先頭記号が絵文字扱いされる。
+    assert "decorative_heading_emoji" not in _codes(report)
+    assert report["metrics"]["heading_count"] == 3
