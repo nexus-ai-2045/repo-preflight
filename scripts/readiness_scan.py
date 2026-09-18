@@ -1487,7 +1487,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--consistency-base-ref",
         help=(
             "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
-            "publish/release向け"
+            "plain scan と publish/release 向け。impact_map を持つrepoの plain scan はこれが無いと tool_error になる"
         ),
     )
     parser.add_argument(
@@ -1560,11 +1560,16 @@ def resolve_options(
         raise SystemExit("error: --base-ref and --consistency-base-ref are exclusive")
     if base_ref and intent not in {"push", "open_pr", "merge"}:
         raise SystemExit("error: --base-ref requires --intent push, open_pr, or merge")
+    # --consistency-base-ref は repo 全体 scan を狭めず、整合性の change-sensitive
+    # 検査だけに scope を与える。target_diff 系 intent (push/open_pr/merge) は
+    # 自前の --base-ref を持つので排他。plain scan (intent 無し) は repo 全体 scan
+    # そのものなので許可する。impact_map を持つ repo では plain scan がこれ無しに
+    # 常に tool_error になっていた (2026-09-19 実測、この repository 自身を含む)。
     if consistency_base_ref and not (
-        intent in {"publish", "release"} or (intent is None and bool(args.release))
+        intent in {"publish", "release"} or intent is None
     ):
         raise SystemExit(
-            "error: --consistency-base-ref requires publish/release intent or --release"
+            "error: --consistency-base-ref requires publish/release intent or a plain scan"
         )
     # intent モードはエージェント対話が本体。TTYメニューは使わない
     want_console = bool(
