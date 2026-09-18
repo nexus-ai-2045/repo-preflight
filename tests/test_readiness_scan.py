@@ -1120,7 +1120,7 @@ def test_consistency_base_ref_is_restricted_to_repository_wide_intents(tmp_path:
     )
 
     assert result.returncode == 2
-    assert "requires publish/release" in result.stderr
+    assert "requires publish/release intent or a plain scan" in result.stderr
 
 
 def test_base_ref_and_consistency_base_ref_are_exclusive(tmp_path: Path):
@@ -1273,3 +1273,54 @@ def test_configure_settings_origin_ignores_git_dir_override(
     packet = json.dumps(dialogue, ensure_ascii=False)
     assert "OTHER" not in packet
     assert dialogue["github_settings_review"]["repository"] == "someone/TARGET"
+
+
+def test_plain_scan_accepts_consistency_base_ref_without_release(tmp_path: Path):
+    """impact_map を持つ repo の plain scan は --consistency-base-ref で scope をもらえる。
+
+    change-sensitive な設定では plain scan の内蔵 consistency が
+    change_sensitive_scope_unavailable で tool_error になり、overall も tool_error
+    (rc=2) になる。README が案内する `readiness_scan.py --repo PATH` が、この
+    repository 自身を含む impact_map 持ちの repo で常に tool_error だった
+    (2026-09-19 実測)。--consistency-base-ref の help は「repo全体scanを狭めず、
+    整合性のchange-sensitive検査だけに使う」と書いており plain scan こそ
+    その用途なのに、argparse が publish/release intent か --release を要求して
+    いた。--release は README release gate を足すので代替にならない。
+    """
+    repo = make_repo(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "shadow",
+                "impact_map": [{"change": ["README.md"], "requires_any": ["docs/**"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add change-sensitive consistency config")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--consistency-base-ref",
+            "origin/main",
+        ],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 2, result.stderr
+    report = json.loads(result.stdout)
+    assert report["scan_scope"]["mode"] == "repository"  # repo 全体 scan を狭めていない
+    assert report["checks"]["repository_consistency"]["status"] != "tool_error"
+    assert (
+        "readme_release_design" not in report["checks"]
+    )  # --release を暗黙に足していない
