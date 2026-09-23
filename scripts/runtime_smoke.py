@@ -54,6 +54,11 @@ def run_scan(root: Path, *args: str) -> tuple[int, dict | None, str]:
     return result.returncode, report, result.stderr
 
 
+def tool_failed(code: int, report: dict | None) -> bool:
+    """CLI が検査を完了できなかったか。所見 (blocked, rc=1) は失敗ではない。"""
+    return code == 2 or (report is not None and report.get("status") == "tool_error")
+
+
 def check_skill_file(path: Path, *, rel: str) -> list[str]:
     errors: list[str] = []
     if not path.is_file():
@@ -158,6 +163,8 @@ def main() -> int:
         if not report.get("proposals"):
             errors.append("create_repo_proposals_empty")
         notes.append(f"create_repo_status={report.get('status')} exit={code}")
+    if tool_failed(code, report):
+        errors.append("create_repo_tool_error")
 
     with tempfile.TemporaryDirectory() as tmp:
         sample = make_min_repo(Path(tmp))
@@ -172,12 +179,16 @@ def main() -> int:
             if report.get("scan") is None:
                 errors.append("open_pr_missing_scan")
             notes.append(f"open_pr_status={report.get('status')} exit={code}")
+        if tool_failed(code, report):
+            errors.append("open_pr_tool_error")
 
         code, report, _ = run_scan(root, "--repo", str(sample))
         if report is None or report.get("schema") != "repo-preflight.scan/v3":
             errors.append("scan_schema")
         else:
             notes.append(f"scan_status={report.get('status')} exit={code}")
+        if tool_failed(code, report):
+            errors.append("scan_tool_error")
 
     payload = {
         "schema": "repo-preflight.runtime-smoke/v1",

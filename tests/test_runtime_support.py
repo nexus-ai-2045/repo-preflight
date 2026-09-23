@@ -588,3 +588,27 @@ def test_check_remediation_preserves_script_and_repo(tmp_path: Path):
     assert str(ROOT.resolve()) in nxt
     assert "--apply" in nxt
     assert "python scripts/install_runtime_skills.py --apply" not in nxt
+
+
+def test_runtime_smoke_fails_when_scan_reports_tool_error(monkeypatch, capsys):
+    # smoke は schema しか見ておらず、scan が tool_error (rc=2) を返しても
+    # pass にしていた。「CLI 契約が揃っている」と言うなら、CLI が実行を
+    # 完了できなかったことは失敗として出す必要がある。
+    spec = importlib.util.spec_from_file_location("runtime_smoke_under_test", SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    real_run_scan = module.run_scan
+
+    def run_scan(root, *args):
+        code, report, stderr = real_run_scan(root, *args)
+        if report is not None and "--intent" not in args:
+            report = {**report, "status": "tool_error"}
+            code = 2
+        return code, report, stderr
+
+    monkeypatch.setattr(module, "run_scan", run_scan)
+    monkeypatch.setattr(sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT)])
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "scan_tool_error" in payload["errors"]
