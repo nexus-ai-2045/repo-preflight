@@ -612,3 +612,29 @@ def test_runtime_smoke_fails_when_scan_reports_tool_error(monkeypatch, capsys):
     assert module.main() == 1
     payload = json.loads(capsys.readouterr().out)
     assert "scan_tool_error" in payload["errors"]
+
+
+def test_runtime_smoke_fails_when_open_pr_embedded_scan_is_tool_error(
+    monkeypatch, capsys
+):
+    # open_pr の dialogue は埋め込み scan の tool_error を外側 blocked / rc=1 に
+    # 写す (dialogue_gate.dialogue_status)。外側だけ見ると見逃す (Codex P2)。
+    spec = importlib.util.spec_from_file_location("runtime_smoke_open_pr", SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    real_run_scan = module.run_scan
+
+    def run_scan(root, *args):
+        code, report, stderr = real_run_scan(root, *args)
+        if report is not None and "open_pr" in args:
+            scan = {**(report.get("scan") or {}), "status": "tool_error"}
+            report = {**report, "status": "blocked", "scan": scan}
+            code = 1
+        return code, report, stderr
+
+    monkeypatch.setattr(module, "run_scan", run_scan)
+    monkeypatch.setattr(sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT)])
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "open_pr_tool_error" in payload["errors"]

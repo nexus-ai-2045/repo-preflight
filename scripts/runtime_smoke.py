@@ -55,8 +55,17 @@ def run_scan(root: Path, *args: str) -> tuple[int, dict | None, str]:
 
 
 def tool_failed(code: int, report: dict | None) -> bool:
-    """CLI が検査を完了できなかったか。所見 (blocked, rc=1) は失敗ではない。"""
-    return code == 2 or (report is not None and report.get("status") == "tool_error")
+    """CLI が検査を完了できなかったか。所見 (blocked, rc=1) は失敗ではない。
+
+    dialogue は埋め込み scan の tool_error を外側 blocked / rc=1 に写すので
+    (dialogue_gate.dialogue_status)、埋め込み scan の status も見る。
+    """
+    if code == 2 or report is None:
+        return code == 2
+    if report.get("status") == "tool_error":
+        return True
+    scan = report.get("scan")
+    return isinstance(scan, dict) and scan.get("status") == "tool_error"
 
 
 def check_skill_file(path: Path, *, rel: str) -> list[str]:
