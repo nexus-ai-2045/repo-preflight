@@ -9,10 +9,13 @@
 
 コマンドは既定で read-only。書き込みは ``--apply --entry-id`` で明示選択した
 materialized entry 1 件のみで、既存の非生成ファイルは決して上書きしない。
-レポートは secret-safe (ソース本文や絶対パスを載せない) を契約とする。
+gate が生成する finding は secret-safe (ソース本文や絶対パスを載せない) を契約とする。
+manual entry の ``evidence`` は manifest 作成者が書いた文をそのまま返す。
 
 exit code: 0=pass / 1=blocked (drift・stale・missing) / 2=tool_error /
 3=human_review (required な manual entry の確認待ちだけが残っている)。
+全体 status の優先順位は tool_error > blocked > human_review > pass。
+引数エラーは argparse の usage を stderr に出して exit 2 (JSON は出ない)。
 """
 
 from __future__ import annotations
@@ -304,11 +307,27 @@ def _has_instruction_semantics(lines: list[str], path_line: int) -> bool:
     )
 
 
+def _pointer_tokens(line: str) -> Iterator[str]:
+    """1 行から import pointer のトークン候補を返す。
+
+    まず空白で切れるトークンを返し、続けて ``@`` から行末まで (末尾の空白と
+    句読点は ``_candidate_paths`` で外す) を返す。未クォートの空白入りパス
+    (例: ``@C:/Users/My Name/AI.md``) は後者でだけ解決できる。``@`` の位置の
+    判定 (行頭または空白直後) は両者で同じなので ``user@host`` は拾わない。
+    """
+
+    for match in POINTER_TOKEN_RE.finditer(line):
+        yield match.group(1)
+        rest = line[match.start(1) :].rstrip()
+        if rest != match.group(1):
+            yield rest
+
+
 def _has_import_pointer(text: str, source: Path, *, home: Path, base: Path) -> bool:
     """``@<path>`` トークンがパス解決の結果 source ファイルへ到達するか。"""
 
     for line in _iter_import_lines(text):
-        for token in POINTER_TOKEN_RE.findall(line):
+        for token in _pointer_tokens(line):
             for candidate in _candidate_paths(token, home=home, base=base):
                 if _same_path(candidate, source):
                     return True
@@ -635,11 +654,19 @@ def _check_entry(
 
 
 def _overall_status(required_failures: list[dict[str, Any]]) -> str:
-    """required entry の失敗から全体 status を決める。"""
+    """required entry の失敗から全体 status を決める。
 
-    if not required_failures:
+    優先順位は tool_error > blocked > human_review > pass。entry 単位の
+    tool_error (例: ``entry_unreadable``) は gate 自体が検査できなかったことを
+    意味するため、drift (blocked) より優先して exit 2 にする。
+    """
+
+    statuses = {result["status"] for result in required_failures}
+    if not statuses:
         return "pass"
-    if all(result["status"] == "human_review" for result in required_failures):
+    if "tool_error" in statuses:
+        return "tool_error"
+    if statuses == {"human_review"}:
         # 残っているのが manual の確認待ちだけなら、drift とは区別して返す。
         return "human_review"
     return "blocked"
@@ -653,7 +680,8 @@ def check_manifest(
     try:
         manifest = load_manifest(manifest_path)
         source = resolve_template(manifest["source"], home=home, project=project)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
+        # 深い入れ子の JSON は json.loads が RecursionError を送出する。
         return _tool_error(["manifest_json_invalid"])
     except (OSError, UnicodeError) as exc:
         return _tool_error([f"manifest_unreadable:{type(exc).__name__}"])
@@ -763,6 +791,12 @@ def _write_atomically(target: Path, rendered: str, *, keep_mode: bool) -> None:
                 pass
         if temporary and os.path.exists(temporary):
             try:
+                # 読み取り専用 target のモードを引き継いだ一時ファイルは、
+                # Windows では書き込み可能に戻さないと unlink できず残る。
+                os.chmod(temporary, stat.S_IREAD | stat.S_IWRITE)
+            except OSError:
+                pass
+            try:
                 os.unlink(temporary)
             except OSError:
                 pass
@@ -786,7 +820,7 @@ def apply_entry(
         target, rendered, existed = _prepare_apply(
             manifest_path, entry_id=entry_id, home=home, project=project
         )
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return _tool_error(["manifest_json_invalid"])
     except UnicodeError as exc:
         # UnicodeDecodeError は ValueError の subclass なので先に捕捉する。

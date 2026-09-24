@@ -64,6 +64,18 @@
     と誤読され、apply では `os.replace` の `ValueError` が username 入りの絶対パスを含む
     traceback と exit 1 になっていた。書き込み時の `ValueError` は
     `target_write_failed:ValueError`、想定外の例外は `internal_error:<型名>` (exit 2) にする。
+  - required entry が entry 単位で `tool_error` (`entry_unreadable` 等) のとき、全体が
+    `blocked` (exit 1) になり exit code 表の 2=gate 自体の問題と矛盾していた。全体 status の
+    優先順位を `tool_error` > `blocked` > `human_review` > `pass` に統一した。
+  - 未クォートの空白入りパスの import (`@C:/Users/My Name/AI-CONSTITUTION.md`) が、#40/#41 では
+    pass だったのに stale になっていた。空白で切ったトークンが解決できないときは `@` から行末
+    (末尾の空白・句読点を除く) も候補にする。コード・HTML コメントと `user@host` の除外は維持。
+  - 深い入れ子の manifest で `json.loads` の `RecursionError` が `internal_error` に落ちていた。
+    検査と apply の両方で `manifest_json_invalid` (tool_error) に丸める。
+  - 読み取り専用の既存 target の置換に失敗したとき、モードを引き継いだ一時ファイルが
+    Windows で unlink できず残っていた。後始末で書き込み可能に戻してから消す。
+  - 引数エラー (未知の flag・manifest 指定の欠落) は argparse の usage を stderr に出して exit 2、
+    JSON は出ないことを docs に明記した。
 
 ### 追加
 
@@ -107,7 +119,8 @@
 - 非保証: github.com のページが対話 UI になること。エージェントが skill を無視したときの物理停止。
 - 保証: `ai_entry_contract.py` は marker が一意でない target を pass にも書き換えもしない。
   apply は source 自身と非生成ファイルへ書かない。import pointer は gate の `--home` と
-  entry のディレクトリだけを基準に解決する。レポートに source 本文と絶対パスを載せない。
+  entry のディレクトリだけを基準に解決する。gate が生成する finding には source 本文と絶対パスを
+  載せない。manual entry の `evidence` は manifest 作成者が書いた文をそのまま返す。
   想定外の例外でも traceback ではなく tool_error の JSON (exit 2) を返す。
 - 非保証: import pointer のコード除外は CommonMark のフェンス・インデントコード・
   inline code・HTML コメント・blockquote に合わせた近似で、各 AI 製品の Markdown

@@ -37,7 +37,10 @@ exampleは対応runtimeを並べた全体例であり、全runtimeを自動的�
 段落の途中ではない4桁以上の字下げ行 (インデントコードブロック) と、同じ長さのbacktick列で
 閉じるinline code (``` ``@~/AI.md`` ``` のような2連backtickを含む) も除外します。blockquoteの
 `>` は剥がして中身を同じ規則で読みます。大文字小文字の同一視はOS名ではなく
-ファイルシステムの実際の解決に従います。
+ファイルシステムの実際の解決に従います。空白で切ったトークンが解決できない場合は、`@` から行末まで
+(末尾の空白と句読点を除く) も候補パスとして試すため、`@C:/Users/My Name/AI-CONSTITUTION.md` のような
+未クォートの空白入りパスも受理します。この場合もコード・HTMLコメントの除外と、行頭または空白直後の
+`@` だけを見る規則 (`user@host` を拾わない) は同じです。
 
 manifestのパスは `{HOME}` / `{PROJECT}` placeholderだけを解決します。`~` で始まるパスは
 `--home` の差し替えを迂回して実行ユーザーの実homeへ解決されるため
@@ -63,10 +66,16 @@ exit codeは結果の種類を区別します。
 | 2 | `tool_error` | manifest不正・実行失敗 (gate自体の問題) |
 | 3 | `human_review` | requiredな失敗がmanual entryの人手確認待ちだけ |
 
-required entryの失敗が全て `human_review` のときだけ全体を `human_review` にし、drift等が1件でも
-混ざれば `blocked` です。manual entryの結果には確認先として `evidence` を載せます。同梱exampleは
+全体のstatusはrequired entryの失敗から `tool_error` > `blocked` > `human_review` > `pass` の優先順位で
+決めます。entry単位の `tool_error` (`entry_unreadable:<型名>` など、gateがentryを読めなかった場合) が
+1件でもあれば、drift等と混ざっていても全体を `tool_error` (exit 2) にします。残りが全て `human_review` の
+ときだけ全体を `human_review` にし、drift等が1件でも混ざれば `blocked` です。manual entryの結果には確認先として `evidence` を載せます。同梱exampleは
 Cursorのmanual entryを含むため、機械検証で到達できる最良は exit 3 です。CIでgateにする場合は 0 と 3 を
 許容するか、manual entryを `required: false` にした運用manifestを使います。
+
+引数エラー (未知のflag、`--manifest` の欠落など) はargparseのusageをstderrに出してexit 2で終了します。
+このときstdoutにJSONは出ません。exit 2をJSONの `tool_error` と同一視して読む側は、stdoutが空の場合を
+引数エラーとして扱ってください。
 
 `--entry-id` は `--apply` なしでは受け付けず `entry_id_requires_apply` を返します。entry単位の
 read-only検査は提供していないため、全件検査が黙って走って「1件だけ確認した」と誤読されるのを防ぎます。
@@ -100,8 +109,9 @@ py -3.13 scripts/ai_entry_contract.py `
 - markerと本文の区切り改行は1個だけ扱い、source先頭の空行やoverlay側の空行は保存する
 - sourceとtargetが同一ファイルに解決される場合は `source_target_identical` で拒否する
 - 既存targetを置き換えるときはファイルモードを引き継ぐ
-- レポートにsource本文や絶対パスを載せない。自前定義のcode (gate内の専用例外型) 以外の例外は
-  型名だけに丸める。自前codeかどうかは例外の型で判定するため、entry idに `/` や `\` を含む
+- gateが生成するfindingにはsource本文や絶対パスを載せない。自前定義のcode (gate内の専用例外型) 以外の例外は
+  型名だけに丸める。manual entryの `evidence` はmanifest作成者が書いた文をそのまま返すため、
+  evidenceに絶対パス等を書けばレポートにもそのまま出る。自前codeかどうかは例外の型で判定するため、entry idに `/` や `\` を含む
   manifestでも `manifest_runtime_missing:<id>` などのfinding名は保たれる
 - 書き込み時の例外 (`OSError` に加え、不正パスによる `ValueError`) は
   `target_write_failed:<型名>` にする。想定外の例外もtracebackを出さず
