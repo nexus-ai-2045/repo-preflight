@@ -710,6 +710,12 @@ def scan(
     if root_error is not None:
         return root_error
     repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
+    if not base_ref:
+        shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+        if shallow_code or shallow not in {"true", "false"}:
+            return {"status": "tool_error", "issues": ["git_history_inventory_failed"]}
+        if shallow == "true":
+            return {"status": "tool_error", "issues": ["shallow_history_unavailable"]}
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),

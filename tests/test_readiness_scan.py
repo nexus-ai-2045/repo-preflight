@@ -518,6 +518,38 @@ def test_deleted_history_secret_blocks_without_echoing_value(tmp_path: Path):
     assert token not in str(report)
 
 
+def test_shallow_clone_cannot_pass_full_history_scan(tmp_path: Path):
+    source = make_repo(tmp_path)
+    token = "github_pat_" + "A" * 30
+    (source / "old.txt").write_text(token, encoding="utf-8")
+    git(source, "add", "old.txt")
+    git(source, "commit", "-m", "add historical secret")
+    (source / "old.txt").unlink()
+    git(source, "add", "-u")
+    git(source, "commit", "-m", "remove historical secret")
+
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", source.as_uri(), str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+    shallow_probe = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=shallow,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert shallow_probe.stdout.strip() == "true"
+    assert MODULE.scan(source)["checks"]["secret_scan"]["status"] == "fail"
+
+    report = MODULE.scan(shallow)
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["shallow_history_unavailable"]
+    assert token not in str(report)
+
+
 def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Path):
     """履歴pathのCR/LF断片をobject IDとして誤解しない。"""
     object_id = "a" * 40
