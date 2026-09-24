@@ -54,6 +54,16 @@
   - `--apply` なしの `--entry-id` を `entry_id_requires_apply` で拒否する。何もしていなかった
     `--json` は削除した (未 release)。
   - テストが `from scripts import ...` に依存し、素の pytest で collection error になっていた。
+  - 自前 code かどうかをメッセージの形ではなく専用の例外型で判定する。entry id に `/` や
+    `\` を含む manifest で、#41 の `manifest_runtime_missing:<id>` などが
+    `manifest_invalid:ValueError` に潰れていた。
+  - import pointer のコード除外を CommonMark に合わせた。`~~~` の中の ```` ``` ````、長い
+    フェンスの中の短いフェンス、2 連 backtick の inline code、インデントコードブロック、
+    blockquote 内のフェンス、複数行にまたがる inline code の中の例示で pass していた。
+  - NUL 文字を含む manifest パスを `path_value_invalid` で止める。検査では `entry_missing`
+    と誤読され、apply では `os.replace` の `ValueError` が username 入りの絶対パスを含む
+    traceback と exit 1 になっていた。書き込み時の `ValueError` は
+    `target_write_failed:ValueError`、想定外の例外は `internal_error:<型名>` (exit 2) にする。
 
 ### 追加
 
@@ -98,6 +108,10 @@
 - 保証: `ai_entry_contract.py` は marker が一意でない target を pass にも書き換えもしない。
   apply は source 自身と非生成ファイルへ書かない。import pointer は gate の `--home` と
   entry のディレクトリだけを基準に解決する。レポートに source 本文と絶対パスを載せない。
+  想定外の例外でも traceback ではなく tool_error の JSON (exit 2) を返す。
+- 非保証: import pointer のコード除外は CommonMark のフェンス・インデントコード・
+  inline code・HTML コメント・blockquote に合わせた近似で、各 AI 製品の Markdown
+  パーサーとの完全一致ではない (リスト項目の行頭に書いたフェンス等は未対応)。
 - 非保証: instruction pointer の読込指示はキーワードの近傍判定で、文意の理解ではない。
   manual entry の確認そのものと、AI 製品が入口を実際に読むことは保証しない。
 

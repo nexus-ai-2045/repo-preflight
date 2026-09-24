@@ -31,13 +31,18 @@ exampleは対応runtimeを並べた全体例であり、全runtimeを自動的�
 同一性 (`samefile`) で比較します。絶対パス、`~/` 表記 (gateに渡した `--home` で展開し、実行
 ユーザーの実homeは見ません)、entryファイルのディレクトリからの相対パスを受理します。行頭または
 空白直後の `@` だけをimportとみなし、コードフェンス内・inline code内・HTMLコメント内の例示や
-`@<source>.backup` のような別パスはimportとして扱いません。大文字小文字の同一視はOS名ではなく
+`@<source>.backup` のような別パスはimportとして扱いません。コードの範囲はCommonMarkに従います。
+フェンスは開始と同じ文字・同じ以上の長さの行でだけ閉じ (`~~~` の中の ```` ``` ```` や、
+```` ```` ```` の中の ```` ``` ```` では閉じない)、閉じないフェンスは文書末までコードとみなします。
+段落の途中ではない4桁以上の字下げ行 (インデントコードブロック) と、同じ長さのbacktick列で
+閉じるinline code (``` ``@~/AI.md`` ``` のような2連backtickを含む) も除外します。blockquoteの
+`>` は剥がして中身を同じ規則で読みます。大文字小文字の同一視はOS名ではなく
 ファイルシステムの実際の解決に従います。
 
 manifestのパスは `{HOME}` / `{PROJECT}` placeholderだけを解決します。`~` で始まるパスは
 `--home` の差し替えを迂回して実行ユーザーの実homeへ解決されるため
 `tilde_unsupported_use_home_placeholder` で拒否します。未知のplaceholder (`{USERPROFILE}` 等) は
-`template_placeholder_unresolved`、空のパスは `path_value_invalid` です。entryのパス解決に
+`template_placeholder_unresolved`、空のパスやNUL文字を含むパスは `path_value_invalid` です。entryのパス解決に
 失敗した場合は、manifest自体の問題としてレポート全体を `tool_error` にします。
 
 ## 検査
@@ -95,7 +100,12 @@ py -3.13 scripts/ai_entry_contract.py `
 - markerと本文の区切り改行は1個だけ扱い、source先頭の空行やoverlay側の空行は保存する
 - sourceとtargetが同一ファイルに解決される場合は `source_target_identical` で拒否する
 - 既存targetを置き換えるときはファイルモードを引き継ぐ
-- レポートにsource本文や絶対パスを載せない。自前定義のcode以外の例外は型名だけに丸める
+- レポートにsource本文や絶対パスを載せない。自前定義のcode (gate内の専用例外型) 以外の例外は
+  型名だけに丸める。自前codeかどうかは例外の型で判定するため、entry idに `/` や `\` を含む
+  manifestでも `manifest_runtime_missing:<id>` などのfinding名は保たれる
+- 書き込み時の例外 (`OSError` に加え、不正パスによる `ValueError`) は
+  `target_write_failed:<型名>` にする。想定外の例外もtracebackを出さず
+  `internal_error:<型名>` のJSONとexit 2で返す
 - runtime設定、認証、Cursor/GrokのUI設定は変更しない
 
 ## 現在の判断

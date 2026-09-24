@@ -39,9 +39,10 @@ POINTER_KINDS = {"import", "instruction"}
 # 行頭または空白直後の ``@`` だけを import とみなす (``user@host`` を拾わない)。
 POINTER_TOKEN_RE = re.compile(r"(?<!\S)@([^@\s\"'`<>|;,()\[\]]+)")
 CODE_SPAN_RE = re.compile(r"`([^`]+)`")
-# 自前で定義した error code の形 (snake_case、``:`` 以降は entry id 等の補足)。
-# 補足部にパス区切りや改行を含むものは自前 code とみなさず型名に丸める。
-ERROR_CODE_RE = re.compile(r"[a-z][a-z0-9_]*(?::[^/\\\r\n]*)?")
+# CommonMark のフェンス開始行 (インデント 3 以下、同じ文字 3 個以上)。
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?: {0,3}> ?)+")
+BACKTICK_RUN_RE = re.compile(r"`+")
 PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
 KNOWN_PLACEHOLDERS = {"HOME", "PROJECT"}
 EXIT_CODES = {"pass": 0, "blocked": 1, "tool_error": 2, "human_review": 3}
@@ -66,6 +67,15 @@ INSTRUCTION_NEGATIVE_RE = re.compile(
 )
 
 
+class ContractError(ValueError):
+    """この gate 自身が定義した snake_case の finding code を運ぶ例外。
+
+    レポートへそのまま出してよいのはこの例外の文字列だけ。標準ライブラリ等の
+    例外は絶対パスや username を含みうるため、型名だけに丸める。``:`` 以降の
+    補足は manifest の entry id で、レポートの findings にも同じ id が載る。
+    """
+
+
 def normalize_text(value: str) -> str:
     """本文を変えずに改行コードだけを LF へ正規化する。"""
 
@@ -85,15 +95,17 @@ def resolve_template(value: str, *, home: Path, project: Path | None) -> Path:
     ため受け付けない (fail-closed)。{HOME}/{PROJECT} 以外の placeholder も拒否する。
     """
 
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError("path_value_invalid")
+    if not isinstance(value, str) or not value.strip() or "\x00" in value:
+        # NUL を含むパスは OS API で ValueError になり、is_file() は黙って
+        # False を返す (欠落と誤読される) ため、解決前に manifest の誤りとして止める。
+        raise ContractError("path_value_invalid")
     if value.lstrip().startswith("~"):
-        raise ValueError("tilde_unsupported_use_home_placeholder")
+        raise ContractError("tilde_unsupported_use_home_placeholder")
     if set(PLACEHOLDER_RE.findall(value)) - KNOWN_PLACEHOLDERS:
         # {USERPROFILE} 等の未知 placeholder を文字どおりのパスとして扱わない。
-        raise ValueError("template_placeholder_unresolved")
+        raise ContractError("template_placeholder_unresolved")
     if "{PROJECT}" in value and project is None:
-        raise ValueError("project_required")
+        raise ContractError("project_required")
     expanded = value.replace("{HOME}", str(home))
     if project is not None:
         expanded = expanded.replace("{PROJECT}", str(project))
@@ -103,14 +115,15 @@ def resolve_template(value: str, *, home: Path, project: Path | None) -> Path:
 def _safe_error_code(exc: BaseException, prefix: str) -> str:
     """例外を secret-safe な finding 文字列へ変換する。
 
-    自前で raise した ValueError (snake_case の code) だけは文字列をそのまま
-    返す。それ以外 (OSError や標準ライブラリの ValueError) は絶対パスや
-    username を含みうるため、型名だけに丸める。
+    自前で raise した ContractError だけは文字列をそのまま返す。メッセージの
+    形で判定すると entry id に ``/`` を含む #41 の finding (例:
+    ``manifest_runtime_missing:gemini/cli``) まで型名に潰れるため、型で判定する。
+    それ以外 (OSError や標準ライブラリの ValueError) は絶対パスや username を
+    含みうるため、型名だけに丸める。
     """
 
-    message = str(exc)
-    if isinstance(exc, ValueError) and ERROR_CODE_RE.fullmatch(message):
-        return message
+    if isinstance(exc, ContractError):
+        return str(exc)
     return f"{prefix}:{type(exc).__name__}"
 
 
@@ -128,37 +141,132 @@ def _same_path(a: Path, b: Path) -> bool:
         return os.path.normcase(str(a)) == os.path.normcase(str(b))
 
 
-def _iter_import_lines(text: str) -> Iterator[str]:
-    """コードフェンス外の行を、インラインコードと HTML コメントを除いて返す。"""
+def _strip_inline(text: str, in_comment: bool) -> tuple[str, bool]:
+    """段落テキストから HTML コメントと CommonMark のコードスパンを除く。
 
-    in_fence = False
-    in_comment = False
-    for line in normalize_text(text).splitlines():
-        stripped = line.lstrip()
-        if not in_comment and stripped.startswith(("```", "~~~")):
-            in_fence = not in_fence
+    コードスパンは長さ n の backtick 列で開き、同じ長さ n の backtick 列で
+    閉じる (2 連 backtick で開いた span は 1 個の backtick では閉じない)。閉じ側が無い
+    backtick 列は文字どおりの backtick として残す。戻り値の bool は末尾で
+    HTML コメントが開いたままかどうか。
+    """
+
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        if in_comment:
+            close = text.find("-->", index)
+            if close < 0:
+                return "".join(out), True
+            index = close + 3
+            in_comment = False
             continue
-        if in_fence:
-            continue
-        visible: list[str] = []
-        rest = line
-        while rest:
-            if in_comment:
-                close = rest.find("-->")
-                if close < 0:
-                    rest = ""
-                    break
-                rest = rest[close + 3 :]
-                in_comment = False
-                continue
-            opening = rest.find("<!--")
-            if opening < 0:
-                visible.append(rest)
-                break
-            visible.append(rest[:opening])
-            rest = rest[opening + 4 :]
+        if text.startswith("<!--", index):
             in_comment = True
-        yield re.sub(r"`[^`]*`", "", "".join(visible))
+            index += 4
+            continue
+        if text[index] == "`":
+            run = BACKTICK_RUN_RE.match(text, index)
+            assert run is not None
+            closing = next(
+                (
+                    match
+                    for match in BACKTICK_RUN_RE.finditer(text, run.end())
+                    if len(match.group()) == len(run.group())
+                ),
+                None,
+            )
+            if closing is None:
+                out.append(run.group())
+                index = run.end()
+            else:
+                index = closing.end()
+            continue
+        out.append(text[index])
+        index += 1
+    return "".join(out), in_comment
+
+
+def _indent_width(line: str) -> int:
+    """行頭の空白幅を tab=4 桁で数える。"""
+
+    width = 0
+    for char in line:
+        if char == " ":
+            width += 1
+        elif char == "\t":
+            width += 4 - width % 4
+        else:
+            break
+    return width
+
+
+def _closes_fence(line: str, fence: tuple[str, int]) -> bool:
+    """CommonMark の閉じフェンス (同じ文字・開始以上の長さ・後続は空白のみ)。"""
+
+    char, length = fence
+    if _indent_width(line) > 3:
+        return False
+    body = line.strip()
+    run = len(body) - len(body.lstrip(char))
+    return run >= length and not body[run:].strip()
+
+
+def _iter_import_lines(text: str) -> list[str]:
+    """import として評価してよい可視テキストを行単位で返す。
+
+    CommonMark に合わせて、フェンスコードブロック (開始と同じ文字・同じ以上の
+    長さでだけ閉じる)、インデントコードブロック (段落の途中以外で 4 桁以上
+    字下げされた行)、コードスパン、HTML コメントの中身を除く。blockquote の
+    ``>`` は剥がして中身を同じ規則で読む。閉じないフェンスは文書末まで
+    コードとみなす (例示を import と誤認するより false red に倒す)。
+    """
+
+    visible: list[str] = []
+    paragraph: list[str] = []
+    in_comment = False
+    fence: tuple[str, int, bool] | None = None
+
+    def flush() -> None:
+        nonlocal in_comment
+        if paragraph:
+            stripped, in_comment = _strip_inline("\n".join(paragraph), in_comment)
+            visible.extend(stripped.split("\n"))
+            paragraph.clear()
+
+    for raw in normalize_text(text).split("\n"):
+        line = BLOCKQUOTE_PREFIX_RE.sub("", raw, count=1)
+        quoted = line != raw
+        if fence is not None:
+            char, length, fence_quoted = fence
+            if _closes_fence(line if fence_quoted else raw, (char, length)):
+                fence = None
+            continue
+        comment_open = (
+            _strip_inline("\n".join(paragraph), in_comment)[1]
+            if paragraph
+            else in_comment
+        )
+        if comment_open:
+            # HTML コメントの中ではフェンスも空行も区切りにならない。
+            paragraph.append(line)
+            continue
+        if not line.strip():
+            flush()
+            continue
+        opening = FENCE_OPEN_RE.match(line)
+        if opening and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            flush()
+            fence = (opening.group(1)[0], len(opening.group(1)), quoted)
+            continue
+        if not paragraph and _indent_width(line) >= 4:
+            # 段落の途中でない 4 桁字下げはインデントコードブロック。
+            continue
+        paragraph.append(line)
+        if re.match(r"^ {0,3}#{1,6}(?:\s|$)", line):
+            # ATX 見出しは 1 行で閉じるブロックなので、次行を段落続きにしない。
+            flush()
+    flush()
+    return visible
 
 
 def _candidate_paths(token: str, *, home: Path, base: Path) -> Iterator[Path]:
@@ -246,7 +354,7 @@ def has_pointer(
         return _has_import_pointer(text, source_resolved, home=home, base=base)
     if pointer_kind == "instruction":
         return _has_instruction_pointer(text, source_resolved)
-    raise ValueError("pointer_kind_invalid")
+    raise ContractError("pointer_kind_invalid")
 
 
 def _validate_pointer_kind(entry: dict[str, Any]) -> None:
@@ -254,9 +362,9 @@ def _validate_pointer_kind(entry: dict[str, Any]) -> None:
 
     pointer_kind = entry.get("pointer_kind", "import")
     if entry["strategy"] != "pointer" and "pointer_kind" in entry:
-        raise ValueError(f"manifest_pointer_kind_invalid:{entry['id']}")
+        raise ContractError(f"manifest_pointer_kind_invalid:{entry['id']}")
     if not isinstance(pointer_kind, str) or pointer_kind not in POINTER_KINDS:
-        raise ValueError(f"manifest_pointer_kind_invalid:{entry['id']}")
+        raise ContractError(f"manifest_pointer_kind_invalid:{entry['id']}")
 
 
 def _entry_fields() -> set[str]:
@@ -300,14 +408,14 @@ def _generated_span(normalized: str) -> tuple[re.Match[str], int, int] | None:
     if not any(counts):
         return None
     if counts != (1, 1, 1):
-        raise ValueError("projection_markers_ambiguous")
+        raise ContractError("projection_markers_ambiguous")
     header = HEADER_RE.search(normalized)
     begin = normalized.find(BEGIN_MARKER)
     end = normalized.find(END_MARKER)
     if header is None or header.end() > begin or end < begin:
-        raise ValueError("projection_markers_ambiguous")
+        raise ContractError("projection_markers_ambiguous")
     if normalized[header.end() : begin].strip():
-        raise ValueError("projection_markers_ambiguous")
+        raise ContractError("projection_markers_ambiguous")
     return header, begin, end
 
 
@@ -329,7 +437,7 @@ def render_materialized(source_text: str, existing: str | None = None) -> str:
     """共通ブロックを描画し、生成ファイルの overlay (前置・後置) を保存する。"""
 
     if source_contains_markers(source_text):
-        raise ValueError("source_contains_projection_markers")
+        raise ContractError("source_contains_projection_markers")
     source = canonical_source_text(source_text)
     source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
     generated = (
@@ -344,7 +452,7 @@ def render_materialized(source_text: str, existing: str | None = None) -> str:
     normalized = normalize_text(existing)
     span = _generated_span(normalized)
     if span is None:
-        raise ValueError("existing_target_not_generated")
+        raise ContractError("existing_target_not_generated")
     header, _begin, end = span
     suffix = normalized[end + len(END_MARKER) :].removeprefix("\n")
     return normalized[: header.start()] + generated + suffix
@@ -386,50 +494,50 @@ def load_manifest(path: Path) -> dict[str, Any]:
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError("manifest_shape_invalid")
+        raise ContractError("manifest_shape_invalid")
     if set(payload) != {"schema", "source", "entries"}:
-        raise ValueError("manifest_fields_mismatch")
+        raise ContractError("manifest_fields_mismatch")
     if payload.get("schema") != SCHEMA:
-        raise ValueError("manifest_schema_mismatch")
+        raise ContractError("manifest_schema_mismatch")
     if not isinstance(payload.get("source"), str) or not payload["source"].strip():
-        raise ValueError("manifest_source_invalid")
+        raise ContractError("manifest_source_invalid")
     entries = payload.get("entries")
     if not isinstance(entries, list) or not entries:
-        raise ValueError("manifest_entries_missing")
+        raise ContractError("manifest_entries_missing")
 
     ids: list[str] = []
     for entry in entries:
         if not isinstance(entry, dict):
-            raise ValueError("manifest_entry_ids_invalid")
+            raise ContractError("manifest_entry_ids_invalid")
         entry_id = entry.get("id")
         if not isinstance(entry_id, str) or not entry_id.strip():
-            raise ValueError("manifest_entry_ids_invalid")
+            raise ContractError("manifest_entry_ids_invalid")
         ids.append(entry_id)
         if set(entry) - _entry_fields():
-            raise ValueError(f"manifest_entry_fields_invalid:{entry_id}")
+            raise ContractError(f"manifest_entry_fields_invalid:{entry_id}")
         if not isinstance(entry.get("runtime"), str) or not entry["runtime"].strip():
-            raise ValueError(f"manifest_runtime_missing:{entry_id}")
+            raise ContractError(f"manifest_runtime_missing:{entry_id}")
         if not isinstance(entry.get("strategy"), str):
-            raise ValueError(f"manifest_strategy_invalid:{entry_id}")
+            raise ContractError(f"manifest_strategy_invalid:{entry_id}")
         if "required" in entry and not isinstance(entry["required"], bool):
-            raise ValueError(f"manifest_required_invalid:{entry_id}")
+            raise ContractError(f"manifest_required_invalid:{entry_id}")
         if entry.get("strategy") not in STRATEGIES:
-            raise ValueError(f"manifest_strategy_invalid:{entry_id}")
+            raise ContractError(f"manifest_strategy_invalid:{entry_id}")
         _validate_pointer_kind(entry)
         if entry["strategy"] == "manual":
             if (
                 not isinstance(entry.get("evidence"), str)
                 or not entry["evidence"].strip()
             ):
-                raise ValueError(f"manifest_evidence_missing:{entry_id}")
+                raise ContractError(f"manifest_evidence_missing:{entry_id}")
         elif "path" not in entry or not entry["path"]:
-            raise ValueError(f"manifest_path_missing:{entry_id}")
+            raise ContractError(f"manifest_path_missing:{entry_id}")
         elif not isinstance(entry["path"], str):
-            raise ValueError(f"manifest_path_invalid:{entry_id}")
+            raise ContractError(f"manifest_path_invalid:{entry_id}")
         if "evidence" in entry and not isinstance(entry["evidence"], str):
-            raise ValueError(f"manifest_evidence_invalid:{entry_id}")
+            raise ContractError(f"manifest_evidence_invalid:{entry_id}")
     if len(set(ids)) != len(ids):
-        raise ValueError("manifest_entry_ids_invalid")
+        raise ContractError("manifest_entry_ids_invalid")
     return payload
 
 
@@ -610,19 +718,19 @@ def _prepare_apply(
     manifest = load_manifest(manifest_path)
     entry = next((item for item in manifest["entries"] if item["id"] == entry_id), None)
     if entry is None:
-        raise ValueError("entry_id_unknown")
+        raise ContractError("entry_id_unknown")
     if entry["strategy"] != "materialized":
-        raise ValueError("apply_requires_materialized_entry")
+        raise ContractError("apply_requires_materialized_entry")
     source = resolve_template(manifest["source"], home=home, project=project)
     if not source.is_file():
-        raise ValueError("source_missing")
+        raise ContractError("source_missing")
     target = resolve_template(entry["path"], home=home, project=project)
     if _same_path(source, target):
         # 正本自体へ投影を書くと marker がネストして正本が壊れる。
-        raise ValueError("source_target_identical")
+        raise ContractError("source_target_identical")
     source_text = source.read_text(encoding="utf-8")
     if source_contains_markers(source_text):
-        raise ValueError("source_contains_projection_markers")
+        raise ContractError("source_contains_projection_markers")
     existing = target.read_text(encoding="utf-8") if target.exists() else None
     rendered = render_materialized(source_text, existing=existing)
     return target, rendered, existing is not None
@@ -688,7 +796,9 @@ def apply_entry(
 
     try:
         _write_atomically(target, rendered, keep_mode=existed)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # os.replace 等は NUL 等の不正パスで ValueError を送出する。例外文には
+        # 絶対パスが入るため、書き込み失敗も型名だけの tool_error にする。
         return _tool_error([f"target_write_failed:{type(exc).__name__}"])
     report = check_manifest(manifest_path, home=home, project=project)
     report["applied_entry"] = entry_id
@@ -713,12 +823,18 @@ def main(argv: list[str] | None = None) -> int:
         # entry 単位の read-only 検査は提供していない。全件検査が黙って走ると
         # 「1 件だけ確認した」と誤読させるため、明示エラーにする。
         report = _tool_error(["entry_id_requires_apply"])
-    elif args.apply:
-        report = apply_entry(
-            manifest, entry_id=args.entry_id, home=home, project=project
-        )
     else:
-        report = check_manifest(manifest, home=home, project=project)
+        try:
+            if args.apply:
+                report = apply_entry(
+                    manifest, entry_id=args.entry_id, home=home, project=project
+                )
+            else:
+                report = check_manifest(manifest, home=home, project=project)
+        except Exception as exc:  # noqa: BLE001 - secret-safe の最終防衛線
+            # 想定外の例外でも traceback (絶対パスや username を含む) を出さず、
+            # blocked と区別できる tool_error の JSON にする。
+            report = _tool_error([f"internal_error:{type(exc).__name__}"])
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return EXIT_CODES.get(report.get("status"), 2)

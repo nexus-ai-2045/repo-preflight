@@ -787,8 +787,37 @@ def test_b6_resolve_template_rejects_implicit_home(
         "<!--\n@{source}\n-->\n",
         "@{source}.backup\n",
         "mail@{source}\n",
+        "See ``@~/AI-CONSTITUTION.md`` for syntax\n",
+        "~~~\n```\n@~/AI-CONSTITUTION.md\n```\n~~~\n",
+        "````\n```\n@~/AI-CONSTITUTION.md\n```\n````\n",
+        "```\n~~~\n@~/AI-CONSTITUTION.md\n~~~\n```\n",
+        "Example:\n\n    @~/AI-CONSTITUTION.md\n",
+        "Example:\n\n\t@~/AI-CONSTITUTION.md\n",
+        "# Title\n    @~/AI-CONSTITUTION.md\n",
+        "```\n@~/AI-CONSTITUTION.md\n",
+        "> ```\n> @~/AI-CONSTITUTION.md\n> ```\n",
+        "`multi\n@~/AI-CONSTITUTION.md`\n",
+        "<!--\n\n@~/AI-CONSTITUTION.md\n\n-->\n",
     ],
-    ids=["fence", "inline_code", "html_comment", "multiline_comment", "backup", "mid"],
+    ids=[
+        "fence",
+        "inline_code",
+        "html_comment",
+        "multiline_comment",
+        "backup",
+        "mid",
+        "double_backtick_span",
+        "tilde_fence_wraps_backticks",
+        "long_fence_wraps_short",
+        "backtick_fence_wraps_tildes",
+        "indented_code",
+        "tab_indented_code",
+        "indented_after_heading",
+        "unclosed_fence",
+        "blockquote_fence",
+        "multiline_code_span",
+        "comment_with_blank_lines",
+    ],
 )
 def test_b7_import_pointer_examples_are_not_false_green(
     tmp_path: Path, entry_text: str
@@ -808,8 +837,26 @@ def test_b7_import_pointer_examples_are_not_false_green(
         "@./AI-CONSTITUTION.md\n",
         "@../home/AI-CONSTITUTION.md\n",
         "See @~/AI-CONSTITUTION.md.\n",
+        "```\nexample\n```\n@~/AI-CONSTITUTION.md\n",
+        "~~~\n```\n~~~\n@~/AI-CONSTITUTION.md\n",
+        "Use `x` then @~/AI-CONSTITUTION.md\n",
+        "Literal ` backtick @~/AI-CONSTITUTION.md\n",
+        "intro\n    @~/AI-CONSTITUTION.md\n",
+        "> @~/AI-CONSTITUTION.md\n",
     ],
-    ids=["home_tilde", "relative", "dot_relative", "parent_relative", "sentence"],
+    ids=[
+        "home_tilde",
+        "relative",
+        "dot_relative",
+        "parent_relative",
+        "sentence",
+        "after_closed_fence",
+        "after_tilde_fence_with_backticks",
+        "after_code_span",
+        "unmatched_backtick",
+        "paragraph_continuation",
+        "blockquote",
+    ],
 )
 def test_b7_import_pointer_resolves_home_and_relative_paths(
     tmp_path: Path, entry_text: str
@@ -904,13 +951,149 @@ def test_b9_manifest_read_failure_is_type_name_only(tmp_path: Path) -> None:
 
 
 def test_b9_stdlib_value_error_is_rounded_to_type_name() -> None:
-    own = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
+    # 自前 code かどうかはメッセージの形ではなく例外の型 (ContractError) で決める。
+    own = gate._safe_error_code(gate.ContractError("manifest_path_missing:grok"), "x")
     stdlib = gate._safe_error_code(ValueError("bad value C:\\Users\\me\\a"), "x")
     path_suffix = gate._safe_error_code(ValueError("code:/home/me/secret"), "x")
+    look_alike = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
 
     assert own == "manifest_path_missing:grok"
     assert stdlib == "x:ValueError"
     assert path_suffix == "x:ValueError"
+    assert look_alike == "x:ValueError"
+
+
+@pytest.mark.parametrize(
+    ("entry", "finding"),
+    [
+        (
+            {
+                "id": "gemini/cli",
+                "runtime": "",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+            },
+            "manifest_runtime_missing:gemini/cli",
+        ),
+        (
+            {
+                "id": "gemini\\cli",
+                "runtime": "gemini",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+                "extra": 1,
+            },
+            "manifest_entry_fields_invalid:gemini\\cli",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "path": "{HOME}/G.md", "strategy": "copy"},
+            "manifest_strategy_invalid:a/b",
+        ),
+        (
+            {
+                "id": "a/b",
+                "runtime": "x",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+                "pointer_kind": "link",
+            },
+            "manifest_pointer_kind_invalid:a/b",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "strategy": "pointer"},
+            "manifest_path_missing:a/b",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "strategy": "manual"},
+            "manifest_evidence_missing:a/b",
+        ),
+    ],
+    ids=["runtime", "fields", "strategy", "pointer_kind", "path", "evidence"],
+)
+def test_b9_manifest_findings_keep_entry_id_with_path_separator(
+    tmp_path: Path, entry: dict, finding: str
+) -> None:
+    # #41 の finding 名は entry id に / や \ を含んでも型名に潰さない。
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [entry])
+
+    checked = gate.check_manifest(manifest, home=home)
+    applied = gate.apply_entry(manifest, entry_id=entry["id"], home=home)
+
+    for report in (checked, applied):
+        assert report["status"] == "tool_error"
+        assert report["findings"] == [finding]
+
+
+def test_b9_nul_in_path_is_manifest_error_not_traceback(tmp_path: Path) -> None:
+    # NUL 入りパスは is_file() が黙って False (entry_missing と誤読) を返し、
+    # apply では os.replace の ValueError が traceback と絶対パスを漏らした。
+    home = make_home(tmp_path)
+    manifest = write_manifest(
+        tmp_path,
+        [{**GROK_ENTRY, "id": "g", "path": "{HOME}/a\u0000b"}],
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_MODULE_PATH),
+            "--manifest",
+            str(manifest),
+            "--home",
+            str(home),
+            "--apply",
+            "--entry-id",
+            "g",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    checked = gate.check_manifest(manifest, home=home)
+
+    assert completed.returncode == 2
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout)["findings"] == ["path_value_invalid"]
+    assert checked["status"] == "tool_error"
+    assert checked["findings"] == ["path_value_invalid"]
+
+
+def test_b9_write_value_error_is_structured_tool_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+    secret = str(tmp_path / "private-user")
+
+    def fail_replace(*args, **kwargs):
+        raise ValueError(f"replace: embedded null character in dst {secret}")
+
+    monkeypatch.setattr(gate.os, "replace", fail_replace)
+    report = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["target_write_failed:ValueError"]
+    assert "private-user" not in json.dumps(report)
+
+
+def test_b9_unexpected_exception_is_json_tool_error(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    def explode(*args, **kwargs):
+        raise RuntimeError(str(tmp_path / "private-user"))
+
+    monkeypatch.setattr(gate, "check_manifest", explode)
+    code = gate.main(["--manifest", str(manifest), "--home", str(home)])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert json.loads(out)["findings"] == ["internal_error:RuntimeError"]
+    assert "private-user" not in out
 
 
 def test_b10_apply_keeps_existing_target_mode(tmp_path: Path, monkeypatch) -> None:
