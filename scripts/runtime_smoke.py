@@ -1,12 +1,16 @@
 """Claude Code / Grok / CLI 向けの最小保証 smoke。
 
 依存ゼロ。exit 0 ならこのマシンで CLI 契約と skill 入口が揃っている。
+ホームへ install 済みの skill コピーがあれば、正本から drift していないことも検査する
+(install_runtime_skills --check と同じ check_one。未 install は pass)。
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import platform
 import re
 import subprocess
@@ -66,6 +70,79 @@ def tool_failed(code: int, report: dict | None) -> bool:
         return True
     scan = report.get("scan")
     return isinstance(scan, dict) and scan.get("status") == "tool_error"
+
+
+def load_installer(root: Path):
+    """検査対象 checkout の install_runtime_skills を import する。
+
+    smoke と同じ --repo の正本で突き合わせるため、sys.path ではなく file から読む。
+    """
+    path = root / "scripts" / "install_runtime_skills.py"
+    if not path.is_file():
+        raise FileNotFoundError("install_runtime_skills_missing")
+    spec = importlib.util.spec_from_file_location(
+        "repo_preflight_install_runtime_skills", path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("install_runtime_skills_unloadable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _remediation(installer, root: Path) -> str:
+    """drift 時の再配布コマンド。--check の `next` と同じ文字列を使う。"""
+    build = getattr(installer, "_apply_remediation", None)
+    if callable(build):
+        try:
+            return str(build(root))
+        except Exception:
+            pass
+    return (
+        f"python scripts/install_runtime_skills.py --repo {root} --apply で再配布する"
+    )
+
+
+def check_runtime_skills(
+    root: Path, home: Path
+) -> tuple[list[str], list[dict], list[str]]:
+    """install 済み skill コピーの drift を install_runtime_skills --check と同じ
+    check_one で検査し、smoke の errors へ写す。
+
+    status の写像 (未知の status も含め、pass に丸めるのは ok / not_installed だけ):
+      ok            -> pass
+      not_installed -> pass (CI やホームへ配布していないマシン)
+      drift         -> fail  runtime_skills_drift:<runtime>:<findings>
+      missing_adapter / 未知の status / 例外 / SystemExit
+                    -> fail  runtime_skills_tool_error:...
+    drift のときは --check の `next` と同じ再配布コマンドを notes に載せる。
+    """
+    try:
+        installer = load_installer(root)
+        results = [
+            installer.check_one(repo=root, runtime=runtime, dest=dest)
+            for runtime, dest in installer.default_targets(home)
+        ]
+    # 検査できなかった run を pass にしない。installer が import / 検査中に
+    # sys.exit しても smoke ごと黙って終わらせない (SystemExit は Exception 外)
+    except (Exception, SystemExit) as exc:
+        return [f"runtime_skills_tool_error:{type(exc).__name__}:{exc}"], [], []
+
+    errors: list[str] = []
+    for item in results:
+        runtime = item.get("runtime", "?")
+        status = item.get("status")
+        if status in ("ok", "not_installed"):
+            continue
+        if status == "drift":
+            findings = ",".join(item.get("findings") or []) or "unspecified"
+            errors.append(f"runtime_skills_drift:{runtime}:{findings}")
+        else:
+            errors.append(f"runtime_skills_tool_error:{runtime}:{status}")
+    notes: list[str] = []
+    if any(item.get("status") == "drift" for item in results):
+        notes.append(f"runtime_skills_next={_remediation(installer, root)}")
+    return errors, results, notes
 
 
 def check_skill_file(path: Path, *, rel: str) -> list[str]:
@@ -140,6 +217,12 @@ def main() -> int:
         default=Path(__file__).resolve().parents[1],
         help="repo-preflight root (default: this checkout)",
     )
+    parser.add_argument(
+        "--home",
+        type=Path,
+        default=Path(os.path.expanduser("~")),
+        help="home directory whose installed skill copies are checked (tests)",
+    )
     args = parser.parse_args()
     root = args.repo.resolve()
     errors: list[str] = []
@@ -199,6 +282,14 @@ def main() -> int:
         if tool_failed(code, report):
             errors.append("scan_tool_error")
 
+    skill_errors, skill_results, skill_notes = check_runtime_skills(
+        root, args.home.resolve()
+    )
+    errors.extend(skill_errors)
+    for item in skill_results:
+        notes.append(f"runtime_skills_{item.get('runtime')}={item.get('status')}")
+    notes.extend(skill_notes)
+
     payload = {
         "schema": "repo-preflight.runtime-smoke/v1",
         "status": "pass" if not errors else "fail",
@@ -207,11 +298,15 @@ def main() -> int:
         "notes": notes,
         "errors": errors,
         "supported_runtimes": ["cli", "claude-code", "grok", "codex"],
+        "runtime_skills": skill_results,
         "guarantee": (
-            "CLI dialogue/scan contracts and skill adapter files exist on this machine"
+            "CLI dialogue/scan contracts and skill adapter files exist on this machine; "
+            "installed runtime skill copies (if any) have SKILL.md / run_preflight.py / "
+            "README.md / checkout link matching the repo sources"
         ),
         "non_guarantee": (
-            "Model will always load the skill; product auto-install; remote sandbox without git"
+            "Model will always load the skill; product auto-install; remote sandbox without git; "
+            "extra files added to an installed skill copy (directories are not listed)"
         ),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

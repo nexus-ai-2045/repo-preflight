@@ -40,6 +40,7 @@
    `install_runtime_skills.py --check` が、ホームへ配布した `SKILL.md` /
    `run_preflight.py` / `README.md` / `checkout` link を repo 正本と sha256 で
    突き合わせ、ずれていれば `drift` と exit code 1 を返す。書き込みはしない。
+   配布先へ追加された余分な file は検出しない（directory の一覧は取らない）。
 
 ## AI憲法の入口保証
 
@@ -157,8 +158,39 @@ exit code は `2` です（何も検査できなかった run を `pass` と書�
 fail-open するため）。`status: drift` の `next` は、呼び出した script の絶対 path と
 検査した `--repo` を含む再配布コマンドです。
 
-CI ゲートには載せていません。CI には install 済みコピーが存在しないため、
-そこで検査しても常に `not_installed` にしかならないからです。
+同じ検査は `runtime_smoke.py` からも呼ばれます（`check_one` を直接 import して実行）。
+smoke での扱いは次のとおりで、`ok` / `not_installed` 以外を pass に丸めません。
+
+| `--check` の status | smoke の扱い | smoke の `errors` |
+|---|---|---|
+| `ok` | pass | — |
+| `not_installed` | pass（CI など配布していないマシン） | — |
+| `drift` | fail | `runtime_skills_drift:<runtime>:<findings>` |
+| `missing_adapter` / 未知の status | fail | `runtime_skills_tool_error:<runtime>:<status>` |
+| 検査自体の例外・`SystemExit`（installer 不在、installer の `sys.exit` など） | fail | `runtime_skills_tool_error:<例外名>:<内容>` |
+
+CI には install 済みコピーが存在しないため、CI 上の smoke では常に
+`not_installed` として pass します。drift を拾えるのは、配布済みのマシンで
+smoke を実行したときです。検査するホームは `--home` で差し替えられます（tests 用）。
+
+`drift` のとき smoke の `notes` には `runtime_skills_next=` として、`--check` の
+`next` と同じ再配布コマンドが載ります。
+
+**install 済みのマシンでは、次の場合も smoke が drift で失敗します（再 install するまで）。**
+
+- install した clone とは別の clone / worktree を `--repo` にして smoke を実行した
+  （`checkout/` link が別の場所を指すので `checkout_foreign`。`SKILL.md` /
+  `run_preflight.py` の中身が違えば file の drift も出る）
+- `runtime/*`（adapter の `SKILL.md` や `run_preflight.py`）を編集している branch で
+  smoke を実行した（配布済みコピーは編集前の内容のままなので file の drift）
+
+どちらも「今 `--repo` で指している正本と、ホームのコピーが一致しない」という
+正しい報告です。その checkout を使い続けるなら `--apply` で再配布してください。
+CI には配布先が無く `not_installed` になるので、この挙動の影響を受けません。
+
+**検査の限界:** `check_one` は既知の 4 対象（`SKILL.md` / `run_preflight.py` /
+`README.md` / `checkout/`）だけを見て、配布先 directory の一覧は取りません。
+install 済みコピーに**後から追加された余分な file は検出しません**。
 
 プロジェクト限定にしたい場合:
 
@@ -176,6 +208,9 @@ python -m pytest -q
 ```
 
 `runtime_smoke` が exit 0 なら、そのマシン上で CLI + skill 契約の最小保証は満たす。
+ホームへ install 済みの skill コピーがあれば、その既知の 4 対象が正本から drift して
+いないことも含む（`install_runtime_skills.py --check` と同じ検査。未 install は pass。
+コピーへ追加された余分な file は対象外）。
 
 ## エージェント向け最小契約 (全 runtime 共通)
 
