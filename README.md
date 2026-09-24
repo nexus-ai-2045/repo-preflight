@@ -25,13 +25,16 @@ APIキーらしき文字列や自分のPCのパスを、今あるファイルだ
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
 cd repo-preflight
-python scripts/readiness_scan.py --repo /path/to/your-repo
-python scripts/readiness_scan.py --repo /path/to/your-repo --consistency-base-ref origin/main
+python scripts/readiness_scan.py --repo . --consistency-base-ref origin/main
 ```
 
-`.repo-preflight-consistency.json` に impact_map がある repo では、整合性検査に差分の scope が要ります。repo 全体 scan は狭めず、整合性検査にだけ base を渡します（上の 2 行目のコマンド）。
+このリポジトリ自体を調べるときは、最初から `--consistency-base-ref origin/main`（または同等）が必要です。無し（例: `python scripts/readiness_scan.py --repo .` だけ）だと整合性検査が `change_sensitive_scope_unavailable` で `tool_error`（終了コード 2）になります。`.repo-preflight-consistency.json` に impact_map がある repo では、整合性検査に差分の scope が要ります。repo 全体 scan は狭めず、整合性検査にだけ base を渡します。
 
-調べたいリポジトリは、このツールとは別の場所にあってかまいません。中身は読むだけで、書き換えません。
+調べたいリポジトリは、このツールとは別の場所にあってかまいません。中身は読むだけで、書き換えません。対象に impact_map がある場合も同様に base を渡してください。
+
+```bash
+python scripts/readiness_scan.py --repo /path/to/your-repo --consistency-base-ref origin/main
+```
 
 **開発・テスト・CI**では `pip install -e ".[test]"` が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
@@ -105,7 +108,7 @@ flowchart LR
 ## できること
 
 - **認証情報らしき文字列**（APIキー、トークン、秘密鍵の形）と**自分のPCのパス**。消したつもりでも履歴に残っていれば見つけます
-- **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
+- **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）。`PREFLIGHT.md` はファイルがあるだけでは足りず、先頭の template marker（`<!-- repo-preflight:review-record -->`）が無いと invalid / blocked になります（[テンプレート](assets/PREFLIGHT.template.md)、対話では修復提案あり）
 - **コミットの名義**（作者・コミッターが意図した名前か）
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、日本語のときは表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、誤検知がないことを確認してからエラーへ上げます
