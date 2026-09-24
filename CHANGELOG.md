@@ -4,6 +4,12 @@
 
 ### 修正
 
+- `runtime_smoke.py` が install 済み runtime skill コピーの drift を検査するようにした。
+  #45 の `install_runtime_skills.py --check` はどこからも呼ばれておらず、drift は
+  手で実行したときしか気付けなかった。`ok` / `not_installed` は pass、`drift` は
+  `runtime_skills_drift:*`、`missing_adapter`・未知の status・検査の例外は
+  `runtime_skills_tool_error:*` として smoke を失敗させる。CI には配布先が無いので
+  `not_installed` で pass する。tests が実ホームに依存しないよう `--home` を追加した。
 - `install_runtime_skills.py --check` が path-file の相対 `ROOT_PATH.txt` を
   cwd 依存で ok にせず `checkout_foreign` にするようにした。Windows junction は
   先に `is_junction()` で識別し、リンク先の `ROOT_PATH.txt` を path-file と
