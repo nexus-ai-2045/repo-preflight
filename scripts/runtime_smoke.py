@@ -90,7 +90,22 @@ def load_installer(root: Path):
     return module
 
 
-def check_runtime_skills(root: Path, home: Path) -> tuple[list[str], list[dict]]:
+def _remediation(installer, root: Path) -> str:
+    """drift 時の再配布コマンド。--check の `next` と同じ文字列を使う。"""
+    build = getattr(installer, "_apply_remediation", None)
+    if callable(build):
+        try:
+            return str(build(root))
+        except Exception:
+            pass
+    return (
+        f"python scripts/install_runtime_skills.py --repo {root} --apply で再配布する"
+    )
+
+
+def check_runtime_skills(
+    root: Path, home: Path
+) -> tuple[list[str], list[dict], list[str]]:
     """install 済み skill コピーの drift を install_runtime_skills --check と同じ
     check_one で検査し、smoke の errors へ写す。
 
@@ -98,7 +113,9 @@ def check_runtime_skills(root: Path, home: Path) -> tuple[list[str], list[dict]]
       ok            -> pass
       not_installed -> pass (CI やホームへ配布していないマシン)
       drift         -> fail  runtime_skills_drift:<runtime>:<findings>
-      missing_adapter / 未知の status / 例外 -> fail  runtime_skills_tool_error:...
+      missing_adapter / 未知の status / 例外 / SystemExit
+                    -> fail  runtime_skills_tool_error:...
+    drift のときは --check の `next` と同じ再配布コマンドを notes に載せる。
     """
     try:
         installer = load_installer(root)
@@ -106,8 +123,10 @@ def check_runtime_skills(root: Path, home: Path) -> tuple[list[str], list[dict]]
             installer.check_one(repo=root, runtime=runtime, dest=dest)
             for runtime, dest in installer.default_targets(home)
         ]
-    except Exception as exc:  # 検査できなかった run を pass にしない
-        return [f"runtime_skills_tool_error:{type(exc).__name__}:{exc}"], []
+    # 検査できなかった run を pass にしない。installer が import / 検査中に
+    # sys.exit しても smoke ごと黙って終わらせない (SystemExit は Exception 外)
+    except (Exception, SystemExit) as exc:
+        return [f"runtime_skills_tool_error:{type(exc).__name__}:{exc}"], [], []
 
     errors: list[str] = []
     for item in results:
@@ -120,7 +139,10 @@ def check_runtime_skills(root: Path, home: Path) -> tuple[list[str], list[dict]]
             errors.append(f"runtime_skills_drift:{runtime}:{findings}")
         else:
             errors.append(f"runtime_skills_tool_error:{runtime}:{status}")
-    return errors, results
+    notes: list[str] = []
+    if any(item.get("status") == "drift" for item in results):
+        notes.append(f"runtime_skills_next={_remediation(installer, root)}")
+    return errors, results, notes
 
 
 def check_skill_file(path: Path, *, rel: str) -> list[str]:
@@ -260,10 +282,13 @@ def main() -> int:
         if tool_failed(code, report):
             errors.append("scan_tool_error")
 
-    skill_errors, skill_results = check_runtime_skills(root, args.home.resolve())
+    skill_errors, skill_results, skill_notes = check_runtime_skills(
+        root, args.home.resolve()
+    )
     errors.extend(skill_errors)
     for item in skill_results:
         notes.append(f"runtime_skills_{item.get('runtime')}={item.get('status')}")
+    notes.extend(skill_notes)
 
     payload = {
         "schema": "repo-preflight.runtime-smoke/v1",
@@ -276,10 +301,12 @@ def main() -> int:
         "runtime_skills": skill_results,
         "guarantee": (
             "CLI dialogue/scan contracts and skill adapter files exist on this machine; "
-            "installed runtime skill copies (if any) match the repo sources"
+            "installed runtime skill copies (if any) have SKILL.md / run_preflight.py / "
+            "README.md / checkout link matching the repo sources"
         ),
         "non_guarantee": (
-            "Model will always load the skill; product auto-install; remote sandbox without git"
+            "Model will always load the skill; product auto-install; remote sandbox without git; "
+            "extra files added to an installed skill copy (directories are not listed)"
         ),
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

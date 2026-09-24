@@ -591,7 +591,9 @@ def test_check_remediation_preserves_script_and_repo(tmp_path: Path):
     assert "python scripts/install_runtime_skills.py --apply" not in nxt
 
 
-def test_runtime_smoke_fails_when_scan_reports_tool_error(monkeypatch, capsys):
+def test_runtime_smoke_fails_when_scan_reports_tool_error(
+    tmp_path: Path, monkeypatch, capsys
+):
     # smoke は schema しか見ておらず、scan が tool_error (rc=2) を返しても
     # pass にしていた。「CLI 契約が揃っている」と言うなら、CLI が実行を
     # 完了できなかったことは失敗として出す必要がある。
@@ -609,14 +611,18 @@ def test_runtime_smoke_fails_when_scan_reports_tool_error(monkeypatch, capsys):
         return code, report, stderr
 
     monkeypatch.setattr(module, "run_scan", run_scan)
-    monkeypatch.setattr(sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(tmp_path)],
+    )
     assert module.main() == 1
     payload = json.loads(capsys.readouterr().out)
     assert "scan_tool_error" in payload["errors"]
 
 
 def test_runtime_smoke_fails_when_open_pr_embedded_scan_is_tool_error(
-    monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys
 ):
     # open_pr の dialogue は埋め込み scan の tool_error を外側 blocked / rc=1 に
     # 写す (dialogue_gate.dialogue_status)。外側だけ見ると見逃す (Codex P2)。
@@ -635,7 +641,11 @@ def test_runtime_smoke_fails_when_open_pr_embedded_scan_is_tool_error(
         return code, report, stderr
 
     monkeypatch.setattr(module, "run_scan", run_scan)
-    monkeypatch.setattr(sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(tmp_path)],
+    )
     assert module.main() == 1
     payload = json.loads(capsys.readouterr().out)
     assert "open_pr_tool_error" in payload["errors"]
@@ -676,6 +686,11 @@ def test_runtime_smoke_fails_when_installed_skill_drifted(
     assert payload["status"] == "fail"
     assert "runtime_skills_drift:claude-code:skill_md_drift" in payload["errors"]
     assert "runtime_skills_claude-code=drift" in payload["notes"]
+    # 直し方も smoke から分かるようにする (--check の next と同じ再配布コマンド)
+    installer = _load_install()
+    expected_next = installer._apply_remediation(ROOT.resolve())
+    assert f"runtime_skills_next={expected_next}" in payload["notes"]
+    assert "--apply" in expected_next
 
 
 def test_runtime_smoke_passes_when_installed_skills_in_sync(
@@ -689,6 +704,7 @@ def test_runtime_smoke_passes_when_installed_skills_in_sync(
     assert code == 0, payload["errors"]
     assert payload["status"] == "pass"
     assert {item["status"] for item in payload["runtime_skills"]} == {"ok"}
+    assert not any(n.startswith("runtime_skills_next=") for n in payload["notes"])
 
 
 def test_runtime_smoke_passes_when_skills_not_installed(
@@ -732,9 +748,39 @@ def test_runtime_smoke_skill_check_maps_non_pass_statuses_to_errors(
 
     monkeypatch.setattr(installer, "check_one", fake_check_one)
     monkeypatch.setattr(module, "load_installer", lambda root: installer)
-    errors, results = module.check_runtime_skills(ROOT, _fresh_home(tmp_path))
+    errors, results, notes = module.check_runtime_skills(ROOT, _fresh_home(tmp_path))
     assert errors == [
         "runtime_skills_tool_error:claude-code:missing_adapter",
         "runtime_skills_tool_error:agents:surprise",
     ]
     assert len(results) == 2
+
+
+def test_runtime_smoke_fails_when_skill_check_calls_sys_exit(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # SystemExit は Exception ではない。installer が import / 検査中に
+    # sys.exit(0) しても smoke を黙って exit 0 で終わらせない
+    module = _load_smoke("runtime_smoke_check_sys_exit")
+    installer = _load_install()
+
+    def exiting_check_one(**kwargs):
+        sys.exit(0)
+
+    monkeypatch.setattr(installer, "check_one", exiting_check_one)
+    monkeypatch.setattr(module, "load_installer", lambda root: installer)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_tool_error:SystemExit:0" in payload["errors"]
+
+    def exiting_loader(root):
+        raise SystemExit("installer exited at import")
+
+    monkeypatch.setattr(module, "load_installer", exiting_loader)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert (
+        "runtime_skills_tool_error:SystemExit:installer exited at import"
+        in payload["errors"]
+    )
