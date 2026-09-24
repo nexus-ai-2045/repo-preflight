@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Check and safely materialize AI constitution entry points.
+"""AI 憲法エントリーポイントの検査と、安全な materialized 投影を行う。
 
-The common constitution is a source document. Runtime entry points may either
-support a source pointer (for example Claude/Gemini ``@`` imports or a Codex
-instruction pointer), contain a generated copy of the source, or need manual
-product-level evidence (for example Cursor user settings).
+共通憲法はソース文書であり、各ランタイムの入口は 3 戦略のいずれかを取る:
+``pointer`` (Claude/Gemini の ``@`` import や Codex の明示的な読込指示のように
+ソースを参照する)、``materialized`` (import 構文を持たないランタイム向けに
+ソースの生成コピーを持つ)、``manual`` (Cursor のユーザー設定のように製品側での
+人手確認が必要)。
 
-The command is read-only by default. ``--apply --entry-id`` is required for a
-single, explicitly selected materialized target. Existing non-generated files
-are never overwritten.
+コマンドは既定で read-only。書き込みは ``--apply --entry-id`` で明示選択した
+materialized entry 1 件のみで、既存の非生成ファイルは決して上書きしない。
+レポートは secret-safe (ソース本文や絶対パスを載せない) を契約とする。
+
+exit code: 0=pass / 1=blocked (drift・stale・missing) / 2=tool_error /
+3=human_review (required な manual entry の確認待ちだけが残っている)。
 """
 
 from __future__ import annotations
@@ -18,7 +22,9 @@ import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +36,15 @@ HEADER_RE = re.compile(
 )
 STRATEGIES = {"pointer", "materialized", "manual"}
 POINTER_KINDS = {"import", "instruction"}
+# 行頭または空白直後の ``@`` だけを import とみなす (``user@host`` を拾わない)。
+POINTER_TOKEN_RE = re.compile(r"(?<!\S)@([^@\s\"'`<>|;,()\[\]]+)")
+CODE_SPAN_RE = re.compile(r"`([^`]+)`")
+# 自前で定義した error code の形 (snake_case、``:`` 以降は entry id 等の補足)。
+# 補足部にパス区切りや改行を含むものは自前 code とみなさず型名に丸める。
+ERROR_CODE_RE = re.compile(r"[a-z][a-z0-9_]*(?::[^/\\\r\n]*)?")
+PLACEHOLDER_RE = re.compile(r"\{([A-Z][A-Z0-9_]*)\}")
+KNOWN_PLACEHOLDERS = {"HOME", "PROJECT"}
+EXIT_CODES = {"pass": 0, "blocked": 1, "tool_error": 2, "human_review": 3}
 INSTRUCTION_SUBJECT_RE = re.compile(
     r"(?:共通原則|正本|\b(?:constitution|canonical|source)\b)",
     re.IGNORECASE,
@@ -52,42 +67,124 @@ INSTRUCTION_NEGATIVE_RE = re.compile(
 
 
 def normalize_text(value: str) -> str:
-    """Normalize line endings without changing the source's content."""
+    """本文を変えずに改行コードだけを LF へ正規化する。"""
 
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def canonical_source_text(value: str) -> str:
-    """Use one trailing newline convention for hashes and projections."""
+    """hash と投影で共通の末尾改行 1 個の形へそろえる。"""
 
     return normalize_text(value).rstrip("\n") + "\n"
 
 
 def resolve_template(value: str, *, home: Path, project: Path | None) -> Path:
-    """Resolve only explicit, portable path placeholders."""
+    """明示的でポータブルな placeholder ({HOME}/{PROJECT}) だけを解決する。
 
+    ``~`` は実行ユーザーの実 home に暗黙依存し ``--home`` の差し替えを迂回する
+    ため受け付けない (fail-closed)。{HOME}/{PROJECT} 以外の placeholder も拒否する。
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("path_value_invalid")
+    if value.lstrip().startswith("~"):
+        raise ValueError("tilde_unsupported_use_home_placeholder")
+    if set(PLACEHOLDER_RE.findall(value)) - KNOWN_PLACEHOLDERS:
+        # {USERPROFILE} 等の未知 placeholder を文字どおりのパスとして扱わない。
+        raise ValueError("template_placeholder_unresolved")
     if "{PROJECT}" in value and project is None:
         raise ValueError("project_required")
     expanded = value.replace("{HOME}", str(home))
     if project is not None:
         expanded = expanded.replace("{PROJECT}", str(project))
-    return Path(os.path.expanduser(expanded)).resolve()
+    return Path(expanded).resolve()
 
 
-def path_forms(path: Path) -> set[str]:
-    """Return slash variants using the host path case semantics."""
+def _safe_error_code(exc: BaseException, prefix: str) -> str:
+    """例外を secret-safe な finding 文字列へ変換する。
 
-    raw = str(path)
-    forms = {
-        raw.replace("/", "\\"),
-        raw.replace("\\", "/"),
-        path.as_posix(),
-    }
-    return {form.casefold() for form in forms} if os.name == "nt" else forms
+    自前で raise した ValueError (snake_case の code) だけは文字列をそのまま
+    返す。それ以外 (OSError や標準ライブラリの ValueError) は絶対パスや
+    username を含みうるため、型名だけに丸める。
+    """
+
+    message = str(exc)
+    if isinstance(exc, ValueError) and ERROR_CODE_RE.fullmatch(message):
+        return message
+    return f"{prefix}:{type(exc).__name__}"
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    """2 つのパスが同一ファイルを指すかをファイルシステムの意味論で判定する。
+
+    存在するパスは ``samefile`` で (大文字小文字非区別のファイルシステムや
+    symlink を含めて) 判定し、存在しないパスだけ ``os.path.normcase`` した
+    文字列一致に fallback する。OS 名で大文字小文字の扱いを代理しない。
+    """
+
+    try:
+        return a.samefile(b)
+    except (OSError, ValueError):
+        return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
+def _iter_import_lines(text: str) -> Iterator[str]:
+    """コードフェンス外の行を、インラインコードと HTML コメントを除いて返す。"""
+
+    in_fence = False
+    in_comment = False
+    for line in normalize_text(text).splitlines():
+        stripped = line.lstrip()
+        if not in_comment and stripped.startswith(("```", "~~~")):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        visible: list[str] = []
+        rest = line
+        while rest:
+            if in_comment:
+                close = rest.find("-->")
+                if close < 0:
+                    rest = ""
+                    break
+                rest = rest[close + 3 :]
+                in_comment = False
+                continue
+            opening = rest.find("<!--")
+            if opening < 0:
+                visible.append(rest)
+                break
+            visible.append(rest[:opening])
+            rest = rest[opening + 4 :]
+            in_comment = True
+        yield re.sub(r"`[^`]*`", "", "".join(visible))
+
+
+def _candidate_paths(token: str, *, home: Path, base: Path) -> Iterator[Path]:
+    """pointer トークンをファイルパス候補へ解決する。
+
+    ``~/`` は gate に渡された home で展開する (実 home ではない)。相対パスは
+    entry ファイルのあるディレクトリ基準で解決する。文末の句読点は外した形も
+    候補にする。
+    """
+
+    for raw in dict.fromkeys((token, token.rstrip(".,:;!?"))):
+        if not raw:
+            continue
+        if raw == "~" or raw.startswith(("~/", "~\\")):
+            raw = str(home) + raw[1:]
+        elif raw.startswith("~"):
+            continue
+        try:
+            path = Path(raw)
+            yield (path if path.is_absolute() else base / path).resolve()
+        except (OSError, ValueError):
+            continue
 
 
 def _has_instruction_semantics(lines: list[str], path_line: int) -> bool:
-    """Require a nearby, affirmative instruction to read the canonical source."""
+    """近傍に正本を先に読む肯定的な指示があることを要求する。"""
 
     context = "\n".join(lines[max(0, path_line - 2) : path_line + 3])
     if INSTRUCTION_NEGATIVE_RE.search(context):
@@ -99,36 +196,61 @@ def _has_instruction_semantics(lines: list[str], path_line: int) -> bool:
     )
 
 
-def has_pointer(text: str, source: Path, *, pointer_kind: str = "import") -> bool:
-    """Check a runtime-specific explicit pointer without reading source content."""
+def _has_import_pointer(text: str, source: Path, *, home: Path, base: Path) -> bool:
+    """``@<path>`` トークンがパス解決の結果 source ファイルへ到達するか。"""
 
-    forms = path_forms(source)
-    lines: list[str] = []
-    for raw_line in normalize_text(text).splitlines():
-        line = raw_line.replace("\\", "/")
-        if os.name == "nt":
-            line = line.casefold()
-        lines.append(line)
-
-    for line_number, normalized in enumerate(lines):
-        normalized_forms = {form.replace("\\", "/") for form in forms}
-        if pointer_kind == "import":
-            pointer_forms = ["@" + form for form in normalized_forms]
-            if any(pointer in normalized for pointer in pointer_forms):
-                return True
-        elif pointer_kind == "instruction":
-            code_spans = re.findall(r"`([^`]+)`", normalized)
-            if any(
-                span in normalized_forms for span in code_spans
-            ) and _has_instruction_semantics(lines, line_number):
-                return True
-        else:
-            raise ValueError("pointer_kind_invalid")
+    for line in _iter_import_lines(text):
+        for token in POINTER_TOKEN_RE.findall(line):
+            for candidate in _candidate_paths(token, home=home, base=base):
+                if _same_path(candidate, source):
+                    return True
     return False
 
 
+def _has_instruction_pointer(text: str, source: Path) -> bool:
+    """インラインコード内の絶対パスが source を指し、近傍に読込指示があるか。"""
+
+    lines = normalize_text(text).splitlines()
+    for line_number, line in enumerate(lines):
+        for span in CODE_SPAN_RE.findall(line):
+            try:
+                path = Path(span.strip())
+            except (OSError, ValueError):
+                continue
+            if not path.is_absolute():
+                continue
+            if _same_path(path, source) and _has_instruction_semantics(
+                lines, line_number
+            ):
+                return True
+    return False
+
+
+def has_pointer(
+    text: str,
+    source: Path,
+    *,
+    home: Path,
+    base: Path,
+    pointer_kind: str = "import",
+) -> bool:
+    """runtime 固有の明示 pointer が source を指すかを、source 本文を読まずに判定する。
+
+    部分文字列一致ではなくパス解決で比較する。``import`` はコードフェンス・
+    インラインコード・HTML コメント内の例示を除外する。``instruction`` は
+    インラインコード内のパスと近傍の肯定的な読込指示を要求する。
+    """
+
+    source_resolved = source.resolve()
+    if pointer_kind == "import":
+        return _has_import_pointer(text, source_resolved, home=home, base=base)
+    if pointer_kind == "instruction":
+        return _has_instruction_pointer(text, source_resolved)
+    raise ValueError("pointer_kind_invalid")
+
+
 def _validate_pointer_kind(entry: dict[str, Any]) -> None:
-    """Validate the optional pointer syntax discriminator."""
+    """任意の pointer 構文識別子を検証する。"""
 
     pointer_kind = entry.get("pointer_kind", "import")
     if entry["strategy"] != "pointer" and "pointer_kind" in entry:
@@ -149,23 +271,65 @@ def _entry_fields() -> set[str]:
     }
 
 
-def generated_common_block(text: str) -> tuple[str, str] | None:
-    """Return (declared hash, common block) for a generated projection."""
+def _marker_counts(normalized: str) -> tuple[int, int, int]:
+    """(header, begin, end) 各マーカーの出現数を返す。"""
 
-    normalized = normalize_text(text)
+    return (
+        len(HEADER_RE.findall(normalized)),
+        normalized.count(BEGIN_MARKER),
+        normalized.count(END_MARKER),
+    )
+
+
+def source_contains_markers(source_text: str) -> bool:
+    """source 本文が投影マーカー自体を含むか (含む場合は投影不能)。"""
+
+    return any(_marker_counts(normalize_text(source_text)))
+
+
+def _generated_span(normalized: str) -> tuple[re.Match[str], int, int] | None:
+    """一意な生成ブロックの (header, begin, end) を返す。
+
+    マーカーが 1 つも無ければ None。個数が 1 ずつでない・順序が壊れている・
+    header と begin の間に空白以外がある場合は曖昧として ValueError にする
+    (最初の出現だけを黙って採用すると、marker を引用した overlay や
+    複製ブロックを破壊・見逃しするため)。
+    """
+
+    counts = _marker_counts(normalized)
+    if not any(counts):
+        return None
+    if counts != (1, 1, 1):
+        raise ValueError("projection_markers_ambiguous")
     header = HEADER_RE.search(normalized)
     begin = normalized.find(BEGIN_MARKER)
     end = normalized.find(END_MARKER)
-    if header is None or begin < 0 or end < begin:
+    if header is None or header.end() > begin or end < begin:
+        raise ValueError("projection_markers_ambiguous")
+    if normalized[header.end() : begin].strip():
+        raise ValueError("projection_markers_ambiguous")
+    return header, begin, end
+
+
+def generated_common_block(text: str) -> tuple[str, str] | None:
+    """生成投影から (宣言 hash, 共通ブロック本文) を取り出す。"""
+
+    normalized = normalize_text(text)
+    span = _generated_span(normalized)
+    if span is None:
         return None
-    begin_content = begin + len(BEGIN_MARKER)
-    block = normalized[begin_content:end].lstrip("\n")
+    header, begin, end = span
+    # render は BEGIN の直後に区切りの改行 1 個だけを足すので、その 1 個だけ
+    # 剥ぐ。lstrip だと source 先頭の空行まで消えて恒久 mismatch になる。
+    block = normalized[begin + len(BEGIN_MARKER) : end].removeprefix("\n")
     return header.group(1), block
 
 
 def render_materialized(source_text: str, existing: str | None = None) -> str:
-    """Render the generated common block and preserve a generated overlay."""
+    """共通ブロックを描画し、生成ファイルの overlay (前置・後置) を保存する。"""
 
+    if source_contains_markers(source_text):
+        raise ValueError("source_contains_projection_markers")
     source = canonical_source_text(source_text)
     source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
     generated = (
@@ -178,20 +342,18 @@ def render_materialized(source_text: str, existing: str | None = None) -> str:
         return generated
 
     normalized = normalize_text(existing)
-    header = HEADER_RE.search(normalized)
-    begin = normalized.find(BEGIN_MARKER)
-    end = normalized.find(END_MARKER)
-    if header is None or begin < 0 or end < begin:
+    span = _generated_span(normalized)
+    if span is None:
         raise ValueError("existing_target_not_generated")
-    start = header.start() if header.end() <= begin else begin
-    suffix = normalized[end + len(END_MARKER) :]
-    return normalized[:start] + generated + suffix.lstrip("\n")
+    header, _begin, end = span
+    suffix = normalized[end + len(END_MARKER) :].removeprefix("\n")
+    return normalized[: header.start()] + generated + suffix
 
 
 def _entry_result(
     entry: dict[str, Any], *, status: str, findings: list[str]
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "id": entry.get("id"),
         "runtime": entry.get("runtime"),
         "strategy": entry.get("strategy"),
@@ -199,9 +361,29 @@ def _entry_result(
         "status": status,
         "findings": findings,
     }
+    if entry.get("strategy") == "manual" and isinstance(entry.get("evidence"), str):
+        # human_review 判定を受けた人がレポートだけで確認先へ辿れるようにする。
+        result["evidence"] = entry["evidence"]
+    return result
+
+
+def _tool_error(
+    findings: list[str], *, source: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "schema": SCHEMA,
+        "status": "tool_error",
+        "findings": findings,
+        "entries": [],
+    }
+    if source is not None:
+        report["source"] = source
+    return report
 
 
 def load_manifest(path: Path) -> dict[str, Any]:
+    """manifest を読み込み、schema と同等の構造検証を fail-closed で行う。"""
+
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("manifest_shape_invalid")
@@ -251,123 +433,155 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _check_materialized(
+    entry: dict[str, Any],
+    target_text: str,
+    *,
+    expected: str,
+    source_hash: str,
+    source_has_markers: bool,
+) -> dict[str, Any]:
+    """materialized entry 1 件の生成ブロックを検査する。"""
+
+    if source_has_markers:
+        return _entry_result(
+            entry, status="stale", findings=["source_contains_projection_markers"]
+        )
+    try:
+        generated = generated_common_block(target_text)
+    except ValueError:
+        return _entry_result(
+            entry, status="stale", findings=["projection_markers_ambiguous"]
+        )
+    if generated is None:
+        return _entry_result(
+            entry, status="stale", findings=["generated_projection_markers_missing"]
+        )
+    declared_hash, common_block = generated
+    findings: list[str] = []
+    if declared_hash != source_hash:
+        findings.append("source_hash_mismatch")
+    if common_block != expected:
+        findings.append("common_block_mismatch")
+    return _entry_result(
+        entry, status="pass" if not findings else "stale", findings=findings
+    )
+
+
+def _check_entry(
+    entry: dict[str, Any],
+    *,
+    source: Path,
+    expected: str,
+    source_hash: str,
+    source_has_markers: bool,
+    home: Path,
+    project: Path | None,
+) -> dict[str, Any]:
+    """entry 1 件を検査する。
+
+    path の解決失敗は manifest 自体の問題としてそのまま ValueError を送出し、
+    呼び出し側でレポート全体を tool_error にする。
+    """
+
+    strategy = entry["strategy"]
+    if strategy == "manual":
+        return _entry_result(
+            entry,
+            status="human_review",
+            findings=["manual_runtime_evidence_required"],
+        )
+
+    target = resolve_template(entry["path"], home=home, project=project)
+    if not target.is_file():
+        return _entry_result(entry, status="missing", findings=["entry_missing"])
+    try:
+        target_text = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return _entry_result(
+            entry,
+            status="tool_error",
+            findings=[f"entry_unreadable:{type(exc).__name__}"],
+        )
+
+    if strategy == "pointer":
+        ok = has_pointer(
+            target_text,
+            source,
+            home=home,
+            base=target.parent,
+            pointer_kind=entry.get("pointer_kind", "import"),
+        )
+        return _entry_result(
+            entry,
+            status="pass" if ok else "stale",
+            findings=[] if ok else ["source_pointer_missing"],
+        )
+    return _check_materialized(
+        entry,
+        target_text,
+        expected=expected,
+        source_hash=source_hash,
+        source_has_markers=source_has_markers,
+    )
+
+
+def _overall_status(required_failures: list[dict[str, Any]]) -> str:
+    """required entry の失敗から全体 status を決める。"""
+
+    if not required_failures:
+        return "pass"
+    if all(result["status"] == "human_review" for result in required_failures):
+        # 残っているのが manual の確認待ちだけなら、drift とは区別して返す。
+        return "human_review"
+    return "blocked"
+
+
 def check_manifest(
     manifest_path: Path, *, home: Path, project: Path | None = None
 ) -> dict[str, Any]:
-    """Check all entries and return a secret-safe JSON report."""
+    """全 entry を検査し、secret-safe な JSON レポートを返す。"""
 
     try:
         manifest = load_manifest(manifest_path)
         source = resolve_template(manifest["source"], home=home, project=project)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
-        return {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "findings": [str(exc)],
-            "entries": [],
-        }
+    except json.JSONDecodeError:
+        return _tool_error(["manifest_json_invalid"])
+    except (OSError, UnicodeError) as exc:
+        return _tool_error([f"manifest_unreadable:{type(exc).__name__}"])
+    except (ValueError, KeyError, TypeError) as exc:
+        return _tool_error([_safe_error_code(exc, "manifest_invalid")])
 
     if not source.is_file():
-        return {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "source": {"exists": False},
-            "findings": ["source_missing"],
-            "entries": [],
-        }
+        return _tool_error(["source_missing"], source={"exists": False})
 
     try:
         source_text = source.read_text(encoding="utf-8")
-        source_hash = hashlib.sha256(
-            canonical_source_text(source_text).encode("utf-8")
-        ).hexdigest()
     except (OSError, UnicodeError) as exc:
-        return {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "source": {"exists": True},
-            "findings": [f"source_unreadable:{type(exc).__name__}"],
-            "entries": [],
-        }
+        return _tool_error(
+            [f"source_unreadable:{type(exc).__name__}"], source={"exists": True}
+        )
+    expected = canonical_source_text(source_text)
+    source_hash = hashlib.sha256(expected.encode("utf-8")).hexdigest()
+    source_summary = {"exists": True, "sha256": source_hash}
+    source_has_markers = source_contains_markers(source_text)
 
-    results: list[dict[str, Any]] = []
-    for entry in manifest["entries"]:
-        strategy = entry["strategy"]
-        if strategy == "manual":
-            results.append(
-                _entry_result(
-                    entry,
-                    status="human_review",
-                    findings=["manual_runtime_evidence_required"],
-                )
-            )
-            continue
-
-        try:
-            target = resolve_template(entry["path"], home=home, project=project)
-        except (TypeError, ValueError) as exc:
-            return {
-                "schema": SCHEMA,
-                "status": "tool_error",
-                "source": {"exists": True, "sha256": source_hash},
-                "findings": [str(exc)],
-                "entries": [],
-            }
-        if not target.is_file():
-            results.append(
-                _entry_result(entry, status="missing", findings=["entry_missing"])
-            )
-            continue
-        try:
-            target_text = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            results.append(
-                _entry_result(
-                    entry,
-                    status="tool_error",
-                    findings=[f"entry_unreadable:{type(exc).__name__}"],
-                )
-            )
-            continue
-
-        if strategy == "pointer":
-            ok = has_pointer(
-                target_text,
-                source,
-                pointer_kind=entry.get("pointer_kind", "import"),
-            )
-            results.append(
-                _entry_result(
-                    entry,
-                    status="pass" if ok else "stale",
-                    findings=[] if ok else ["source_pointer_missing"],
-                )
-            )
-            continue
-
-        generated = generated_common_block(target_text)
-        if generated is None:
-            results.append(
-                _entry_result(
-                    entry,
-                    status="stale",
-                    findings=["generated_projection_markers_missing"],
-                )
-            )
-            continue
-        declared_hash, common_block = generated
-        expected = canonical_source_text(source_text)
-        findings: list[str] = []
-        if declared_hash != source_hash:
-            findings.append("source_hash_mismatch")
-        if common_block != expected:
-            findings.append("common_block_mismatch")
-        results.append(
-            _entry_result(
+    try:
+        results = [
+            _check_entry(
                 entry,
-                status="pass" if not findings else "stale",
-                findings=findings,
+                source=source,
+                expected=expected,
+                source_hash=source_hash,
+                source_has_markers=source_has_markers,
+                home=home,
+                project=project,
             )
+            for entry in manifest["entries"]
+        ]
+    except (OSError, ValueError, TypeError) as exc:
+        return _tool_error(
+            [_safe_error_code(exc, "entry_invalid")], source=source_summary
         )
 
     required_failures = [
@@ -375,11 +589,10 @@ def check_manifest(
         for result in results
         if result["required"] and result["status"] != "pass"
     ]
-    status = "blocked" if required_failures else "pass"
     return {
         "schema": SCHEMA,
-        "status": status,
-        "source": {"exists": True, "sha256": source_hash},
+        "status": _overall_status(required_failures),
+        "source": source_summary,
         "entries": results,
         "findings": [
             f"{result['id']}:{finding}"
@@ -389,43 +602,36 @@ def check_manifest(
     }
 
 
-def apply_entry(
-    manifest_path: Path,
-    *,
-    entry_id: str,
-    home: Path,
-    project: Path | None = None,
-) -> dict[str, Any]:
-    """Apply one materialized entry, then return a fresh check report."""
+def _prepare_apply(
+    manifest_path: Path, *, entry_id: str, home: Path, project: Path | None
+) -> tuple[Path, str, bool]:
+    """apply 対象を検証し (target, 描画結果, 既存 target の有無) を返す。"""
 
-    try:
-        manifest = load_manifest(manifest_path)
-        entry = next(item for item in manifest["entries"] if item["id"] == entry_id)
-        if entry["strategy"] != "materialized":
-            raise ValueError("apply_requires_materialized_entry")
-        source = resolve_template(manifest["source"], home=home, project=project)
-        if not source.is_file():
-            raise ValueError("source_missing")
-        source_text = source.read_text(encoding="utf-8")
-        target = resolve_template(entry["path"], home=home, project=project)
-        existing = target.read_text(encoding="utf-8") if target.exists() else None
-        rendered = render_materialized(source_text, existing=existing)
-    except StopIteration as exc:
-        return {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "findings": ["entry_id_unknown"],
-        }
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        json.JSONDecodeError,
-        KeyError,
-        UnicodeError,
-    ) as exc:
-        return {"schema": SCHEMA, "status": "tool_error", "findings": [str(exc)]}
+    manifest = load_manifest(manifest_path)
+    entry = next((item for item in manifest["entries"] if item["id"] == entry_id), None)
+    if entry is None:
+        raise ValueError("entry_id_unknown")
+    if entry["strategy"] != "materialized":
+        raise ValueError("apply_requires_materialized_entry")
+    source = resolve_template(manifest["source"], home=home, project=project)
+    if not source.is_file():
+        raise ValueError("source_missing")
+    target = resolve_template(entry["path"], home=home, project=project)
+    if _same_path(source, target):
+        # 正本自体へ投影を書くと marker がネストして正本が壊れる。
+        raise ValueError("source_target_identical")
+    source_text = source.read_text(encoding="utf-8")
+    if source_contains_markers(source_text):
+        raise ValueError("source_contains_projection_markers")
+    existing = target.read_text(encoding="utf-8") if target.exists() else None
+    rendered = render_materialized(source_text, existing=existing)
+    return target, rendered, existing is not None
 
+
+def _write_atomically(target: Path, rendered: str, *, keep_mode: bool) -> None:
+    """一時ファイル経由で target を置換する。既存 target のモードを引き継ぐ。"""
+
+    existing_mode = stat.S_IMODE(os.stat(target).st_mode) if keep_mode else None
     fd: int | None = None
     temporary: str | None = None
     try:
@@ -436,13 +642,11 @@ def apply_entry(
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             fd = None
             handle.write(rendered)
+        if existing_mode is not None:
+            # mkstemp は 0600 で作るため、既存 target のモードを引き継がないと
+            # os.replace 後に POSIX でパーミッションが黙って狭まる。
+            os.chmod(temporary, existing_mode)
         os.replace(temporary, target)
-    except OSError as exc:
-        return {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "findings": [f"target_write_failed:{type(exc).__name__}"],
-        }
     finally:
         if fd is not None:
             try:
@@ -454,7 +658,41 @@ def apply_entry(
                 os.unlink(temporary)
             except OSError:
                 pass
-    return check_manifest(manifest_path, home=home, project=project)
+
+
+def apply_entry(
+    manifest_path: Path,
+    *,
+    entry_id: str,
+    home: Path,
+    project: Path | None = None,
+) -> dict[str, Any]:
+    """materialized entry 1 件を適用し、適用後の検査レポートを返す。
+
+    成功時はレポートに ``applied_entry`` を付け、書き込みが完了した entry を
+    exit code や他 entry の状態と独立に識別できるようにする。エラーメッセージは
+    絶対パスを含めない (secret-safe)。
+    """
+
+    try:
+        target, rendered, existed = _prepare_apply(
+            manifest_path, entry_id=entry_id, home=home, project=project
+        )
+    except json.JSONDecodeError:
+        return _tool_error(["manifest_json_invalid"])
+    except UnicodeError as exc:
+        # UnicodeDecodeError は ValueError の subclass なので先に捕捉する。
+        return _tool_error([f"apply_failed:{type(exc).__name__}"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return _tool_error([_safe_error_code(exc, "apply_failed")])
+
+    try:
+        _write_atomically(target, rendered, keep_mode=existed)
+    except OSError as exc:
+        return _tool_error([f"target_write_failed:{type(exc).__name__}"])
+    report = check_manifest(manifest_path, home=home, project=project)
+    report["applied_entry"] = entry_id
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -462,34 +700,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--home", type=Path, default=Path.home())
     parser.add_argument("--project", type=Path)
-    parser.add_argument("--json", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--entry-id")
     args = parser.parse_args(argv)
 
     manifest = args.manifest.resolve()
+    home = args.home.resolve()
+    project = args.project.resolve() if args.project else None
     if args.apply and not args.entry_id:
-        report = {
-            "schema": SCHEMA,
-            "status": "tool_error",
-            "findings": ["apply_requires_entry_id"],
-        }
+        report = _tool_error(["apply_requires_entry_id"])
+    elif args.entry_id and not args.apply:
+        # entry 単位の read-only 検査は提供していない。全件検査が黙って走ると
+        # 「1 件だけ確認した」と誤読させるため、明示エラーにする。
+        report = _tool_error(["entry_id_requires_apply"])
     elif args.apply:
         report = apply_entry(
-            manifest,
-            entry_id=args.entry_id,
-            home=args.home.resolve(),
-            project=args.project.resolve() if args.project else None,
+            manifest, entry_id=args.entry_id, home=home, project=project
         )
     else:
-        report = check_manifest(
-            manifest,
-            home=args.home.resolve(),
-            project=args.project.resolve() if args.project else None,
-        )
+        report = check_manifest(manifest, home=home, project=project)
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report.get("status") == "pass" else 1
+    return EXIT_CODES.get(report.get("status"), 2)
 
 
 if __name__ == "__main__":
