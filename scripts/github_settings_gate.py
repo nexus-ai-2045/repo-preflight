@@ -10,7 +10,7 @@ import json
 import os
 import re
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
@@ -1042,7 +1042,8 @@ def review_repository(
         except ValueError:
             return False
         age = timestamp.astimezone(timezone.utc) - created_at.astimezone(timezone.utc)
-        return -1 <= age.days <= 30
+        # 日数の切り捨てで 30 日 23 時間を「30 日以内」にしない。
+        return timedelta(days=-1) <= age <= timedelta(days=30)
 
     recent_analysis = next(
         (item for item in analyses or [] if recent_default_branch_analysis(item)),

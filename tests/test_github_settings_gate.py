@@ -413,7 +413,9 @@ def test_advanced_codeql_analysis_older_than_30_days_is_not_recent():
         "example/repo",
         "high_risk_public",
         api_get=get,
-        observed_at=MODULE.datetime(2026, 9, 24, tzinfo=MODULE.timezone.utc),
+        # 30 日を 1 秒だけ超えた時点。age.days (切り捨て) で比べると 30 と
+        # なり「最近」扱いになる off-by-one を検出する (Codex review P2)。
+        observed_at=MODULE.datetime(2026, 9, 23, 0, 0, 1, tzinfo=MODULE.timezone.utc),
     )
     item = next(
         setting
