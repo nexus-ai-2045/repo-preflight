@@ -374,7 +374,14 @@ def test_recent_advanced_codeql_analysis_satisfies_code_scanning_requirement():
     ]
     get, calls = fake_api(responses)
 
-    report = MODULE.review_repository("example/repo", "high_risk_public", api_get=get)
+    # 「最近」は observed_at からの相対。実時刻に依存させると、固定した
+    # created_at が 30 日を過ぎた日に黙って落ちる (2026-09-24 に発生)。
+    report = MODULE.review_repository(
+        "example/repo",
+        "high_risk_public",
+        api_get=get,
+        observed_at=MODULE.datetime(2026, 8, 25, tzinfo=MODULE.timezone.utc),
+    )
     item = next(
         setting
         for setting in report["settings"]
@@ -384,6 +391,39 @@ def test_recent_advanced_codeql_analysis_satisfies_code_scanning_requirement():
     assert "repos/example/repo/code-scanning/analyses?per_page=100" in calls
     assert item["classification"] == "no_change"
     assert item["observed_value"]["mode"] == "advanced_or_external_analysis"
+
+
+def test_advanced_codeql_analysis_older_than_30_days_is_not_recent():
+    # 上の test の境界側。30 日を超えた analysis は code scanning の根拠にしない。
+    responses = compliant_responses()
+    responses["repos/example/repo/code-scanning/default-setup"] = {
+        "state": "not-configured"
+    }
+    responses["repos/example/repo/code-scanning/analyses?per_page=100"] = [
+        {
+            "id": 42,
+            "ref": "refs/heads/main",
+            "created_at": "2026-08-24T00:00:00Z",
+            "tool": {"name": "CodeQL"},
+        }
+    ]
+    get, _ = fake_api(responses)
+
+    report = MODULE.review_repository(
+        "example/repo",
+        "high_risk_public",
+        api_get=get,
+        # 30 日を 1 秒だけ超えた時点。age.days (切り捨て) で比べると 30 と
+        # なり「最近」扱いになる off-by-one を検出する (Codex review P2)。
+        observed_at=MODULE.datetime(2026, 9, 23, 0, 0, 1, tzinfo=MODULE.timezone.utc),
+    )
+    item = next(
+        setting
+        for setting in report["settings"]
+        if setting["name"] == "code_scanning_default_setup"
+    )
+
+    assert item["classification"] != "no_change"
 
 
 def test_stale_advanced_codeql_analysis_does_not_satisfy_requirement():
