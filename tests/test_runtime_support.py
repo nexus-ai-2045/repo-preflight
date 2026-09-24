@@ -91,9 +91,10 @@ def test_run_preflight_discovers_root_from_clone(tmp_path: Path):
     assert payload["intent"] == "create_repo"
 
 
-def test_runtime_smoke_passes():
+def test_runtime_smoke_passes(tmp_path: Path):
+    # 実ユーザーの HOME に install 済みコピーがあると結果が変わるので切り離す
     result = subprocess.run(
-        [sys.executable, str(SMOKE), "--repo", str(ROOT)],
+        [sys.executable, str(SMOKE), "--repo", str(ROOT), "--home", str(tmp_path)],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -638,3 +639,102 @@ def test_runtime_smoke_fails_when_open_pr_embedded_scan_is_tool_error(
     assert module.main() == 1
     payload = json.loads(capsys.readouterr().out)
     assert "open_pr_tool_error" in payload["errors"]
+
+
+# --- runtime smoke が install 済み skill コピーの drift を検査する -------------
+# #45 の --check は誰も呼んでおらず、drift は手で実行した時しか気付けなかった。
+
+
+def _load_smoke(name: str):
+    spec = importlib.util.spec_from_file_location(name, SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_smoke(module, home: Path, monkeypatch, capsys) -> tuple[int, dict]:
+    monkeypatch.setattr(
+        sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(home)]
+    )
+    code = module.main()
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_runtime_smoke_fails_when_installed_skill_drifted(
+    tmp_path: Path, monkeypatch, capsys
+):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "stale\n", encoding="utf-8")
+
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_drift"), home, monkeypatch, capsys
+    )
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_drift:claude-code:skill_md_drift" in payload["errors"]
+    assert "runtime_skills_claude-code=drift" in payload["notes"]
+
+
+def test_runtime_smoke_passes_when_installed_skills_in_sync(
+    tmp_path: Path, monkeypatch, capsys
+):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_in_sync"), home, monkeypatch, capsys
+    )
+    assert code == 0, payload["errors"]
+    assert payload["status"] == "pass"
+    assert {item["status"] for item in payload["runtime_skills"]} == {"ok"}
+
+
+def test_runtime_smoke_passes_when_skills_not_installed(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # CI には install 済みコピーが無い。not_installed で smoke を落とさない
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_not_installed"), tmp_path, monkeypatch, capsys
+    )
+    assert code == 0, payload["errors"]
+    assert payload["status"] == "pass"
+    assert {item["status"] for item in payload["runtime_skills"]} == {"not_installed"}
+
+
+def test_runtime_smoke_fails_when_skill_check_cannot_run(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # 検査自体が例外で落ちた run を pass にしない (#51 の tool_error と同じ扱い)
+    module = _load_smoke("runtime_smoke_check_error")
+
+    def broken_loader(root):
+        raise OSError("boom")
+
+    monkeypatch.setattr(module, "load_installer", broken_loader)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_tool_error:OSError:boom" in payload["errors"]
+
+
+def test_runtime_smoke_skill_check_maps_non_pass_statuses_to_errors(
+    tmp_path: Path, monkeypatch
+):
+    # missing_adapter (--check の tool_error) と未知の status は pass に丸めない
+    module = _load_smoke("runtime_smoke_status_map")
+    installer = _load_install()
+    statuses = iter(["missing_adapter", "surprise"])
+
+    def fake_check_one(*, repo, runtime, dest):
+        return {"runtime": runtime, "dest": str(dest), "status": next(statuses)}
+
+    monkeypatch.setattr(installer, "check_one", fake_check_one)
+    monkeypatch.setattr(module, "load_installer", lambda root: installer)
+    errors, results = module.check_runtime_skills(ROOT, _fresh_home(tmp_path))
+    assert errors == [
+        "runtime_skills_tool_error:claude-code:missing_adapter",
+        "runtime_skills_tool_error:agents:surprise",
+    ]
+    assert len(results) == 2

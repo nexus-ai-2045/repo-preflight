@@ -157,8 +157,20 @@ exit code は `2` です（何も検査できなかった run を `pass` と書�
 fail-open するため）。`status: drift` の `next` は、呼び出した script の絶対 path と
 検査した `--repo` を含む再配布コマンドです。
 
-CI ゲートには載せていません。CI には install 済みコピーが存在しないため、
-そこで検査しても常に `not_installed` にしかならないからです。
+同じ検査は `runtime_smoke.py` からも呼ばれます（`check_one` を直接 import して実行）。
+smoke での扱いは次のとおりで、`ok` / `not_installed` 以外を pass に丸めません。
+
+| `--check` の status | smoke の扱い | smoke の `errors` |
+|---|---|---|
+| `ok` | pass | — |
+| `not_installed` | pass（CI など配布していないマシン） | — |
+| `drift` | fail | `runtime_skills_drift:<runtime>:<findings>` |
+| `missing_adapter` / 未知の status | fail | `runtime_skills_tool_error:<runtime>:<status>` |
+| 検査自体の例外（installer 不在など） | fail | `runtime_skills_tool_error:<例外名>:<内容>` |
+
+CI には install 済みコピーが存在しないため、CI 上の smoke では常に
+`not_installed` として pass します。drift を拾えるのは、配布済みのマシンで
+smoke を実行したときです。検査するホームは `--home` で差し替えられます（tests 用）。
 
 プロジェクト限定にしたい場合:
 
@@ -176,6 +188,8 @@ python -m pytest -q
 ```
 
 `runtime_smoke` が exit 0 なら、そのマシン上で CLI + skill 契約の最小保証は満たす。
+ホームへ install 済みの skill コピーがあれば、それが正本から drift していないことも含む
+（`install_runtime_skills.py --check` と同じ検査。未 install は pass）。
 
 ## エージェント向け最小契約 (全 runtime 共通)
 
