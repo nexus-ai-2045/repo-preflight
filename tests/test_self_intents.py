@@ -79,3 +79,28 @@ def test_documented_intents_stay_usable_against_this_repository(intent, extra):
     assert scan["status"] != "tool_error", scan.get("issues", scan)
     consistency = scan["checks"]["repository_consistency"]
     assert consistency["status"] == "pass", consistency
+
+
+def test_shortest_plain_scan_does_not_tool_error_on_self():
+    """OPERATIONS / README の最短1本が自己リポで整合性 tool_error に落ちない。"""
+    if not _origin_main_is_usable_base():
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            pytest.fail(
+                "refs/remotes/origin/main が CI checkout に無い。"
+                "fetch-depth: 0 が外れると本保証テストは実行できない"
+            )
+        pytest.skip("origin/main が無い、または HEAD の祖先ではない環境")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(REPO)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.stdout, result.stderr
+    report = json.loads(result.stdout)
+    assert result.returncode != 2, report
+    assert report["status"] != "tool_error"
+    consistency = report["checks"]["repository_consistency"]
+    assert consistency["status"] != "tool_error", consistency
+    assert "change_sensitive_scope_unavailable" not in consistency.get("findings", [])
+    assert report["consistency_scope"]["base_ref"] == "origin/main"

@@ -1276,16 +1276,10 @@ def test_configure_settings_origin_ignores_git_dir_override(
 
 
 def test_plain_scan_accepts_consistency_base_ref_without_release(tmp_path: Path):
-    """impact_map を持つ repo の plain scan は --consistency-base-ref で scope をもらえる。
+    """impact_map を持つ repo の plain scan は --consistency-base-ref で scope を上書きできる。
 
-    change-sensitive な設定では plain scan の内蔵 consistency が
-    change_sensitive_scope_unavailable で tool_error になり、overall も tool_error
-    (rc=2) になる。README が案内する `readiness_scan.py --repo PATH` が、この
-    repository 自身を含む impact_map 持ちの repo で常に tool_error だった
-    (2026-09-19 実測)。--consistency-base-ref の help は「repo全体scanを狭めず、
-    整合性のchange-sensitive検査だけに使う」と書いており plain scan こそ
-    その用途なのに、argparse が publish/release intent か --release を要求して
-    いた。--release は README release gate を足すので代替にならない。
+    既定では origin/main を試すが、明示指定も引き続き plain scan で受け付ける。
+    --release は README release gate を足すだけなので、整合性 scope の代替にはならない。
     """
     repo = make_repo(tmp_path)
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
@@ -1324,3 +1318,68 @@ def test_plain_scan_accepts_consistency_base_ref_without_release(tmp_path: Path)
     assert (
         "readme_release_design" not in report["checks"]
     )  # --release を暗黙に足していない
+
+
+def test_plain_scan_defaults_consistency_base_to_origin_main(tmp_path: Path):
+    """最短コマンド（base 未指定）でも impact_map 付きで整合性が tool_error に落ちない。"""
+    repo = make_repo(tmp_path)
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "shadow",
+                "impact_map": [{"change": ["README.md"], "requires_any": ["docs/**"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add change-sensitive consistency config")
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(repo)],
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 2, result.stderr
+    report = json.loads(result.stdout)
+    assert report["status"] != "tool_error"
+    assert report["scan_scope"]["mode"] == "repository"
+    assert report["consistency_scope"]["mode"] == "target_diff"
+    assert report["consistency_scope"]["base_ref"] == "origin/main"
+    assert report["consistency_scope"]["base_oid"]
+    assert report["checks"]["repository_consistency"]["status"] != "tool_error"
+    assert "change_sensitive_scope_unavailable" not in report["checks"][
+        "repository_consistency"
+    ].get("findings", [])
+
+
+def test_plain_scan_without_usable_default_still_reports_scope_unavailable(
+    tmp_path: Path,
+):
+    """origin/main が無い impact_map 付き repo は従来どおり tool_error。"""
+    repo = make_repo(tmp_path)
+    (repo / ".repo-preflight-consistency.json").write_text(
+        json.dumps(
+            {
+                "schema": "repo-preflight.consistency/v1",
+                "mode": "shadow",
+                "impact_map": [{"change": ["README.md"], "requires_any": ["docs/**"]}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add change-sensitive consistency config")
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "tool_error"
+    assert report["checks"]["repository_consistency"]["findings"] == [
+        "change_sensitive_scope_unavailable"
+    ]
+    assert report["consistency_scope"] == {"mode": "same_as_scan"}

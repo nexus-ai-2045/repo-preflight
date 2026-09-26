@@ -26,10 +26,9 @@ APIキーらしき文字列や自分のPCのパスを、今あるファイルだ
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
 cd repo-preflight
 python scripts/readiness_scan.py --repo /path/to/your-repo
-python scripts/readiness_scan.py --repo /path/to/your-repo --consistency-base-ref origin/main
 ```
 
-`.repo-preflight-consistency.json` に impact_map がある repo では、整合性検査に差分の scope が要ります。repo 全体 scan は狭めず、整合性検査にだけ base を渡します（上の 2 行目のコマンド）。
+`.repo-preflight-consistency.json` に impact_map がある repo では、整合性検査に差分の scope が要ります。最短コマンドでは未指定時に `origin/main` を既定候補として使います（usable な remote base で、HEAD の祖先であること）。別の比較元にしたいときだけ `--consistency-base-ref` を付けます。repo 全体 scan（secret・個人path・必須文書）は狭めません。
 
 調べたいリポジトリは、このツールとは別の場所にあってかまいません。中身は読むだけで、書き換えません。
 
@@ -191,7 +190,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 `--repo` だけを渡すと、質問をせずに検査結果だけを返します。CIから使うときはこの形です。
 
-変更差分を見る設定（`impact_map` や生成物）がある場合、比較元の指定が要ります。指定がなければ止まります。わからないまま通しません。
+変更差分を見る設定（`impact_map` や生成物）がある場合、比較元が要ります。最短コマンドでは未指定時に `origin/main` を試し、usable ならそれを使います。usable な remote base が無ければ止まります。わからないまま通しません。
 
 差分へ絞るときは **`--base-ref`** を使います。CLI に `--target-diff` フラグはありません。
 
@@ -202,7 +201,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 | `--intent <場面>` | 操作の直前ゲート（対話 schema） |
 | `--repo <パス>` | 調べる対象。新規作成のときだけ不要 |
 | `--base-ref <比較元>` | 今回の変更へ絞る（`push` / `open_pr` / `merge`） |
-| `--consistency-base-ref <比較元>` | 文書チェックだけ差分に絞る |
+| `--consistency-base-ref <比較元>` | 文書チェックだけ差分に絞る（未指定時は `origin/main` を試す） |
 | `--expected-identity "<名前> <メール>"` | 全コミットの名義を確認する |
 | `--audience <相手>` | 見せる相手を指定する |
 | `--github-settings-profile <profile>` | Settings比較profile |

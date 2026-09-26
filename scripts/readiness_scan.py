@@ -664,6 +664,11 @@ def load_github_settings_module():
     return module
 
 
+# impact_map 等の change-sensitive 整合性検査向け。README / OPERATIONS の最短
+# コマンド（base 未指定）でも同じ remote base を使う。
+DEFAULT_CONSISTENCY_BASE_REF = "origin/main"
+
+
 def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     script = Path(__file__).with_name("consistency_gate.py")
     spec = importlib.util.spec_from_file_location("consistency_gate", script)
@@ -672,6 +677,33 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module.check(repo, base_ref=base_ref)
+
+
+def probe_consistency_base_ref(
+    repo: Path, consistency_base_ref: str
+) -> tuple[str, str] | None:
+    """usable な remote consistency base なら (symbolic, oid)、不可なら None。
+
+    条件は明示指定時と同じ: commit として解決でき、symbolic-full-name が
+    refs/remotes/origin/ 配下で、HEAD の祖先であること。
+    """
+    consistency_probe = run(
+        repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
+    )
+    consistency_symbolic = run(
+        repo, "git", "rev-parse", "--symbolic-full-name", consistency_base_ref
+    )
+    consistency_ancestor = run(
+        repo, "git", "merge-base", "--is-ancestor", consistency_base_ref, "HEAD"
+    )
+    if (
+        consistency_probe[0]
+        or consistency_symbolic[0]
+        or not consistency_symbolic[1].startswith("refs/remotes/origin/")
+        or consistency_ancestor[0]
+    ):
+        return None
+    return consistency_symbolic[1], consistency_probe[1]
 
 
 def repository_root_error(repo: Path) -> dict | None:
@@ -716,25 +748,21 @@ def scan(
     }
     resolved_consistency_base_ref: str | None = None
     consistency_base_oid: str | None = None
-    if consistency_base_ref and not base_ref:
-        consistency_probe = run(
-            repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
-        )
-        consistency_symbolic = run(
-            repo, "git", "rev-parse", "--symbolic-full-name", consistency_base_ref
-        )
-        consistency_ancestor = run(
-            repo, "git", "merge-base", "--is-ancestor", consistency_base_ref, "HEAD"
-        )
-        if (
-            consistency_probe[0]
-            or consistency_symbolic[0]
-            or not consistency_symbolic[1].startswith("refs/remotes/origin/")
-            or consistency_ancestor[0]
-        ):
+    # plain / publish / release で base 未指定のとき、impact_map 付きでも
+    # 最短コマンドが change_sensitive_scope_unavailable で落ちないよう
+    # origin/main を既定候補にする。usable でなければ従来どおり未指定のまま。
+    consistency_base_was_defaulted = False
+    if consistency_base_ref is None and base_ref is None:
+        defaulted = probe_consistency_base_ref(repo, DEFAULT_CONSISTENCY_BASE_REF)
+        if defaulted is not None:
+            consistency_base_ref = DEFAULT_CONSISTENCY_BASE_REF
+            resolved_consistency_base_ref, consistency_base_oid = defaulted
+            consistency_base_was_defaulted = True
+    if consistency_base_ref and not base_ref and not consistency_base_was_defaulted:
+        probed = probe_consistency_base_ref(repo, consistency_base_ref)
+        if probed is None:
             return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
-        resolved_consistency_base_ref = consistency_symbolic[1]
-        consistency_base_oid = consistency_probe[1]
+        resolved_consistency_base_ref, consistency_base_oid = probed
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
         symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
@@ -1487,7 +1515,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--consistency-base-ref",
         help=(
             "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
-            "plain scan と publish/release 向け。impact_map を持つrepoの plain scan はこれが無いと tool_error になる"
+            "plain scan と publish/release 向け。"
+            f"未指定時は {DEFAULT_CONSISTENCY_BASE_REF} を試し、usable ならそれを使う"
         ),
     )
     parser.add_argument(
@@ -1563,8 +1592,7 @@ def resolve_options(
     # --consistency-base-ref は repo 全体 scan を狭めず、整合性の change-sensitive
     # 検査だけに scope を与える。target_diff 系 intent (push/open_pr/merge) は
     # 自前の --base-ref を持つので排他。plain scan (intent 無し) は repo 全体 scan
-    # そのものなので許可する。impact_map を持つ repo では plain scan がこれ無しに
-    # 常に tool_error になっていた (2026-09-19 実測、この repository 自身を含む)。
+    # そのものなので許可する。未指定時は scan() 側で origin/main を既定候補にする。
     if consistency_base_ref and not (
         intent in {"publish", "release"} or intent is None
     ):
