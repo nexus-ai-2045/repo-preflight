@@ -36,6 +36,6 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 既存private repoのpush / PR / mergeでは `--base-ref` を指定すると、今回の変更fileと `base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
 
-公開・releaseでは `--base-ref` を使わず、必須文書と全履歴を含むrepo全体検査が必要です。change-sensitiveな整合性検査だけにbaseが必要なら `--consistency-base-ref` を使います。secret・個人path・必須文書のscopeはrepo全体のままです。
+公開・releaseでは `--base-ref` を使わず、必須文書と全履歴を含むrepo全体検査が必要です。change-sensitiveな整合性検査だけにbaseが必要なら、未指定時は `origin/main` を試し、別の比較元にしたいときだけ `--consistency-base-ref` を使います。secret・個人path・必須文書のscopeはrepo全体のままです。
 
 確認packetにはbase ref / base SHA / head SHAが入り、実際のpush / PRは同じbaseへ固定します。baseまたはHEADが変わった場合は、古い結果を使わず再検査します。

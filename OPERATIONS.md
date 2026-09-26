@@ -2,8 +2,15 @@
 
 ## Smoke
 
+最短1本（自己・impact_map 付きでも整合性は既定の `origin/main` を使う）:
+
 ```powershell
 python scripts/readiness_scan.py --repo .
+```
+
+release 準備と runtime / テスト:
+
+```powershell
 python scripts/readiness_scan.py --repo . --release
 python scripts/runtime_smoke.py --repo .
 python -m pytest -q
@@ -21,6 +28,8 @@ python scripts/install_runtime_skills.py --repo . --apply
 `status: pass`はローカル自動検査の結果です。公開可否は`publication_decision`と各`unknown`項目を確認し、人が判断します。
 release準備では `--release` を省略しません。`readme_release_design` がfailならREADMEを修正し、
 再実行します。推奨capabilityは不足箇所へのroutingであり、全pluginの一括起動指示ではありません。
+
+浅い clone では履歴個人pathが無く `pass` になり得ます。完全履歴では `personal_path_scan` で `blocked` になり得ますが、それは別件です。整合性の `tool_error`（`change_sensitive_scope_unavailable`）にはしない、というのがこの Smoke の契約です。
 
 ## 更新
 
