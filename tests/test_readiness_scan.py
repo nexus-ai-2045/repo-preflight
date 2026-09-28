@@ -117,6 +117,46 @@ def test_release_whitespace_only_readme_update_remains_blocked(tmp_path: Path):
     )
 
 
+def test_release_after_candidate_tag_uses_explicit_previous_tag(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    readme = repo / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\nCurrent release: 1.1.0.\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "release candidate")
+    git(repo, "tag", "v1.1.0")
+    report = MODULE.scan(repo, release=True, consistency_base_ref="v1.0.0")
+    assert report["status"] == "pass"
+    baseline = report["checks"]["readme_release_freshness"]["baseline"]
+    assert baseline["resolved_base_ref"] == "refs/tags/v1.0.0"
+    assert baseline["base_oid"] == report["consistency_scope"]["base_oid"]
+    current = MODULE.scan(repo, release=True, consistency_base_ref="v1.1.0")
+    assert current["status"] == "blocked"
+    assert (
+        current["checks"]["readme_release_freshness"]["reason"]
+        == "release_readme_update_missing"
+    )
+
+
+def test_release_explicit_baseline_sha_drift_fails_closed(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    initial = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    report = MODULE.check_release_readme_freshness(
+        repo, baseline=("refs/tags/v1.0.0", initial)
+    )
+    assert report["status"] == "tool_error"
+
+
 def test_first_release_still_requires_readme_design(tmp_path: Path):
     repo = make_repo(tmp_path)
     report = MODULE.scan(repo, release=True)

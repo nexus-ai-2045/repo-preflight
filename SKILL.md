@@ -114,6 +114,8 @@ releaseと現在のREADMEを比較し、空白だけの更新や未更新を止�
 `first_release` と明記し、README情報設計ゲートは引き続き必須とする。
 shallow cloneやtag/README取得不能は `tool_error` で停止する。
 整合性差分にも前回releaseを使う場合は `--consistency-base-ref <tag>` を指定できる。
+指定tagと解決SHAはREADME更新検査にも固定する。候補tagを作成した後の再検査でも、
+前回release tagを明示すれば比較対象が候補tagへ切り替わらない。
 tagはHEADの祖先に限り、push / PR / merge用の `--base-ref` はoriginのremote ref限定のまま。
 scannerはREADMEを自動編集しない。agentが既存READMEへ必要な説明を更新し、再検査する。
 

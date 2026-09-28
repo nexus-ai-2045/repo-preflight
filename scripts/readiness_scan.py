@@ -709,43 +709,58 @@ def probe_consistency_base_ref(
     return consistency_symbolic[1], consistency_probe[1]
 
 
-def check_release_readme_freshness(repo: Path) -> dict:
+def check_release_readme_freshness(
+    repo: Path, *, baseline: tuple[str, str] | None = None
+) -> dict:
     """直近の到達可能なsemver tagからREADMEの実内容更新を検査する。"""
     error = {"status": "tool_error", "reason": "release_readme_baseline_unavailable"}
     code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
     if code or shallow != "false":
         return error
-    code, tags = run(repo, "git", "for-each-ref", "--format=%(refname)", "refs/tags/")
-    if code:
-        return error
-    reachable: list[str] = []
-    for ref in tags.splitlines():
-        if not re.fullmatch(
-            r"refs/tags/v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
-            r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
-            ref,
-        ):
-            continue
-        code, _ = run(repo, "git", "merge-base", "--is-ancestor", ref, "HEAD")
-        if code not in (0, 1):
+    if baseline is not None:
+        ref, oid = baseline
+        if not ref.startswith("refs/tags/"):
             return error
-        if code == 0:
-            reachable.append(ref)
-    if not reachable:
-        return {"status": "pass", "reason": "first_release", "baseline": None}
-    # git describeは履歴上で最も近いtagを選び、古い系列の高い番号と混同しない。
-    args = ["git", "describe", "--tags", "--abbrev=0"]
-    for ref in reachable:
-        args.extend(("--match", ref.removeprefix("refs/tags/")))
-    code, tag = run(repo, *args, "HEAD")
-    if code:
-        return error
-    ref = f"refs/tags/{tag}"
-    if ref not in reachable:
-        return error
-    code, oid = run(repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}")
-    if code:
-        return error
+        code, current_oid = run(
+            repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}"
+        )
+        ancestor_code, _ = run(repo, "git", "merge-base", "--is-ancestor", oid, "HEAD")
+        if code or current_oid != oid or ancestor_code:
+            return error
+    else:
+        code, tags = run(
+            repo, "git", "for-each-ref", "--format=%(refname)", "refs/tags/"
+        )
+        if code:
+            return error
+        reachable: list[str] = []
+        for ref in tags.splitlines():
+            if not re.fullmatch(
+                r"refs/tags/v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+                r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+                ref,
+            ):
+                continue
+            code, _ = run(repo, "git", "merge-base", "--is-ancestor", ref, "HEAD")
+            if code not in (0, 1):
+                return error
+            if code == 0:
+                reachable.append(ref)
+        if not reachable:
+            return {"status": "pass", "reason": "first_release", "baseline": None}
+        # git describeは履歴上で最も近いtagを選び、古い系列の高い番号と混同しない。
+        args = ["git", "describe", "--tags", "--abbrev=0"]
+        for ref in reachable:
+            args.extend(("--match", ref.removeprefix("refs/tags/")))
+        code, tag = run(repo, *args, "HEAD")
+        if code:
+            return error
+        ref = f"refs/tags/{tag}"
+        if ref not in reachable:
+            return error
+        code, oid = run(repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}")
+        if code:
+            return error
     before = run_subprocess(
         ["git", "show", f"{oid}:README.md"], cwd=repo, capture_output=True
     )
@@ -1050,7 +1065,16 @@ def scan(
         repo, consistency_base_ref or base_ref
     )
     if release:
-        checks["readme_release_freshness"] = check_release_readme_freshness(repo)
+        release_baseline = (
+            (resolved_consistency_base_ref, consistency_base_oid)
+            if resolved_consistency_base_ref
+            and resolved_consistency_base_ref.startswith("refs/tags/")
+            and consistency_base_oid
+            else None
+        )
+        checks["readme_release_freshness"] = check_release_readme_freshness(
+            repo, baseline=release_baseline
+        )
         if (repo / "README.md").is_file():
             readme_report = run_readme_release_gate(repo)
             checks["readme_release_design"] = {
