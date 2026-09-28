@@ -2,6 +2,12 @@
 
 必要なものだけ作成し、存在だけで合格にしない。
 
+release準備時はREADMEへ今回のversion・機能・制約を更新する。
+`readiness_scan.py --intent release` は、到達可能な直近semver tagと現在treeのREADMEを
+比較し、未更新・空白だけの更新を必須ゲートで止める。tagなしは `first_release` と
+明記して情報設計検査を維持し、履歴やREADMEが読めなければ停止する。
+更新は既存READMEへの編集で行い、scannerの読み取り専用契約を維持する。
+
 - `README.md`: H1直後の短い価値説明、Why、What、quickstart、制約を理解順序どおりに置く。原則300行以内とし、詳細はdocsへ分離する。release準備では `readme_release_gate.py` の証拠を残す。日本語READMEのクイックスタートは人の `pip install` 手順ではなく、AIに貼る GitHub URL と危険レビュー指示を置く。図は画像自身ではなく ADR / 再現テスト / 契約文書へリンクする
 - `LICENSE`とthird-party notice: code、data、model、画像、fontの権利
 - `SECURITY.md`: 非公開報告経路とdata handling

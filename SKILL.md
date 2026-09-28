@@ -107,6 +107,16 @@ discovered -> requirements_defined -> research_complete -> design_complete
 
 ## 実行 (実装中の通常ループ)
 
+release準備では、今回のversion・機能・制約をREADMEへ反映してから検査する。
+`readme_release_freshness` はHEADから到達可能なsemver tagのうち履歴上で最も近い
+releaseと現在のREADMEを比較し、空白だけの更新や未更新を止める。working treeの
+変更も確認するが、外部操作前には既存のclean検査も通す。tagがない場合は
+`first_release` と明記し、README情報設計ゲートは引き続き必須とする。
+shallow cloneやtag/README取得不能は `tool_error` で停止する。
+整合性差分にも前回releaseを使う場合は `--consistency-base-ref <tag>` を指定できる。
+tagはHEADの祖先に限り、push / PR / merge用の `--base-ref` はoriginのremote ref限定のまま。
+scannerはREADMEを自動編集しない。agentが既存READMEへ必要な説明を更新し、再検査する。
+
 1. repo root、対象成果、owner、non-goals、成功条件を確定する。曖昧さが結果を変えない限り質問せず進める。
 2. ローカル実装中は read-only scan で現状把握してよい:
    `python scripts/readiness_scan.py --repo <path>`

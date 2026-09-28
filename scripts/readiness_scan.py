@@ -680,12 +680,12 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
 
 
 def probe_consistency_base_ref(
-    repo: Path, consistency_base_ref: str
+    repo: Path, consistency_base_ref: str, *, release: bool = False
 ) -> tuple[str, str] | None:
-    """usable な remote consistency base なら (symbolic, oid)、不可なら None。
+    """使用可能なconsistency baseなら(symbolic, oid)、不可ならNone。
 
     条件は明示指定時と同じ: commit として解決でき、symbolic-full-name が
-    refs/remotes/origin/ 配下で、HEAD の祖先であること。
+    refs/remotes/origin/配下、release時だけrefs/tags/も許可し、HEADの祖先であること。
     """
     consistency_probe = run(
         repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
@@ -699,11 +699,71 @@ def probe_consistency_base_ref(
     if (
         consistency_probe[0]
         or consistency_symbolic[0]
-        or not consistency_symbolic[1].startswith("refs/remotes/origin/")
+        or not (
+            consistency_symbolic[1].startswith("refs/remotes/origin/")
+            or (release and consistency_symbolic[1].startswith("refs/tags/"))
+        )
         or consistency_ancestor[0]
     ):
         return None
     return consistency_symbolic[1], consistency_probe[1]
+
+
+def check_release_readme_freshness(repo: Path) -> dict:
+    """直近の到達可能なsemver tagからREADMEの実内容更新を検査する。"""
+    error = {"status": "tool_error", "reason": "release_readme_baseline_unavailable"}
+    code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+    if code or shallow != "false":
+        return error
+    code, tags = run(repo, "git", "for-each-ref", "--format=%(refname)", "refs/tags/")
+    if code:
+        return error
+    reachable: list[str] = []
+    for ref in tags.splitlines():
+        if not re.fullmatch(
+            r"refs/tags/v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+            r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+            ref,
+        ):
+            continue
+        code, _ = run(repo, "git", "merge-base", "--is-ancestor", ref, "HEAD")
+        if code not in (0, 1):
+            return error
+        if code == 0:
+            reachable.append(ref)
+    if not reachable:
+        return {"status": "pass", "reason": "first_release", "baseline": None}
+    # git describeは履歴上で最も近いtagを選び、古い系列の高い番号と混同しない。
+    args = ["git", "describe", "--tags", "--abbrev=0"]
+    for ref in reachable:
+        args.extend(("--match", ref.removeprefix("refs/tags/")))
+    code, tag = run(repo, *args, "HEAD")
+    if code:
+        return error
+    ref = f"refs/tags/{tag}"
+    if ref not in reachable:
+        return error
+    code, oid = run(repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}")
+    if code:
+        return error
+    before = run_subprocess(
+        ["git", "show", f"{oid}:README.md"], cwd=repo, capture_output=True
+    )
+    path = repo / "README.md"
+    try:
+        if before.returncode or path.is_symlink():
+            return error
+        previous_text = before.stdout.decode("utf-8")
+        current_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return error
+    changed = "".join(previous_text.split()) != "".join(current_text.split())
+    return {
+        "status": "pass" if changed else "fail",
+        "reason": "readme_updated" if changed else "release_readme_update_missing",
+        "baseline": {"resolved_base_ref": ref, "base_oid": oid},
+        "content_changed": changed,
+    }
 
 
 def repository_root_error(repo: Path) -> dict | None:
@@ -759,7 +819,7 @@ def scan(
             resolved_consistency_base_ref, consistency_base_oid = defaulted
             consistency_base_was_defaulted = True
     if consistency_base_ref and not base_ref and not consistency_base_was_defaulted:
-        probed = probe_consistency_base_ref(repo, consistency_base_ref)
+        probed = probe_consistency_base_ref(repo, consistency_base_ref, release=release)
         if probed is None:
             return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
         resolved_consistency_base_ref, consistency_base_oid = probed
@@ -990,6 +1050,7 @@ def scan(
         repo, consistency_base_ref or base_ref
     )
     if release:
+        checks["readme_release_freshness"] = check_release_readme_freshness(repo)
         if (repo / "README.md").is_file():
             readme_report = run_readme_release_gate(repo)
             checks["readme_release_design"] = {
@@ -1029,6 +1090,7 @@ def scan(
         )
     if release:
         automated_check_names.add("readme_release_design")
+        automated_check_names.add("readme_release_freshness")
     automated_check_names.add("repository_consistency")
     tool_error = any(
         checks[name]["status"] == "tool_error" for name in automated_check_names
@@ -1514,7 +1576,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--consistency-base-ref",
         help=(
-            "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
+            "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うbase ref。"
+            "releaseではHEADの祖先のtagも使用できる。"
             "plain scan と publish/release 向け。"
             f"未指定時は {DEFAULT_CONSISTENCY_BASE_REF} を試し、usable ならそれを使う"
         ),

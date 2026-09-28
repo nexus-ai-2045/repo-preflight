@@ -51,6 +51,122 @@ def set_remote_base(repo: Path, name: str = "main") -> str:
     return f"origin/{name}"
 
 
+def make_release_repo(tmp_path: Path) -> Path:
+    repo = make_repo(tmp_path)
+    (repo / "README.md").write_text(
+        "# Demo\n\nA tool for checking releases.\n\n"
+        "## Overview\nCheck releases.\n\n## Features\nInspect files.\n\n"
+        "## Quickstart\nAsk your assistant to inspect this repository.\n\n"
+        "## Limits\nHuman review remains required.\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "document release")
+    return repo
+
+
+def test_release_blocks_readable_but_stale_readme(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    (repo / "CHANGELOG.md").write_text("New release feature.\n", encoding="utf-8")
+    git(repo, "add", "CHANGELOG.md")
+    git(repo, "commit", "-m", "new release without README")
+    report = MODULE.scan(repo, release=True)
+    assert report["checks"]["readme_release_design"]["status"] == "pass"
+    assert report["checks"]["readme_release_freshness"]["status"] == "fail"
+    assert report["status"] == "blocked"
+
+
+def test_release_readme_update_includes_worktree_and_then_committed_content(
+    tmp_path: Path,
+):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    readme = repo / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\nCurrent release: 1.1.0.\n",
+        encoding="utf-8",
+    )
+    report = MODULE.scan(repo, release=True, consistency_base_ref="v1.0.0")
+    assert report["checks"]["readme_release_freshness"]["status"] == "pass"
+    assert report["checks"]["clean_worktree"]["status"] == "fail"
+    assert report["consistency_scope"]["resolved_base_ref"] == "refs/tags/v1.0.0"
+    assert (
+        report["consistency_scope"]["base_oid"]
+        == report["checks"]["readme_release_freshness"]["baseline"]["base_oid"]
+    )
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "update release README")
+    assert MODULE.scan(repo, release=True)["status"] == "pass"
+
+
+def test_release_whitespace_only_readme_update_remains_blocked(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    readme = repo / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace("\n", "\n\n"), encoding="utf-8"
+    )
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "format only")
+    report = MODULE.scan(repo, release=True)
+    assert report["status"] == "blocked"
+    assert (
+        report["checks"]["readme_release_freshness"]["reason"]
+        == "release_readme_update_missing"
+    )
+
+
+def test_first_release_still_requires_readme_design(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    report = MODULE.scan(repo, release=True)
+    assert report["checks"]["readme_release_freshness"]["reason"] == "first_release"
+    assert report["checks"]["readme_release_design"]["status"] == "fail"
+    assert report["status"] == "blocked"
+
+
+def test_release_consistency_baseline_rejects_missing_and_future_tags(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    (repo / "future.txt").write_text("future\n", encoding="utf-8")
+    git(repo, "add", "future.txt")
+    git(repo, "commit", "-m", "future")
+    git(repo, "tag", "v2.0.0")
+    git(repo, "checkout", "--detach", "v1.0.0")
+    for ref in ("v9.0.0", "v2.0.0"):
+        report = MODULE.scan(repo, release=True, consistency_base_ref=ref)
+        assert report["status"] == "tool_error"
+        assert report["issues"] == ["invalid_consistency_base_ref"]
+
+
+def test_tag_permission_is_limited_to_release_consistency_baseline(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    assert MODULE.scan(repo, consistency_base_ref="v1.0.0")["status"] == "tool_error"
+    assert MODULE.scan(repo, release=True, base_ref="v1.0.0")["issues"] == [
+        "invalid_non_remote_or_non_ancestor_base_ref"
+    ]
+    assert (
+        MODULE.scan(repo, release=True, consistency_base_ref="HEAD")["status"]
+        == "tool_error"
+    )
+
+
+def test_release_tag_inventory_error_fails_closed(tmp_path: Path, monkeypatch):
+    repo = make_release_repo(tmp_path)
+    original = MODULE.run
+
+    def fail_inventory(path, *args):
+        if args[:2] == ("git", "for-each-ref"):
+            return 1, ""
+        return original(path, *args)
+
+    monkeypatch.setattr(MODULE, "run", fail_inventory)
+    report = MODULE.scan(repo, release=True)
+    assert report["status"] == "tool_error"
+    assert report["checks"]["readme_release_freshness"]["status"] == "tool_error"
+
+
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
     """出力は常にJSON。formatを選ぶflagは受け付けない。
 
