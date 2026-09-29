@@ -29,6 +29,7 @@
 
 ### 追加
 
+- release intent の最終確認に「Release本文（日本語・非空）を用意したか」を追加した。
 - 日本語READMEのクイックスタートを、AIへ貼る URL と危険レビュー指示にする契約を warning として検知する。
 - 図が画像自身ではなく ADR / 再現テストへリンクされているかを warning として検知する。空のクイックスタート、否定形の危険レビュー、fence内の見出し/画像例、reference-style画像、pip3、HTMLコメント内URL、英語READMEの図も対象にする。CI/License などの遠隔バッジは図ではないので対象外。
 - PRを出す前のセルフレビュー `docs/pr-self-review.md` を追加した。複数リポジトリの

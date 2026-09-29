@@ -22,6 +22,7 @@ AI エージェントは repo 作成 / push / PR / merge / 公開 / release の�
 private repo作成、push、PR、merge、public化、告知を別承認にする。
 intent 対話で yes を得ても、実行直前に操作内容を再掲して承認を取り直す。
 GitHub connectorはPR/issue情報を優先し、branch/commit/push/account/Actions logはlocal git/ghで補う。
+release では Release本文（日本語・非空）を用意したか確認する。
 
 ## 履歴と名義
 
