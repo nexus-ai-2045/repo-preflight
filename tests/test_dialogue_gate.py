@@ -316,6 +316,32 @@ def test_format_dialogue_lists_numbered_proposals():
     assert "保証しないこと" in text
 
 
+def test_release_dialogue_includes_japanese_release_body_confirmation(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    scan = SCAN.scan(repo, release=True)
+    dialogue = DIALOGUE.build_dialogue(intent="release", scan=scan, audience="local")
+    confirmations = dialogue["confirmations"]
+    assert [item["id"] for item in confirmations] == [
+        "confirm_release_body_ja",
+        "confirm_release",
+    ]
+    body = confirmations[0]
+    assert body["question"] == "Release本文（日本語・非空）を用意したか?"
+    assert body["default"] == "cancel"
+    assert body["blocks_intent"] is True
+    assert body["dismissible"] is False
+    text = DIALOGUE.format_dialogue_for_agent(dialogue)
+    assert "Release本文（日本語・非空）を用意したか?" in text
+
+
+def test_non_release_dialogue_omits_japanese_release_body_confirmation(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    scan = SCAN.scan(repo, release=True)
+    dialogue = DIALOGUE.build_dialogue(intent="publish", scan=scan, audience="public")
+    ids = {item["id"] for item in dialogue["confirmations"]}
+    assert "confirm_release_body_ja" not in ids
+
+
 def test_configure_settings_blocks_when_repository_identity_yields_no_settings():
     dialogue = DIALOGUE.build_dialogue(
         intent="configure_settings",
