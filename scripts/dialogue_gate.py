@@ -335,6 +335,29 @@ def build_proposals_from_scan(
             )
         )
 
+    historical_identity = checks.get("historical_identity_audit") or {}
+    if (
+        intent == "release"
+        and identity.get("scope") == "pending_commits"
+        and historical_identity.get("mismatch_count", 0) > 0
+    ):
+        proposals.append(
+            _proposal(
+                id="review_existing_history_identity",
+                kind="historical_identity_review",
+                severity="recommended",
+                question=(
+                    "既存refの履歴には期待名義と異なるauthor/committerがあります。"
+                    "今回releaseとは分けて露出状況を確認しますか?"
+                ),
+                current={"mismatch_count": historical_identity["mismatch_count"]},
+                proposed={"action": "review_existing_history_without_rewrite"},
+                options=_yes_no_options("既存履歴を確認する", "残務として記録する"),
+                default="yes",
+                blocks_intent=False,
+            )
+        )
+
     origin = checks.get("origin") or {}
     if origin.get("status") != "pass" and intent in {
         "push",

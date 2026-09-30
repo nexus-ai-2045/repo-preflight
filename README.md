@@ -203,6 +203,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 | `--base-ref <比較元>` | 今回の変更へ絞る（`push` / `open_pr` / `merge`） |
 | `--consistency-base-ref <比較元>` | 文書チェックだけ差分に絞る（未指定時は `origin/main` を試す） |
 | `--expected-identity "<名前> <メール>"` | 全コミットの名義を確認する |
+| `--identity-base-ref origin/main` | releaseに限り、明示したremote ref以降の今回コミット名義を照合し、既存全履歴の名義不一致件数を別に報告する |
 | `--audience <相手>` | 見せる相手を指定する |
 | `--github-settings-profile <profile>` | Settings比較profile |
 | `--human` | 質問は人向け、結果は機械向けに分ける |

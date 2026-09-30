@@ -117,6 +117,11 @@ shallow cloneやtag/README取得不能は `tool_error` で停止する。
 指定tagと解決SHAはREADME更新検査にも固定する。候補tagを作成した後の再検査でも、
 前回release tagを明示すれば比較対象が候補tagへ切り替わらない。
 tagはHEADの祖先に限り、push / PR / merge用の `--base-ref` はoriginのremote ref限定のまま。
+既に公開済みの履歴に異なる名義があるreleaseでは、`--expected-identity`と
+`--identity-base-ref origin/<branch>`を明示すると、そのremote ref以降の
+今回コミットと現在のGit author/committer設定を必須判定し、全refの過去名義は
+`historical_identity_audit`の件数として残す。比較元はHEADの祖先に限る。
+secret・個人pathの全履歴検査は狭めない。publishの全履歴名義判定にも適用しない。
 scannerはREADMEを自動編集しない。agentが既存READMEへ必要な説明を更新し、再検査する。
 
 1. repo root、対象成果、owner、non-goals、成功条件を確定する。曖昧さが結果を変えない限り質問せず進める。

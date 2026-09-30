@@ -207,6 +207,93 @@ def test_release_tag_inventory_error_fails_closed(tmp_path: Path, monkeypatch):
     assert report["checks"]["readme_release_freshness"]["status"] == "tool_error"
 
 
+def test_release_identity_base_separates_pending_commits_from_history(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    (repo / "legacy.txt").write_text("historical commit\n", encoding="utf-8")
+    git(repo, "add", "legacy.txt")
+    git(
+        repo, "-c", "user.name=Legacy", "-c", "user.email=legacy@example.invalid",
+        "commit", "-m", "historical merge equivalent",
+    )
+    set_remote_base(repo)
+    readme = repo / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "document current release")
+    expected = "Test Author <test-author@example.invalid>"
+
+    unscoped = MODULE.scan(repo, release=True, expected_identity=expected)
+    assert unscoped["checks"]["commit_identity"]["status"] == "fail"
+    scoped = MODULE.scan(
+        repo, release=True, expected_identity=expected, identity_base_ref="origin/main"
+    )
+    assert scoped["status"] == "pass"
+    assert scoped["checks"]["commit_identity"]["status"] == "pass"
+    assert scoped["checks"]["commit_identity"]["identity_count"] == 1
+    assert scoped["checks"]["historical_identity_audit"]["mismatch_count"] == 1
+    assert scoped["checks"]["secret_scan"]["status"] == "pass"
+    assert scoped["checks"]["commit_identity"]["base_ref"] == "refs/remotes/origin/main"
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(
+            repo=repo, intent="release", expected_identity=expected,
+            identity_base_ref="origin/main",
+        )
+    )
+    assert dialogue["scan"]["checks"]["commit_identity"]["status"] == "pass"
+    assert "review_existing_history_identity" in {
+        proposal["id"] for proposal in dialogue["proposals"]
+    }
+
+
+def test_release_identity_base_still_blocks_new_mismatch(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    git(repo, "tag", "v1.0.0")
+    set_remote_base(repo)
+    readme = repo / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8")
+    git(repo, "add", "README.md")
+    git(
+        repo, "-c", "user.name=Legacy", "-c", "user.email=legacy@example.invalid",
+        "commit", "-m", "wrong release identity",
+    )
+    report = MODULE.scan(
+        repo, release=True,
+        expected_identity="Test Author <test-author@example.invalid>",
+        identity_base_ref="origin/main",
+    )
+    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 1
+
+
+def test_release_identity_base_requires_remote_ancestor_and_release(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    expected = "Test Author <test-author@example.invalid>"
+    assert MODULE.scan(
+        repo, expected_identity=expected, identity_base_ref="origin/main"
+    )["issues"] == ["invalid_identity_base_ref"]
+    for ref in ("HEAD", "origin/missing"):
+        assert MODULE.scan(
+            repo, release=True, expected_identity=expected, identity_base_ref=ref
+        )["issues"] == ["invalid_identity_base_ref"]
+
+
+def test_identity_base_cli_is_release_only(tmp_path: Path):
+    repo = make_release_repo(tmp_path)
+    for intent in ("publish", "push"):
+        result = subprocess.run(
+            [
+                sys.executable, str(SCRIPT), "--repo", str(repo),
+                "--intent", intent,
+                "--expected-identity", "Test Author <test-author@example.invalid>",
+                "--identity-base-ref", "origin/main",
+            ],
+            text=True, encoding="utf-8", capture_output=True, check=False,
+        )
+        assert result.returncode == 2
+        assert "--identity-base-ref requires --intent release" in result.stderr
+
+
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
     """出力は常にJSON。formatを選ぶflagは受け付けない。
 
