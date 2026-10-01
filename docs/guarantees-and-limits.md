@@ -11,14 +11,16 @@
 | status の意味 | 検査 (`scan/v3`) は pass / blocked / tool_error。対話 (`dialogue/v3`) は needs_human_input / blocked / ready_after_confirmation。いずれも公開承認ではない |
 | 公開判定の分離 | `publication_decision` は常に人間レビュー要求。自動承認しない |
 | 秘密値の非出力 | 検出結果に秘密値そのものを載せない |
+| Live2D Cubism の `.cmo3` | repo全体modeでは作業treeの `.cmo3` を展開し、中の XML に個人path判定をかける。展開・CRC照合に失敗したfileは `personal_path_scan` を `unknown` にして `unscanned_files` に出す (passにしない) |
 
-削除済みのファイルも履歴に残っていれば検出します。
+削除済みのファイルも履歴に残っていれば検出します。ただし `.cmo3` の中身は展開しないと見えないため、履歴上の `.cmo3` は対象外です。
 
 ## 制約 — 保証しない範囲 (別証拠・人間判断が要る)
 
 | 対象 | なぜCLIで判定しないか |
 |---|---|
 | 秘密情報が「存在しない」ことの完全保証 | 独自形式・符号化・大容量blob・バイナリ内は見逃し得る |
+| 個人pathが「存在しない」ことの完全保証 | `.cmo3` を展開するのは repo全体modeの作業treeだけ。履歴・`--base-ref` 差分内の `.cmo3`、ほかの独自形式・圧縮・バイナリ内は見逃し得る |
 | 依存ライブラリの既知脆弱性 | エコシステム固有の最新監査が要る |
 | 第三者素材を公開する権利 | 法的判断 |
 | branch保護・review必須設定の自動適用 | 通常scanでは取得しない。`configure_settings` はread-only実測とpreviewまで |
