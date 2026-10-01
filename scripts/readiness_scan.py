@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+from collections import Counter
 import difflib
 import importlib.util
 import json
@@ -93,6 +95,168 @@ SECRET_PATTERNS = (
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
 )
+SECRET_RULE_IDS = (
+    "openai_key",
+    "github_token",
+    "github_pat",
+    "aws_access_key",
+    "slack_token",
+    "private_key",
+)
+
+
+def secret_matches(data: bytes) -> Counter:
+    """同じ検出のraw/URL復号/文字encoding間の重複は最大件数にまとめる。"""
+    matches = Counter()
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        for candidate in (text, unquote(text)):
+            counts = Counter(
+                (rule, hashlib.sha256(match.group().encode("utf-8")).hexdigest())
+                for rule, pattern in zip(SECRET_RULE_IDS, SECRET_PATTERNS, strict=True)
+                for match in pattern.finditer(candidate)
+            )
+            matches |= counts
+    return matches
+
+
+class ReviewedSecretExceptions:
+    """明示指定された、内容と検出を完全束縛するレビュー済み例外。"""
+
+    def __init__(self, policy_path: Path, remote: str):
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate_key")
+                result[key] = value
+            return result
+
+        try:
+            raw_policy = policy_path.read_bytes()
+            if len(raw_policy) > 1_000_000:
+                raise ValueError("size")
+            policy = json.loads(
+                raw_policy.decode("utf-8"), object_pairs_hook=unique_object
+            )
+            if (
+                not isinstance(policy, dict)
+                or set(policy) != {"version", "entries"}
+                or type(policy["version"]) is not int
+                or policy["version"] != 1
+                or not isinstance(policy["entries"], list)
+            ):
+                raise ValueError("schema")
+            # 生の認証値やquery/fragment付きremoteはidentity根拠として使わない。
+            match = re.fullmatch(
+                r"(?:https://github[.]com/|git@github[.]com:|ssh://git@github[.]com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:[.]git)?",
+                remote,
+            )
+            if not match:
+                raise ValueError("origin")
+            identity = match.group(1)
+            if len(policy["entries"]) > 1000:
+                raise ValueError("entry_limit")
+            self.entries = []
+            ids = set()
+            bindings = set()
+            keys = {
+                "id",
+                "repo",
+                "path",
+                "content_sha256",
+                "rule",
+                "match_sha256",
+                "occurrence_count",
+                "review_reason",
+            }
+            for entry in policy["entries"]:
+                if not isinstance(entry, dict) or set(entry) != keys:
+                    raise ValueError("entry")
+                if any(
+                    not isinstance(entry[key], str)
+                    for key in keys - {"occurrence_count"}
+                ):
+                    raise ValueError("type")
+                if (
+                    not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", entry["id"])
+                    or entry["id"] in ids
+                    or text_has(SECRET_PATTERNS + PATH_PATTERNS, entry["id"].encode())
+                ):
+                    raise ValueError("id")
+                if any(
+                    text_has(SECRET_PATTERNS, entry[key].encode("utf-8"))
+                    for key in ("repo", "path")
+                ):
+                    raise ValueError("credential_in_binding")
+                rel = entry["path"]
+                if (
+                    not rel
+                    or rel.startswith("/")
+                    or "\\" in rel
+                    or ":" in rel
+                    or any(part in {"", ".", ".."} for part in rel.split("/"))
+                    or any(ord(char) < 32 for char in rel)
+                ):
+                    raise ValueError("path")
+                if entry["repo"] != identity or entry["rule"] not in SECRET_RULE_IDS:
+                    raise ValueError("identity_or_rule")
+                if any(
+                    not re.fullmatch(r"[0-9a-f]{64}", entry[key])
+                    for key in ("content_sha256", "match_sha256")
+                ):
+                    raise ValueError("digest")
+                if (
+                    type(entry["occurrence_count"]) is not int
+                    or entry["occurrence_count"] <= 0
+                    or not entry["review_reason"].strip()
+                ):
+                    raise ValueError("count_or_reason")
+                # 理由にもcredentialを保存しない。値や理由はreportへ出さない。
+                if text_has(SECRET_PATTERNS, entry["review_reason"].encode()):
+                    raise ValueError("credential_in_reason")
+                binding = tuple(
+                    entry[key]
+                    for key in (
+                        "repo",
+                        "path",
+                        "content_sha256",
+                        "rule",
+                        "match_sha256",
+                    )
+                )
+                if binding in bindings:
+                    raise ValueError("duplicate_entry")
+                bindings.add(binding)
+                ids.add(entry["id"])
+                self.entries.append(entry)
+        except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as exc:
+            raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
+        self.applied = Counter()
+
+    def has_unreviewed(self, path: str, data: bytes) -> bool:
+        matches = secret_matches(data)
+        content_digest = hashlib.sha256(data).hexdigest()
+        for entry in self.entries:
+            key = (entry["rule"], entry["match_sha256"])
+            if (
+                entry["path"] == path
+                and entry["content_sha256"] == content_digest
+                and matches.get(key) == entry["occurrence_count"]
+            ):
+                self.applied[entry["id"]] += matches.pop(key)
+        return bool(matches)
+
+    def report(self):
+        return [
+            {"id": key, "occurrence_count": count}
+            for key, count in sorted(self.applied.items())
+        ]
+
+
 PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
     re.compile(r"/Us" + r"ers/[^/\s]+"),
@@ -211,7 +375,9 @@ def effective_identity(value: str) -> str:
 
 
 def history_hits(
-    repo: Path, rev_args: tuple[str, ...] = ("--all",)
+    repo: Path,
+    rev_args: tuple[str, ...] = ("--all",),
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
 ) -> tuple[list[str], list[str]]:
     objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *rev_args],
@@ -263,6 +429,33 @@ def history_hits(
             raise RuntimeError("git_history_inventory_failed")
         if fields[1] == "blob" and size <= 2_000_000:
             eligible.append((object_id, name, size))
+    aliases: dict[str, set[str]] = {}
+    if reviewed_exceptions is not None:
+        # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
+        roots = run_subprocess(
+            ["git", "log", "--format=%T", *rev_args], cwd=repo, capture_output=True
+        )
+        if roots.returncode:
+            raise RuntimeError("git_history_inventory_failed")
+        for tree in set(roots.stdout.splitlines()):
+            tree_files = run_subprocess(
+                ["git", "ls-tree", "-r", "-z", tree.decode("ascii")],
+                cwd=repo,
+                capture_output=True,
+            )
+            if tree_files.returncode:
+                raise RuntimeError("git_history_inventory_failed")
+            for record in tree_files.stdout.split(b"\0"):
+                if not record:
+                    continue
+                metadata, sep, raw_path = record.partition(b"\t")
+                fields = metadata.split()
+                if not sep or len(fields) != 3:
+                    raise RuntimeError("git_history_inventory_failed")
+                if fields[1] == b"blob":
+                    aliases.setdefault(fields[2].decode("ascii"), set()).add(
+                        raw_path.decode("utf-8", errors="surrogateescape")
+                    )
     secret_hits: set[str] = set()
     path_hits: set[str] = set()
     eligible.reverse()
@@ -300,8 +493,20 @@ def history_hits(
                 data = batch.stdout[start:end]
                 cursor = end + 1
                 label = f"history:{sanitized_evidence_label(name or object_id[:12])}"
-                if text_has(SECRET_PATTERNS, data):
-                    secret_hits.add(label)
+                if reviewed_exceptions is None:
+                    if text_has(SECRET_PATTERNS, data):
+                        secret_hits.add(label)
+                else:
+                    names = aliases.get(object_id)
+                    if not names:
+                        # detached blob/tag等でpath根拠なしなら例外を使わない。
+                        if text_has(SECRET_PATTERNS, data):
+                            secret_hits.add(label)
+                    for alias in sorted(names or ()):
+                        if reviewed_exceptions.has_unreviewed(alias, data):
+                            secret_hits.add(
+                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                            )
                 if text_has(PATH_PATTERNS, data):
                     path_hits.add(label)
         except (UnicodeDecodeError, ValueError, IndexError) as exc:
@@ -799,6 +1004,7 @@ def scan(
     release: bool = False,
     base_ref: str | None = None,
     consistency_base_ref: str | None = None,
+    reviewed_secret_exceptions: Path | None = None,
 ) -> dict:
     repo = repo.resolve()
     root_error = repository_root_error(repo)
@@ -866,6 +1072,17 @@ def scan(
         resolved_base_ref = symbolic_probe[1]
         base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
+    reviewed_exceptions = None
+    if reviewed_secret_exceptions is not None:
+        try:
+            reviewed_exceptions = ReviewedSecretExceptions(
+                Path(reviewed_secret_exceptions), remote
+            )
+        except RuntimeError:
+            return {
+                "status": "tool_error",
+                "issues": ["reviewed_secret_exceptions_invalid"],
+            }
     missing = (
         [] if base_ref else [name for name in REQUIRED if not (repo / name).is_file()]
     )
@@ -913,7 +1130,11 @@ def scan(
                 "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
-        if text_has(SECRET_PATTERNS, data):
+        if (
+            reviewed_exceptions.has_unreviewed(rel, data)
+            if reviewed_exceptions is not None
+            else text_has(SECRET_PATTERNS, data)
+        ):
             credential_finding_count += 1
         if base_ref:
             continue
@@ -928,7 +1149,9 @@ def scan(
                 path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
-            repo, (f"{base_ref}..HEAD",) if base_ref else ("--all",)
+            repo,
+            (f"{base_ref}..HEAD",) if base_ref else ("--all",),
+            reviewed_exceptions,
         )
         credential_finding_count += len(history_credential_findings)
     except RuntimeError:
@@ -1014,6 +1237,9 @@ def scan(
         "secret_scan": {
             "status": "pass" if credential_finding_count == 0 else "fail",
             "finding_count": credential_finding_count,
+            "reviewed_exceptions": (
+                reviewed_exceptions.report() if reviewed_exceptions is not None else []
+            ),
         },
         "personal_path_scan": {
             "status": (
@@ -1159,6 +1385,7 @@ class ScanOptions:
         base_ref: str | None = None,
         consistency_base_ref: str | None = None,
         github_settings_profile: str = "solo_public",
+        reviewed_secret_exceptions: Path | None = None,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -1170,6 +1397,7 @@ class ScanOptions:
         self.base_ref = base_ref
         self.consistency_base_ref = consistency_base_ref
         self.github_settings_profile = github_settings_profile
+        self.reviewed_secret_exceptions = reviewed_secret_exceptions
 
 
 def boundary_sections() -> dict[str, list[str]]:
@@ -1213,6 +1441,8 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
             else None
         ),
         "github_settings_profile": options.github_settings_profile,
+        "reviewed_secret_exceptions_configured": options.reviewed_secret_exceptions
+        is not None,
     }
     enriched.update(boundary_sections())
     return enriched
@@ -1236,6 +1466,10 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.reviewed_secret_exceptions is not None:
+            scan_kwargs["reviewed_secret_exceptions"] = (
+                options.reviewed_secret_exceptions
+            )
         scan_report = scan(options.repo, **scan_kwargs)
         scan_report = enrich_report(
             scan_report,
@@ -1250,6 +1484,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 base_ref=options.base_ref,
                 consistency_base_ref=options.consistency_base_ref,
                 github_settings_profile=options.github_settings_profile,
+                reviewed_secret_exceptions=options.reviewed_secret_exceptions,
             ),
         )
     elif needs_scan and options.repo is None:
@@ -1574,6 +1809,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="検査対象リポジトリ。--intent create_repo 以外では必須",
     )
     parser.add_argument(
+        "--reviewed-secret-exceptions",
+        type=Path,
+        help="明示レビュー済みの限定secret例外JSON。自動読込しない",
+    )
+    parser.add_argument(
         "--intent",
         choices=list(gate.INTENTS),
         help=(
@@ -1660,6 +1900,7 @@ def resolve_options(
     input_fn: Callable[[str], str] = prompt_from_stdin,
     output_fn: Callable[[str], None] | None = None,
 ) -> ScanOptions:
+    reviewed_secret_exceptions = getattr(args, "reviewed_secret_exceptions", None)
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
     consistency_base_ref = getattr(args, "consistency_base_ref", None)
@@ -1689,6 +1930,7 @@ def resolve_options(
             input_fn=input_fn,
             output_fn=output_fn,
         )
+        options.reviewed_secret_exceptions = reviewed_secret_exceptions
         options.intent = intent
         options.base_ref = base_ref
         options.consistency_base_ref = consistency_base_ref
@@ -1710,6 +1952,7 @@ def resolve_options(
             base_ref=base_ref,
             consistency_base_ref=consistency_base_ref,
             github_settings_profile=args.github_settings_profile,
+            reviewed_secret_exceptions=reviewed_secret_exceptions,
         )
     if args.repo is None:
         raise SystemExit(
@@ -1727,6 +1970,7 @@ def resolve_options(
         base_ref=base_ref,
         consistency_base_ref=consistency_base_ref,
         github_settings_profile=args.github_settings_profile,
+        reviewed_secret_exceptions=reviewed_secret_exceptions,
     )
 
 
@@ -1848,6 +2092,10 @@ def main(
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.reviewed_secret_exceptions is not None:
+            scan_kwargs["reviewed_secret_exceptions"] = (
+                options.reviewed_secret_exceptions
+            )
         report = scan(options.repo, **scan_kwargs)
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す

@@ -278,3 +278,7 @@ v0.2.0 でリポジトリ名（`public-readiness` → `repo-preflight`）と、�
 ## License
 
 MIT License。詳細は [LICENSE](LICENSE) を参照してください。
+
+## レビュー済みの限定 secret 例外
+
+既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込せず、全束縛条件が一致した検出だけを除外します。この指定は公開・push・導入の承認ではありません。キー一覧・件数集約・結果フィールド・失敗時の扱いなど詳細は [ADR-0005](docs/adr/0005-reviewed-secret-exceptions.md) にあります。
