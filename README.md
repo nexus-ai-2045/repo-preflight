@@ -276,3 +276,26 @@ v0.2.0 でリポジトリ名（`public-readiness` → `repo-preflight`）と、�
 ## License
 
 MIT License。詳細は [LICENSE](LICENSE) を参照してください。
+
+## レビュー済みの限定 secret 例外
+
+既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込しません。`scan(..., reviewed_secret_exceptions=Path(...))` API、通常CLI、intent、interactiveで同じ指定を使います。
+
+JSONの最上位は `version: 1` と `entries` 配列だけです。各entryに以下を指定します。
+
+| キー | 内容 |
+|---|---|
+| `id` | 英字で始まる英数字・`_`・`.`・`-`のみの識別子、最大64文字 |
+| `repo` | originのGitHub `owner/name` と完全一致 |
+| `path` | リポジトリ相対のPOSIXパス。絶対パス、逆斜線、`.`/`..`、空要素を禁止 |
+| `content_sha256` | ファイルの生byte全体のSHA-256、小文字64桁 |
+| `rule` | `openai_key` / `github_token` / `github_pat` / `aws_access_key` / `slack_token` / `private_key` |
+| `match_sha256` | 正規表現が検出した文字列をUTF-8にしたSHA-256、小文字64桁 |
+| `occurrence_count` | その内容内の検出件数、正整数 |
+| `review_reason` | 非空の人間レビュー理由。認証情報を保存しない |
+
+全束縛条件が一致した検出だけを除外します。同じ文字列のraw/URL復号/encoding間の重複はルールとhashごとの最大件数でまとめ、rawとURL表現の両方が存在する場合は復号後の合計件数を使います。別の検出文字列は残ります。同一blobが複数pathで履歴に現れる場合は各pathを検査し、別pathの検出は除外しません。Gitパスの根拠がないblobは例外対象外です。
+
+不正な型、未知キー、JSON重複キー、重複ID/束縛、origin不一致は `tool_error` です。サイズ上限は1MB、1000entryです。内容・パス・件数が変われば検出を残します。結果の `checks.secret_scan.reviewed_exceptions` は適用IDと件数だけを返します。件数は作業ツリーと履歴の検査単位ごとの適用合計で、理由・path・検出文字列・digestは結果に出しません。
+
+この指定は公開・push・導入の承認ではありません。例外設定自体をレビュー対象にし、公開上流への反映と実行環境への導入は別途承認します。[ADR-0005](docs/adr/0005-reviewed-secret-exceptions.md)に判断を記録しています。
