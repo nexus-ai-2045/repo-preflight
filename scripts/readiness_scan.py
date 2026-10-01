@@ -8,8 +8,10 @@ import importlib.util
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from typing import Callable, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -20,6 +22,7 @@ SCHEMA = "repo-preflight.scan/v3"
 GUARANTEES = (
     "ローカルGitの現在treeと履歴を読み取り専用で検査する",
     "選択した検査scopeでsecret候補・個人path・作者名義を機械判定し、repo全体modeでは必須文書とCI設定も確認する",
+    "repo全体modeでは作業treeの Live2D Cubism .cmo3 を展開して個人pathを判定し、展開できないfileは unknown にする",
     "status は CLI が担当する自動検査の結果だけを表す (pass / blocked / tool_error)",
     "publication_decision は常に人間レビュー要求とし、自動で公開承認しない",
     "検出結果に秘密値そのものを出力しない",
@@ -31,6 +34,7 @@ GUARANTEES = (
 
 NON_GUARANTEES = (
     "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内は見逃し得る)",
+    "個人pathが存在しないことの完全保証 (.cmo3 の展開はrepo全体modeの作業treeだけ。履歴・--base-ref差分内の .cmo3、他の独自形式・圧縮・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
     "通常scanにおけるGitHub remote設定の現在状態 (configure_settings intentでのみ別途read-only取得する)",
@@ -258,6 +262,14 @@ PATH_PATTERNS = (
     re.compile(r"/Us" + r"ers/[^/\s]+"),
     re.compile(r"/ho" + r"me/[^/\s]+"),
 )
+# Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
+# 入れている。生byteには個人pathが現れないので、展開した XML を判定する。
+# 形式は実物からの実測で、公開仕様ではない。
+CMO3_SUFFIX = ".cmo3"
+CMO3_ENTRY_NAME = b"contents"
+CMO3_MAX_XML_BYTES = 64 * 1024 * 1024
+_CMO3_XOR_TABLE = bytes(value ^ 0xE3 for value in range(256))
+_ZIP_LOCAL_HEADER = re.compile(re.escape(b"PK\x03\x04"))
 
 # 親プロセスの GIT_DIR / GIT_WORK_TREE 等は、--repo で指した path と別の
 # repository へ判定対象を飛ばす。subdirectory を囲っている repo へ広げるのと
@@ -650,6 +662,57 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
+def cmo3_contents_xml(data: bytes) -> bytes | None:
+    """Return the ``contents`` XML inside a .cmo3, or None if it cannot be read.
+
+    XOR-ing every byte with 0xE3 exposes a zip local file header.  Its flag
+    0x0808 leaves the header sizes at zero, so the raw deflate stream right
+    after the header is inflated until the stream itself ends, then checked
+    against the CRC-32 and size in the data descriptor that follows it (raw
+    deflate alone can decode damaged bytes into plausible garbage).  The header
+    offset is not fixed, so every signature is tried.  A truncated or corrupt
+    entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
+    the whole file unreadable rather than partly clean.
+    """
+    plain = data.translate(_CMO3_XOR_TABLE)
+    documents: list[bytes] = []
+    for match in _ZIP_LOCAL_HEADER.finditer(plain):
+        offset = match.start()
+        if len(plain) < offset + 30:
+            continue
+        (method,) = struct.unpack_from("<H", plain, offset + 8)
+        name_length, extra_length = struct.unpack_from("<HH", plain, offset + 26)
+        name_start = offset + 30
+        if (
+            method != 8
+            or plain[name_start : name_start + name_length] != CMO3_ENTRY_NAME
+        ):
+            continue
+        # 上限は全entryの合計に効かせる (0 は zlib で「無制限」の意味になる)
+        remaining = CMO3_MAX_XML_BYTES - sum(map(len, documents))
+        if remaining <= 0:
+            return None
+        inflater = zlib.decompressobj(-15)
+        try:
+            document = inflater.decompress(
+                plain[name_start + name_length + extra_length :], remaining
+            )
+        except zlib.error:
+            return None
+        if not inflater.eof:
+            return None
+        descriptor = inflater.unused_data
+        if descriptor.startswith(b"PK\x07\x08"):
+            descriptor = descriptor[4:]
+        if len(descriptor) < 12:
+            return None
+        crc, _compressed_size, size = struct.unpack_from("<III", descriptor)
+        if crc != zlib.crc32(document) or size != len(document):
+            return None
+        documents.append(document)
+    return b"\n".join(documents) if documents else None
+
+
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
     """Choose the parent containing the scanned base, or the empty tree."""
     parents = run_subprocess(
@@ -1036,6 +1099,7 @@ def scan(
                 invalid_documents.append(REVIEW_RECORD)
     credential_finding_count = 0
     path_hits: list[str] = []
+    unscanned_path_files: list[str] = []
     try:
         if base_ref:
             paths, deleted_paths = changed_working_tree_files(repo, base_ref)
@@ -1072,8 +1136,17 @@ def scan(
             else text_has(SECRET_PATTERNS, data)
         ):
             credential_finding_count += 1
-        if not base_ref and text_has(PATH_PATTERNS, data):
+        if base_ref:
+            continue
+        if text_has(PATH_PATTERNS, data):
             path_hits.append(sanitized_evidence_label(rel))
+        elif path.suffix.lower() == CMO3_SUFFIX:
+            # 展開できない .cmo3 を「個人pathなし」と数えない (unknown で止める)
+            xml = cmo3_contents_xml(data)
+            if xml is None:
+                unscanned_path_files.append(sanitized_evidence_label(rel))
+            elif text_has(PATH_PATTERNS, xml) or _bytes_pattern_hit(PATH_PATTERNS, xml):
+                path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
             repo,
@@ -1169,8 +1242,11 @@ def scan(
             ),
         },
         "personal_path_scan": {
-            "status": "pass" if not path_hits else "fail",
+            "status": (
+                "fail" if path_hits else "unknown" if unscanned_path_files else "pass"
+            ),
             "files": path_hits,
+            "unscanned_files": unscanned_path_files,
         },
         "commit_identity": {
             "status": (
@@ -1482,6 +1558,8 @@ def format_check_line(name: str, check: dict) -> str:
             detail_parts.append(f"invalid={','.join(check['invalid'])}")
     if name == "personal_path_scan" and check.get("files"):
         detail_parts.append(f"files={len(check['files'])}")
+    if name == "personal_path_scan" and check.get("unscanned_files"):
+        detail_parts.append(f"unscanned={len(check['unscanned_files'])}")
     if name == "commit_identity":
         detail_parts.append(f"identities={check.get('identity_count', 0)}")
         if check.get("mismatch_count"):

@@ -4,6 +4,14 @@
 
 ### 修正
 
+- `personal_path_scan` が Live2D Cubism の編集ファイル `.cmo3` の中を検査するようにした。
+  `.cmo3` は全byteを 0xE3 で XOR した zip entry に XML を raw deflate で入れているため、
+  生byteにも UTF-8/UTF-16 の全体decodeにも個人pathが現れず、`psdFile` 要素に
+  Mac の絶対pathが入ったfileを pass させていた。repo全体modeでは作業treeの `.cmo3` を
+  展開し、data descriptor の CRC-32 と展開後サイズを照合したうえで既存の個人path判定を
+  かける。展開・照合に失敗した・展開量が上限を超えたfileは pass にせず、
+  `personal_path_scan` を `unknown` にして `unscanned_files` に出す。
+  履歴上の `.cmo3` と、base を指定した差分検査での `.cmo3` は展開しない (非保証に追記)。
 - `runtime_smoke.py` が install 済み runtime skill コピーの drift を検査するようにした。
   #45 の `install_runtime_skills.py --check` はどこからも呼ばれておらず、drift は
   手で実行したときしか気付けなかった。`ok` / `not_installed` は pass、`drift` は

@@ -1,9 +1,13 @@
 import importlib.util
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from subprocess import CompletedProcess
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "readiness_scan.py"
 SPEC = importlib.util.spec_from_file_location("readiness_scan", SCRIPT)
@@ -637,6 +641,179 @@ def test_ignored_virtual_environment_is_not_scanned(tmp_path: Path):
 
     assert report["checks"]["secret_scan"]["status"] == "pass"
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def make_cmo3(xml: bytes) -> bytes:
+    """Live2D Cubism の .cmo3 と同じ包み方をした最小のfileを作る。
+
+    実物は ``CAFF`` 先頭で、全byteを 0xE3 で XOR すると途中に zip の
+    ローカルファイルヘッダ (名前 ``contents``、method 8、flag 0x0808 のため
+    ヘッダ上のサイズは0) が現れ、その直後が raw deflate の XML になる。
+    ヘッダ位置は固定ではないので、前に余分なbyteを置いて位置決め打ちを落とす。
+    """
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflated = compressor.compress(xml) + compressor.flush()
+    name = b"contents"
+    local_header = struct.pack(
+        "<IHHHHHIIIHH", 0x04034B50, 20, 0x0808, 8, 0, 0, 0, 0, 0, len(name), 0
+    )
+    descriptor = struct.pack(
+        "<IIII", 0x08074B50, zlib.crc32(xml), len(deflated), len(xml)
+    )
+    body = b"\x00" * 37 + local_header + name + deflated + descriptor
+    return b"CAFF" + bytes(byte ^ 0xE3 for byte in body)
+
+
+def cmo3_xml(psd_path: str) -> bytes:
+    rows = "".join(f'<i xs.n="n{i}">{i * 7919}</i>\r\n' for i in range(300))
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n<root>\r\n'
+        f'{rows}<file xs.n="psdFile">{psd_path}</file>\r\n</root>\r\n'
+    ).encode("utf-8")
+
+
+def add_model(repo: Path, data: bytes, name: str = "avatar.cmo3") -> str:
+    model = repo / "model" / name
+    model.parent.mkdir(exist_ok=True)
+    model.write_bytes(data)
+    rel = f"model/{name}"
+    git(repo, "add", rel)
+    git(repo, "commit", "-m", f"add {name}")
+    return rel
+
+
+@pytest.mark.parametrize(
+    "psd_path",
+    [
+        "/Us" + "ers/cmo3-owner/art/avatar.psd",
+        "C:\\Us" + "ers\\cmo3-owner\\art\\avatar.psd",
+    ],
+)
+def test_personal_path_inside_cmo3_is_detected_without_echoing_it(
+    tmp_path: Path, psd_path: str
+):
+    """Cubism の .cmo3 内部の個人pathを検出し、利用者名は出力しない。
+
+    .cmo3 は XOR + raw deflate で包まれているため、生byteにも UTF-8/UTF-16 の
+    全体decodeにも個人pathが現れない。以前は ``psdFile`` 要素に Mac の絶対path
+    が入った .cmo3 を pass させていた。
+    """
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, make_cmo3(cmo3_xml(psd_path)))
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["files"] == [rel]
+    assert "cmo3-owner" not in result.stdout
+    assert "cmo3-owner" not in result.stderr
+
+
+def test_cmo3_without_personal_path_passes(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    add_model(repo, make_cmo3(cmo3_xml("art/avatar.psd")))
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "pass"
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+    assert report["checks"]["personal_path_scan"]["unscanned_files"] == []
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["no_zip_entry", "truncated_deflate", "corrupted_deflate"],
+)
+def test_unreadable_cmo3_is_unknown_instead_of_pass(tmp_path: Path, damage: str):
+    """展開できない .cmo3 を「個人pathなし」と扱わず、検査できなかったと出す。"""
+    repo = make_repo(tmp_path)
+    intact = make_cmo3(cmo3_xml("art/avatar.psd"))
+    if damage == "no_zip_entry":
+        data = b"CAFF" + b"\x00" * 64
+    elif damage == "truncated_deflate":
+        data = intact[:-40]
+    else:
+        middle = len(intact) // 2
+        data = intact[:middle] + b"\xff" * 16 + intact[middle + 16 :]
+    rel = add_model(repo, data, "broken.cmo3")
+
+    report = MODULE.scan(repo)
+
+    check = report["checks"]["personal_path_scan"]
+    assert check["status"] == "unknown"
+    assert check["files"] == []
+    assert check["unscanned_files"] == [rel]
+    assert report["status"] == "blocked"
+
+
+def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(tmp_path: Path):
+    """公開直前の対話packetでも、検査できなかった .cmo3 を pass に丸めない。"""
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, b"CAFF" + b"\x00" * 64, "broken.cmo3")
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=repo, audience="public", intent="publish")
+    )
+
+    assert dialogue["scan"]["status"] == "blocked"
+    assert dialogue["scan"]["checks"]["personal_path_scan"]["unscanned_files"] == [rel]
+    assert dialogue["status"] != "ready_after_confirmation"
+
+
+def test_cmo3_expanding_past_the_size_cap_is_unknown(tmp_path: Path, monkeypatch):
+    """展開量の上限を超えたら途中までの結果で pass にしない。"""
+    monkeypatch.setattr(MODULE, "CMO3_MAX_XML_BYTES", 64)
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, make_cmo3(cmo3_xml("art/avatar.psd")))
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "unknown"
+    assert check["unscanned_files"] == [rel]
+
+
+def test_cmo3_checks_every_contents_entry(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    clean = make_cmo3(cmo3_xml("art/avatar.psd"))
+    leaking = make_cmo3(cmo3_xml("/Us" + "ers/cmo3-owner/art/avatar.psd"))
+    rel = add_model(repo, clean + leaking[len(b"CAFF") :])
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "fail"
+    assert check["files"] == [rel]
+
+
+def test_cmo3_size_cap_covers_all_entries_together(tmp_path: Path, monkeypatch):
+    """entry を並べて上限を entry 数倍に膨らませられないようにする。"""
+    xml = cmo3_xml("art/avatar.psd")
+    monkeypatch.setattr(MODULE, "CMO3_MAX_XML_BYTES", len(xml) + len(xml) // 2)
+    repo = make_repo(tmp_path)
+    entry = make_cmo3(xml)
+    rel = add_model(repo, entry + entry[len(b"CAFF") :])
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "unknown"
+    assert check["unscanned_files"] == [rel]
+
+
+def test_human_report_counts_unscanned_files():
+    line = MODULE.format_check_line(
+        "personal_path_scan",
+        {"status": "unknown", "files": [], "unscanned_files": ["model/a.cmo3"]},
+    )
+
+    assert line == "- personal_path_scan: unknown (unscanned=1)"
 
 
 def test_sparse_checkout_skips_non_materialized_tracked_files(tmp_path: Path):
