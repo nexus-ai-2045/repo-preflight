@@ -18,3 +18,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0002](0002-pr-self-review-copy-integrity.md) | Accepted | 外部生成のPRセルフレビュー配布物を本文hashで検査し、手編集を止める |
 | [0003](0003-github-settings-read-only-gate.md) | Proposed | GitHub Settingsの実測・比較・previewをread-only gateにし、変更を個別承認へ分離する |
 | [0004](0004-ai-constitution-entry-contract.md) | Proposed | 共通AI憲法をruntimeごとのpointer/materialized/manual入口契約で検査する |
+
+| [0005](0005-reviewed-secret-exceptions.md) | Proposed | 完全束縛した明示指定の例外で既知secret誤検知だけを除外する |
