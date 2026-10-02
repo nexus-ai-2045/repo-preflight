@@ -33,7 +33,7 @@ GUARANTEES = (
 )
 
 NON_GUARANTEES = (
-    "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内は見逃し得る)",
+    "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内、英数字・_・- に直結した sk- 形式の鍵は見逃し得る)",
     "個人pathが存在しないことの完全保証 (.cmo3 の展開はrepo全体modeの作業treeだけ。履歴・--base-ref差分内の .cmo3、他の独自形式・圧縮・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
@@ -88,7 +88,12 @@ DEPENDENCY_FILES = (
     "build.gradle.kts",
 )
 SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    # "sk-" は英単語の語尾 (task- / desk- / risk- / musk- …) にそのまま現れ、
+    # 後続の kebab-case も本体の文字種に収まるため、前側の区切りを要求する。
+    # 直前が英数字・"_"・"-" なら一致させない。escape された空白 (\n \r \t) の
+    # 直後は、literal 上は英字が前にあっても区切りとして扱う。
+    # 他の規則の接頭辞は語の途中に現れにくいので、この制限を持たせない。
+    re.compile(r"(?:(?<![A-Za-z0-9_-])|(?<=\\[nrt]))sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),

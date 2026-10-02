@@ -72,7 +72,8 @@ def test_real_keys_stay_detected_and_redacted(tmp_path, kind):
     encoded = text.replace("-", "%2D")
     value = {
         "normal": text,
-        "embedded": "x" + text,
+        # openai_key は前側の区切りを要求するので、区切り文字の後に埋め込む。
+        "embedded": "x=" + text,
         "url": encoded,
         "mixed": text + " " + encoded,
     }[kind]
@@ -239,21 +240,26 @@ def test_interactive_and_target_diff_preserve_option(tmp_path):
     )
 
 
+# openai_key は単語の途中の "sk-" ("task-" など) を拾わないよう前側の区切りを
+# 要求するので、埋め込みは区切り文字の後で確かめる。英数字に直結した形を
+# 検出しないことは test_readiness_scan.py の境界テストで固定している。
 @pytest.mark.parametrize(
-    "index,value",
+    "index,value,embed",
     [
-        (0, "sk-" + "c" * 24),
-        (1, "ghp_" + "c" * 24),
-        (2, "github_pat_" + "c" * 24),
-        (3, "AKIA" + "C" * 16),
-        (4, "xoxb-" + "c" * 24),
-        (5, "BEGIN " + "PRIVATE KEY"),
+        (0, "sk-" + "c" * 24, "x="),
+        (1, "ghp_" + "c" * 24, "x"),
+        (2, "github_pat_" + "c" * 24, "x"),
+        (3, "AKIA" + "C" * 16, "x"),
+        (4, "xoxb-" + "c" * 24, "x"),
+        (5, "BEGIN " + "PRIVATE KEY", "x"),
     ],
 )
-def test_all_existing_rules_keep_raw_embedded_url_and_utf16_detection(index, value):
+def test_all_existing_rules_keep_raw_embedded_url_and_utf16_detection(
+    index, value, embed
+):
     for representation in (
         value,
-        "x" + value,
+        embed + value,
         "%" + format(ord(value[0]), "02X") + value[1:],
     ):
         for encoding in ("utf-8", "utf-16"):
@@ -286,11 +292,11 @@ def test_policy_size_limit(tmp_path):
         MODULE.ReviewedSecretExceptions(config, "https://github.com/example/repo.git")
 
 
-def test_real_historical_identifiers_have_four_matches_without_representation_double_count(
-    tmp_path,
-):
-    slug = "task-" + "orchestra-" + "2026-09-10"
-    reference = "references/task-" + "orchestra-theme-sweep.md"
+def test_four_matches_are_bound_without_representation_double_count(tmp_path):
+    # 以前は旧識別子 "task-orchestra-..." の部分文字列を使っていたが、openai_key が
+    # 単語の途中の "sk-" を拾わなくなったので、区切りの後の合成値で同じ形を作る。
+    slug = "sk-" + "h" * 24
+    reference = "references/sk-" + "i" * 24
     data = json.dumps([slug, slug, slug, reference]).encode()
     matches = MODULE.secret_matches(data)
     assert sorted(matches.values()) == [1, 3]

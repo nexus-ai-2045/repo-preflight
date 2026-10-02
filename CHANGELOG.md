@@ -4,6 +4,7 @@
 
 ### 修正
 
+- `secret_scan` の `openai_key` 規則に前側の区切りを入れ、`task-orchestra-…` や `elon-musk-…` のような英単語の途中の `sk-` を鍵として検出しないようにした (直前が英数字・`_`・`-` の `sk-` は意図して対象外。行頭・空白・引用符・`=`・`/`・escape された改行などの後は従来どおり検出する)。
 - `personal_path_scan` が Live2D Cubism の編集ファイル `.cmo3` の中を検査するようにした。
   `.cmo3` は全byteを 0xE3 で XOR した zip entry に XML を raw deflate で入れているため、
   生byteにも UTF-8/UTF-16 の全体decodeにも個人pathが現れず、`psdFile` 要素に
