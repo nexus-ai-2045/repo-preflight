@@ -258,9 +258,9 @@ class ReviewedSecretExceptions:
 
 
 PATH_PATTERNS = (
-    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
-    re.compile(r"/Us" + r"ers/[^/\s]+"),
-    re.compile(r"/ho" + r"me/[^/\s]+"),
+    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s'\"]+"),
+    re.compile(r"/Us" + r"ers/[^/\s'\"]+"),
+    re.compile(r"/ho" + r"me/[^/\s'\"]+"),
 )
 # Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
 # 入れている。生byteには個人pathが現れないので、展開した XML を判定する。

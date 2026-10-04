@@ -398,6 +398,30 @@ def test_target_diff_blocks_personal_path_in_untracked_file(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "fail"
 
 
+@pytest.mark.parametrize(
+    "synthetic_root",
+    (
+        b'assert "C:\\\\Us' + b'ers\\\\" not in text',
+        b'assert "/Us' + b'ers/" not in text',
+        b'assert "/ho' + b'me/" not in text',
+    ),
+)
+def test_personal_path_patterns_ignore_quoted_synthetic_roots(synthetic_root: bytes):
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, synthetic_root)
+
+
+@pytest.mark.parametrize(
+    "personal_path",
+    (
+        b"C:\\Us" + b"ers\\example-user\\project",
+        b"/Us" + b"ers/example-user/project",
+        b"/ho" + b"me/example-user/project",
+    ),
+)
+def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, personal_path)
+
+
 def test_target_diff_scans_intermediate_commit_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
