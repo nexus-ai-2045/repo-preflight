@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -326,6 +327,10 @@ def test_version1_secret_only_never_calls_visibility_api(tmp_path, private_origi
     assert not private_origin
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="NTFS cannot create filenames containing ':' (pathspec magic probe)",
+)
 def test_target_diff_literal_pathspec_cannot_hide_unapproved_magic_filename(tmp_path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
