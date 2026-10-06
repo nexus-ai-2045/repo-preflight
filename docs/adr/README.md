@@ -20,3 +20,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0004](0004-ai-constitution-entry-contract.md) | Proposed | 共通AI憲法をruntimeごとのpointer/materialized/manual入口契約で検査する |
 
 | [0005](0005-reviewed-secret-exceptions.md) | Proposed | 完全束縛した明示指定の例外で既知secret誤検知だけを除外する |
+
+| [0006](0006-private-evidence-path-exceptions.md) | Accepted | private原資料の個人pathを可視性・期限・完全hash束縛付きの人間レビューで扱う |

@@ -2,7 +2,15 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-06
+
+### 追加
+
+- レビュー済み限定例外のversion 2でprivate原資料の個人pathを扱えるようにした。originとliveのprivate可視性を照合し、全内容hash・検出hash・件数・期限・人間レビュー参照を必須にする。既存のsecret検出とversion 1互換を維持し、未承認の候補は停止する。
+
 ### 修正
+
+- 既存の限定例外テストとADRを個人の広いsecret除外から明示的に保護し、trackedかつignoredの矛盾を増やさない。
 
 - `personal_path_scan` が Live2D Cubism の編集ファイル `.cmo3` の中を検査するようにした。
   `.cmo3` は全byteを 0xE3 で XOR した zip entry に XML を raw deflate で入れているため、

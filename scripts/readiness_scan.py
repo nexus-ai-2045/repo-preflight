@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 import difflib
 import importlib.util
 import json
@@ -37,7 +38,7 @@ NON_GUARANTEES = (
     "個人pathが存在しないことの完全保証 (.cmo3 の展開はrepo全体modeの作業treeだけ。履歴・--base-ref差分内の .cmo3、他の独自形式・圧縮・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
-    "通常scanにおけるGitHub remote設定の現在状態 (configure_settings intentでのみ別途read-only取得する)",
+    "通常scanにおけるGitHub remote設定全体の現在状態 (configure_settings intentで別途取得。レビュー済み個人path例外はprivate確認のみ)",
     "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
@@ -146,7 +147,7 @@ class ReviewedSecretExceptions:
                 not isinstance(policy, dict)
                 or set(policy) != {"version", "entries"}
                 or type(policy["version"]) is not int
-                or policy["version"] != 1
+                or policy["version"] not in {1, 2}
                 or not isinstance(policy["entries"], list)
             ):
                 raise ValueError("schema")
@@ -173,6 +174,8 @@ class ReviewedSecretExceptions:
                 "occurrence_count",
                 "review_reason",
             }
+            if policy["version"] == 2:
+                keys |= {"expires_at", "review_reference"}
             for entry in policy["entries"]:
                 if not isinstance(entry, dict) or set(entry) != keys:
                     raise ValueError("entry")
@@ -202,7 +205,9 @@ class ReviewedSecretExceptions:
                     or any(ord(char) < 32 for char in rel)
                 ):
                     raise ValueError("path")
-                if entry["repo"] != identity or entry["rule"] not in SECRET_RULE_IDS:
+                if entry["repo"] != identity or entry["rule"] not in (
+                    SECRET_RULE_IDS + (PATH_RULE_IDS if policy["version"] == 2 else ())
+                ):
                     raise ValueError("identity_or_rule")
                 if any(
                     not re.fullmatch(r"[0-9a-f]{64}", entry[key])
@@ -218,6 +223,21 @@ class ReviewedSecretExceptions:
                 # 理由にもcredentialを保存しない。値や理由はreportへ出さない。
                 if text_has(SECRET_PATTERNS, entry["review_reason"].encode()):
                     raise ValueError("credential_in_reason")
+                if policy["version"] == 2:
+                    if (
+                        not re.fullmatch(
+                            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", entry["expires_at"]
+                        )
+                        or not entry["review_reference"].strip()
+                        or text_has(SECRET_PATTERNS, entry["review_reference"].encode())
+                    ):
+                        raise ValueError("expiry_or_review")
+                    expires = datetime.strptime(
+                        entry["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    if expires <= now or expires > now + timedelta(days=90):
+                        raise ValueError("expired_or_excessive_validity")
                 binding = tuple(
                     entry[key]
                     for key in (
@@ -236,9 +256,28 @@ class ReviewedSecretExceptions:
         except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as exc:
             raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
         self.applied = Counter()
+        self.path_applied = Counter()
+        self.has_path_entries = any(
+            entry["rule"] in PATH_RULE_IDS for entry in self.entries
+        )
+        if self.has_path_entries:
+            # REST originをlive取得。local設定、保存済みsnapshotやunknownは根拠にしない。
+            try:
+                settings = load_github_settings_module()
+                live = settings.gh_api_get("https://api.github.com/repos/" + identity)
+                if (
+                    not isinstance(live, dict)
+                    or live.get("full_name") != identity
+                    or live.get("private") is not True
+                    or live.get("visibility") != "private"
+                ):
+                    raise ValueError("private_origin_required")
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
 
-    def has_unreviewed(self, path: str, data: bytes) -> bool:
-        matches = secret_matches(data)
+    def _unreviewed(
+        self, path: str, data: bytes, matches: Counter, applied: Counter
+    ) -> bool:
         content_digest = hashlib.sha256(data).hexdigest()
         for entry in self.entries:
             key = (entry["rule"], entry["match_sha256"])
@@ -247,13 +286,34 @@ class ReviewedSecretExceptions:
                 and entry["content_sha256"] == content_digest
                 and matches.get(key) == entry["occurrence_count"]
             ):
-                self.applied[entry["id"]] += matches.pop(key)
+                applied[entry["id"]] += matches.pop(key)
         return bool(matches)
 
-    def report(self):
+    def has_unreviewed(self, path: str, data: bytes) -> bool:
+        return self._unreviewed(path, data, secret_matches(data), self.applied)
+
+    def has_unreviewed_paths(
+        self, path: str, data: bytes, scanned_data: bytes | None = None
+    ) -> bool:
+        return self._unreviewed(
+            path,
+            data,
+            personal_path_matches(data if scanned_data is None else scanned_data),
+            self.path_applied,
+        )
+
+    def all_paths_reviewed(self, path: str, data: bytes) -> bool:
+        # diffは部分textのhashでは除外しない。新blob内の全検出が束縛された場合だけ。
+        return bool(personal_path_matches(data)) and not self.has_unreviewed_paths(
+            path, data
+        )
+
+    def report(self, *, personal_paths: bool = False):
         return [
             {"id": key, "occurrence_count": count}
-            for key, count in sorted(self.applied.items())
+            for key, count in sorted(
+                (self.path_applied if personal_paths else self.applied).items()
+            )
         ]
 
 
@@ -262,6 +322,31 @@ PATH_PATTERNS = (
     re.compile(r"/Us" + r"ers/[^/\s]+"),
     re.compile(r"/ho" + r"me/[^/\s]+"),
 )
+PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
+
+
+def personal_path_matches(data: bytes) -> Counter:
+    """検出値を保持せず、encoding・URL復号・binary間の重複は最大件数で束縛する。"""
+    matches = Counter()
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        for candidate in (text, unquote(text)):
+            matches |= Counter(
+                (rule, hashlib.sha256(match.group().encode("utf-8")).hexdigest())
+                for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
+                for match in pattern.finditer(candidate)
+            )
+    matches |= Counter(
+        (rule, hashlib.sha256(match.group()).hexdigest())
+        for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
+        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+    )
+    return matches
+
+
 # Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
 # 入れている。生byteには個人pathが現れないので、展開した XML を判定する。
 # 形式は実物からの実測で、公開仕様ではない。
@@ -507,8 +592,18 @@ def history_hits(
                             secret_hits.add(
                                 f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
                             )
-                if text_has(PATH_PATTERNS, data):
-                    path_hits.add(label)
+                if reviewed_exceptions is None:
+                    if text_has(PATH_PATTERNS, data):
+                        path_hits.add(label)
+                else:
+                    names = aliases.get(object_id)
+                    if not names and personal_path_matches(data):
+                        path_hits.add(label)
+                    for alias in sorted(names or ()):
+                        if reviewed_exceptions.has_unreviewed_paths(alias, data):
+                            path_hits.add(
+                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                            )
         except (UnicodeDecodeError, ValueError, IndexError) as exc:
             raise RuntimeError("git_history_inventory_failed") from exc
         if cursor != len(batch.stdout):
@@ -517,7 +612,11 @@ def history_hits(
 
 
 def diff_added_lines_have(
-    repo: Path, patterns: tuple[re.Pattern, ...], *diff_args: str
+    repo: Path,
+    patterns: tuple[re.Pattern, ...],
+    *diff_args: str,
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
+    scan_path: str | None = None,
 ) -> bool:
     """Return whether added text lines in one Git diff match ``patterns``.
 
@@ -525,6 +624,52 @@ def diff_added_lines_have(
     its file also contains a new, unrelated line.  Patch metadata is excluded;
     only actual ``+`` lines are decoded by ``text_has``.
     """
+    if reviewed_exceptions is not None and reviewed_exceptions.has_path_entries:
+        inventory = run_subprocess(
+            [
+                "git",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                *diff_args,
+                "--",
+            ],
+            cwd=repo,
+            capture_output=True,
+        )
+        if inventory.returncode:
+            raise RuntimeError("git_target_diff_inventory_failed")
+        for raw_path in inventory.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            if len(diff_args) == 2:
+                blob = run_subprocess(
+                    ["git", "show", f"{diff_args[1]}:{path}"],
+                    cwd=repo,
+                    capture_output=True,
+                )
+                data = blob.stdout if blob.returncode == 0 else None
+            else:
+                candidate = repo / path
+                if candidate.is_symlink():
+                    data = None
+                else:
+                    try:
+                        data = candidate.read_bytes()
+                    except FileNotFoundError:
+                        data = None
+                    except OSError as exc:
+                        raise RuntimeError("git_target_diff_inventory_failed") from exc
+            if data is not None and reviewed_exceptions.all_paths_reviewed(path, data):
+                continue
+            if diff_added_lines_have(repo, patterns, *diff_args, scan_path=path):
+                return True
+        return False
+    pathspec = ["--", ":(literal)" + scan_path] if scan_path is not None else ["--"]
     result = run_subprocess(
         [
             "git",
@@ -534,7 +679,7 @@ def diff_added_lines_have(
             "--no-color",
             "--unified=0",
             *diff_args,
-            "--",
+            *pathspec,
         ],
         cwd=repo,
         capture_output=True,
@@ -569,7 +714,7 @@ def diff_added_lines_have(
             "--numstat",
             "-z",
             *diff_args,
-            "--",
+            *pathspec,
         ],
         cwd=repo,
         capture_output=True,
@@ -749,7 +894,11 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
     return candidates[0]
 
 
-def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
+def target_diff_personal_path_hits(
+    repo: Path,
+    base_ref: str,
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
+) -> list[str]:
     """Scan personal paths introduced anywhere after ``base_ref``.
 
     Each commit is compared with its first parent so a path that was introduced
@@ -770,9 +919,13 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
     hits: set[str] = set()
     for commit in commits.stdout.splitlines():
         parent = comparison_parent(repo, base_ref, commit)
-        if diff_added_lines_have(repo, PATH_PATTERNS, parent, commit):
+        if diff_added_lines_have(
+            repo, PATH_PATTERNS, parent, commit, reviewed_exceptions=reviewed_exceptions
+        ):
             hits.add(f"target-diff:commit:{commit[:12]}")
-    if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
+    if diff_added_lines_have(
+        repo, PATH_PATTERNS, "HEAD", reviewed_exceptions=reviewed_exceptions
+    ):
         hits.add("target-diff:working-tree")
     untracked = run_subprocess(
         ["git", "ls-files", "-z", "--others", "--exclude-standard"],
@@ -792,7 +945,14 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
         except OSError as exc:
             raise RuntimeError("git_target_diff_inventory_failed") from exc
         # 全体decode失敗時も raw bytes で拾う (診断は diff_added_lines_have と同じ)
-        if text_has(PATH_PATTERNS, data) or _bytes_pattern_hit(PATH_PATTERNS, data):
+        if (
+            reviewed_exceptions.has_unreviewed_paths(
+                path.relative_to(repo).as_posix(), data
+            )
+            if reviewed_exceptions is not None
+            else text_has(PATH_PATTERNS, data)
+            or _bytes_pattern_hit(PATH_PATTERNS, data)
+        ):
             hits.add("target-diff:untracked-worktree")
             break
     return sorted(hits)
@@ -1138,14 +1298,23 @@ def scan(
             credential_finding_count += 1
         if base_ref:
             continue
-        if text_has(PATH_PATTERNS, data):
+        if (
+            reviewed_exceptions.has_unreviewed_paths(rel, data)
+            if reviewed_exceptions is not None
+            else text_has(PATH_PATTERNS, data)
+        ):
             path_hits.append(sanitized_evidence_label(rel))
         elif path.suffix.lower() == CMO3_SUFFIX:
             # 展開できない .cmo3 を「個人pathなし」と数えない (unknown で止める)
             xml = cmo3_contents_xml(data)
             if xml is None:
                 unscanned_path_files.append(sanitized_evidence_label(rel))
-            elif text_has(PATH_PATTERNS, xml) or _bytes_pattern_hit(PATH_PATTERNS, xml):
+            elif (
+                reviewed_exceptions.has_unreviewed_paths(rel, data, xml)
+                if reviewed_exceptions is not None
+                else text_has(PATH_PATTERNS, xml)
+                or _bytes_pattern_hit(PATH_PATTERNS, xml)
+            ):
                 path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
@@ -1162,7 +1331,9 @@ def scan(
         }
     if base_ref:
         try:
-            path_hits.extend(target_diff_personal_path_hits(repo, base_ref))
+            path_hits.extend(
+                target_diff_personal_path_hits(repo, base_ref, reviewed_exceptions)
+            )
         except RuntimeError:
             return {
                 "status": "tool_error",
@@ -1247,6 +1418,11 @@ def scan(
             ),
             "files": path_hits,
             "unscanned_files": unscanned_path_files,
+            **(
+                {"reviewed_exceptions": reviewed_exceptions.report(personal_paths=True)}
+                if reviewed_exceptions is not None
+                else {}
+            ),
         },
         "commit_identity": {
             "status": (
