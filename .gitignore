@@ -9,3 +9,7 @@ dist/
 *.egg-info/
 reports/
 readiness-report.json
+
+# 検査契約の実装と設計文書。個人の広いsecret除外にも隠さない。
+!/docs/adr/0005-reviewed-secret-exceptions.md
+!/tests/test_reviewed_secret_exceptions.py

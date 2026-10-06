@@ -110,7 +110,7 @@ flowchart LR
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、日本語のときは表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、誤検知がないことを確認してからエラーへ上げます
 - GitHubの設定ガイドや運用記録の不足
-- `--intent configure_settings` のときだけ、GitHub Settings の現在値を read-only で実測する
+- `--intent configure_settings` ではGitHub Settings全体の現在値をread-onlyで実測する。通常検査のversion 2個人path例外でも、対象repoのprivate可視性だけはliveで確認する
 
 読むだけで、リポジトリの中身は一切書き換えません。Settings の変更も実行しません。
 
@@ -281,4 +281,4 @@ MIT License。詳細は [LICENSE](LICENSE) を参照してください。
 
 ## レビュー済みの限定 secret 例外
 
-既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込せず、全束縛条件が一致した検出だけを除外します。この指定は公開・push・導入の承認ではありません。キー一覧・件数集約・結果フィールド・失敗時の扱いなど詳細は [ADR-0005](docs/adr/0005-reviewed-secret-exceptions.md) にあります。
+既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込せず、全束縛条件が一致した検出だけを除外します。private原資料の個人pathを扱うversion 2は、liveのprivate確認・UTC期限・人間レビュー参照を必須にします（[ADR-0006](docs/adr/0006-private-evidence-path-exceptions.md)）。この指定は公開・push・導入の承認ではありません。キー一覧・件数集約・結果フィールド・失敗時の扱いなど詳細は [ADR-0005](docs/adr/0005-reviewed-secret-exceptions.md) にあります。
