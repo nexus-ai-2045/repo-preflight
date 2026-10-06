@@ -1,0 +1,89 @@
+diff --git a/scripts/consistency_gate.py b/scripts/consistency_gate.py
+index 23e1873..4ad1f66 100644
+--- a/scripts/consistency_gate.py
++++ b/scripts/consistency_gate.py
+@@ -359,9 +359,7 @@ def _markdown_findings(
+         # 結合されてしまうので、] を境界として置く (Codex P2)。
+         lines = text.splitlines()
+         kept = dict(outside_fences(lines))
+-        masked = "\n".join(
+-            kept.get(number, "]") for number in range(1, len(lines) + 1)
+-        )
++        masked = "\n".join(kept.get(number, "]") for number in range(1, len(lines) + 1))
+         targets = LINK_RE.findall(masked)
+         for raw_target in targets:
+             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+diff --git a/scripts/readme_release_gate.py b/scripts/readme_release_gate.py
+index 3a0605a..310d127 100644
+--- a/scripts/readme_release_gate.py
++++ b/scripts/readme_release_gate.py
+@@ -22,7 +22,9 @@ JAPANESE_MIN_RATIO = 0.1
+ JAPANESE_RE = re.compile(r"[ぁ-んァ-ヶ一-龠]")
+ CODE_SPAN_RE = re.compile(r"`[^`]+`")
+ LINK_DESTINATION_RE = re.compile(r"(?<=\])\([^)]*\)")
+-FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})([^`]*)$")  # CommonMark: 開きは先頭スペース 0–3 のみ
++FENCE_RE = re.compile(
++    r"^ {0,3}(`{3,}|~{3,})([^`]*)$"
++)  # CommonMark: 開きは先頭スペース 0–3 のみ
+ # mermaid のラベル抽出。行を先に「図の種類」と「行の種類」で分類してから
+ # 抽出する (2026-08-16 review F4/F5/F8: regex 継ぎ足しで境界が壊れていた)。
+ # node ラベルは | を含んでよい ({Yes|No})。edge ラベルは矢印の直後の |..| だけ。
+@@ -415,9 +417,7 @@ def _is_evidence_target(target: str) -> bool:
+ 
+ 
+ def _visible_markdown(lines: list[str]) -> str:
+-    return HTML_COMMENT_RE.sub(
+-        "", "\n".join(line for _, line in outside_fences(lines))
+-    )
++    return HTML_COMMENT_RE.sub("", "\n".join(line for _, line in outside_fences(lines)))
+ 
+ 
+ def _reference_targets(text: str) -> dict[str, str]:
+diff --git a/tests/test_consistency_gate.py b/tests/test_consistency_gate.py
+index 5247bc9..81f87a1 100644
+--- a/tests/test_consistency_gate.py
++++ b/tests/test_consistency_gate.py
+@@ -937,9 +937,7 @@ def test_four_space_indented_fence_marker_does_not_swallow_later_links(
+     )
+     report = MODULE.check(repo, base_ref=base)
+     missing = [f for f in report["findings"] if f.startswith("markdown_link_missing")]
+-    assert missing == [
+-        "markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"
+-    ]
++    assert missing == ["markdown_link_missing:docs/guide.md:docs/after-fake-fence.md"]
+ 
+ 
+ def test_missing_fence_reader_becomes_tool_error_not_a_traceback(
+diff --git a/tests/test_readme_release_gate.py b/tests/test_readme_release_gate.py
+index d98dcd8..70b133f 100644
+--- a/tests/test_readme_release_gate.py
++++ b/tests/test_readme_release_gate.py
+@@ -582,7 +582,7 @@ def test_japanese_command_quickstart_without_paste_url_is_flagged(tmp_path: Path
+         tmp_path,
+         JAPANESE_BODY.replace(
+             "説明のとおりに実行します。",
+-            "python -m pip install -e \".[test]\"\n",
++            'python -m pip install -e ".[test]"\n',
+         ),
+     )
+     report = MODULE.review(path)
+@@ -639,8 +639,7 @@ def test_bare_figure_without_evidence_link_is_flagged(tmp_path: Path):
+ def test_figure_linked_to_decision_is_clean(tmp_path: Path):
+     path = write_readme(
+         tmp_path,
+-        JAPANESE_BODY
+-        + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
++        JAPANESE_BODY + "\n[![概要](docs/assets/hero.jpg)](docs/decisions/0002.md)\n",
+     )
+     report = MODULE.review(path)
+     assert "figure_not_linked_to_evidence" not in _codes(report)
+@@ -793,8 +792,7 @@ def test_fenced_heading_does_not_cut_quickstart_paste(tmp_path: Path):
+ def test_reference_style_bare_image_is_flagged(tmp_path: Path):
+     path = write_readme(
+         tmp_path,
+-        JAPANESE_BODY
+-        + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
++        JAPANESE_BODY + "\n![構成図][diagram]\n\n[diagram]: docs/assets/diagram.png\n",
+     )
+     report = MODULE.review(path)
+     assert "figure_not_linked_to_evidence" in _codes(report)
