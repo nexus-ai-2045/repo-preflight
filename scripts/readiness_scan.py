@@ -320,8 +320,7 @@ class ReviewedSecretExceptions:
 # 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
 # CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
 _UNIX_PATH_START = (
-    r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?"
-    r"|(?<=(?i:file://)))"
+    r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
 )
 PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
@@ -341,16 +340,24 @@ def personal_path_matches(data: bytes) -> Counter:
             continue
         for candidate in (text, unquote(text)):
             matches |= Counter(
-                (rule, hashlib.sha256(
-                    (match.groupdict().get("personal_path") or match.group()).encode("utf-8")
-                ).hexdigest())
+                (
+                    rule,
+                    hashlib.sha256(
+                        (
+                            match.groupdict().get("personal_path") or match.group()
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
                 for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
                 for match in pattern.finditer(candidate)
             )
     matches |= Counter(
-        (rule, hashlib.sha256(
-            match.groupdict().get("personal_path") or match.group()
-        ).hexdigest())
+        (
+            rule,
+            hashlib.sha256(
+                match.groupdict().get("personal_path") or match.group()
+            ).hexdigest(),
+        )
         for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
         for match in re.finditer(pattern.pattern.encode("ascii"), data)
     )

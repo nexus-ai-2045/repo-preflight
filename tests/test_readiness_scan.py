@@ -58,10 +58,10 @@ def set_remote_base(repo: Path, name: str = "main") -> str:
 @pytest.mark.parametrize(
     "path",
     [
-        "/".join(['src', 'home', 'alice', 'page.py']),
-        "/".join(['src', 'Users', 'alice', 'page.py']),
-        "/".join(['.', 'home', 'alice', 'page.py']),
-        "/".join(['..', 'Users', 'alice', 'page.py']),
+        "/".join(["src", "home", "alice", "page.py"]),
+        "/".join(["src", "Users", "alice", "page.py"]),
+        "/".join([".", "home", "alice", "page.py"]),
+        "/".join(["..", "Users", "alice", "page.py"]),
     ],
 )
 def test_relative_path_components_are_not_personal_paths(path: str):
@@ -74,13 +74,25 @@ def test_relative_path_components_are_not_personal_paths(path: str):
 @pytest.mark.parametrize(
     "option",
     [
-        "-I", "-L", "-F", "-o", "-isystem", "-iquote", "-iframework",
-        "-include", "-imacros", "-idirafter", "-customoption", "--custom-option_42",
+        "-I",
+        "-L",
+        "-F",
+        "-o",
+        "-isystem",
+        "-iquote",
+        "-iframework",
+        "-include",
+        "-imacros",
+        "-idirafter",
+        "-customoption",
+        "--custom-option_42",
     ],
 )
 @pytest.mark.parametrize("root", ["/ho" + "me", "/Us" + "ers"])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
-def test_cli_option_absolute_path_keeps_match_hash(option: str, root: str, encoding: str):
+def test_cli_option_absolute_path_keeps_match_hash(
+    option: str, root: str, encoding: str
+):
     absolute = f"{root}/alice/include"
     data = f"gcc {option}{absolute}".encode(encoding)
     relative = f"src/{option}{absolute}".encode(encoding)
@@ -121,7 +133,9 @@ def test_absolute_personal_paths_remain_detected(path: str, encoding: str):
 def test_relative_fixture_path_passes_worktree_and_deleted_history(tmp_path: Path):
     repo = make_repo(tmp_path)
     fixture = repo / "fixture.txt"
-    fixture.write_text("/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8")
+    fixture.write_text(
+        "/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8"
+    )
     git(repo, "add", "fixture.txt")
     git(repo, "commit", "-m", "add relative fixture")
     assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
