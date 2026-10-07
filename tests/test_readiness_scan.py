@@ -55,6 +55,96 @@ def set_remote_base(repo: Path, name: str = "main") -> str:
     return f"origin/{name}"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/".join(["src", "home", "alice", "page.py"]),
+        "/".join(["src", "Users", "alice", "page.py"]),
+        "/".join([".", "home", "alice", "page.py"]),
+        "/".join(["..", "Users", "alice", "page.py"]),
+    ],
+)
+def test_relative_path_components_are_not_personal_paths(path: str):
+    data = path.encode("utf-8")
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+    assert not MODULE.personal_path_matches(data)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "-I",
+        "-L",
+        "-F",
+        "-o",
+        "-isystem",
+        "-iquote",
+        "-iframework",
+        "-include",
+        "-imacros",
+        "-idirafter",
+        "-customoption",
+        "--custom-option_42",
+    ],
+)
+@pytest.mark.parametrize("root", ["/ho" + "me", "/Us" + "ers"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_cli_option_absolute_path_keeps_match_hash(
+    option: str, root: str, encoding: str
+):
+    absolute = f"{root}/alice/include"
+    data = f"gcc {option}{absolute}".encode(encoding)
+    relative = f"src/{option}{absolute}".encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    if encoding == "utf-8":
+        assert MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+        assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, relative)
+    assert MODULE.personal_path_matches(data) == MODULE.personal_path_matches(
+        absolute.encode(encoding)
+    )
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, relative)
+    assert not MODULE.personal_path_matches(relative)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/ho" + "me/alice/page.py",
+        "/Us" + "ers/alice/page.py",
+        "C:/Us" + "ers/alice/page.py",
+        "C:\\Us" + "ers\\alice\\page.py",
+        "'/ho" + "me/alice/page.py'",
+        '"/Us' + 'ers/alice/page.py"',
+        "path=/ho" + "me/alice/page.py",
+        "file:///ho" + "me/alice/page.py",
+        "file:///Us" + "ers/alice/page.py",
+        "%2Fho" + "me%2Falice%2Fpage.py",
+        "file%3A%2F%2F%2Fho" + "me%2Falice%2Fpage.py",
+    ],
+)
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_absolute_personal_paths_remain_detected(path: str, encoding: str):
+    data = path.encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert MODULE.personal_path_matches(data)
+
+
+def test_relative_fixture_path_passes_worktree_and_deleted_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    fixture = repo / "fixture.txt"
+    fixture.write_text(
+        "/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8"
+    )
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "add relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
+    fixture.unlink()
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "remove relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
+
+
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
     """出力は常にJSON。formatを選ぶflagは受け付けない。
 
