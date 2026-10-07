@@ -437,7 +437,9 @@ def test_comparison_parent_preserves_existing_priority_and_fallback(
     assert MODULE.comparison_parent(tmp_path, "base", "merge") == expected
 
 
-def test_comparison_parent_ancestor_query_error_fails_closed(tmp_path: Path, monkeypatch):
+def test_comparison_parent_ancestor_query_error_fails_closed(
+    tmp_path: Path, monkeypatch
+):
     def run(command, **_kwargs):
         if command[1] == "show":
             return CompletedProcess(command, 0, stdout="first second")
