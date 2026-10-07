@@ -859,7 +859,7 @@ def cmo3_contents_xml(data: bytes) -> bytes | None:
 
 
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
-    """Choose the parent containing the scanned base, or the empty tree."""
+    """Prefer a base-containing parent, then a unique base ancestor."""
     parents = run_subprocess(
         ["git", "show", "-s", "--format=%P", commit],
         cwd=repo,
@@ -891,6 +891,22 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
             return parent
         if contains_base.returncode != 1:
             raise RuntimeError("git_target_diff_inventory_failed")
+    if len(candidates) > 1:
+        # mainが先へ進んでも、過去のmergeで取り込んだmain由来の追加を
+        # branchの新規追加として再検出しない。曖昧ならfirst parentを保つ。
+        base_ancestors = []
+        for parent in candidates:
+            ancestor_of_base = run_subprocess(
+                ["git", "merge-base", "--is-ancestor", parent, base_ref],
+                cwd=repo,
+                capture_output=True,
+            )
+            if ancestor_of_base.returncode == 0:
+                base_ancestors.append(parent)
+            elif ancestor_of_base.returncode != 1:
+                raise RuntimeError("git_target_diff_inventory_failed")
+        if len(base_ancestors) == 1:
+            return base_ancestors[0]
     return candidates[0]
 
 
