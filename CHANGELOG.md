@@ -25,7 +25,8 @@
   手で実行したときしか気付けなかった。`ok` / `not_installed` は pass、`drift` は
   `runtime_skills_drift:*`、`missing_adapter`・未知の status・検査の例外は
   `runtime_skills_tool_error:*` として smoke を失敗させる。CI には配布先が無いので
-  `not_installed` で pass する。tests が実ホームに依存しないよう `--home` を追加した。
+  `not_installed` で pass する。tests が実ホームに依存しないよう `runtime_smoke.py` に
+  `--home` を追加した。
 - `install_runtime_skills.py --check` が path-file の相対 `ROOT_PATH.txt` を
   cwd 依存で ok にせず `checkout_foreign` にするようにした。Windows junction は
   先に `is_junction()` で識別し、リンク先の `ROOT_PATH.txt` を path-file と
@@ -42,6 +43,55 @@
   いても、`--repo` で指した path から見える repository 以外の判定を返さないように
   した。subdirectory の暗黙拡大と同じ取り違えの変種で、secret 判定や HEAD まで
   差し替わっていた。
+- `ai_entry_contract.py` (#40) のレビュー指摘を、#41 の振る舞いを保ったまま吸収した。
+  - marker を最初の出現で決め打ちせず、header / begin / end が各1個・正しい順序・
+    header と begin の間が空白だけのときだけ生成ブロックとして扱う。従来は source に
+    marker があると再 apply ごとに末尾へ残骸が増え、overlay が marker を引用すると偽 stale の
+    うえ引用行から begin までの本文を無警告で削除し、改ざんした複製ブロックは検査されずに
+    pass していた。違反は `projection_markers_ambiguous` (検査は stale、apply は書かない)、
+    source 側の marker は `source_contains_projection_markers` で止める。
+  - source と target が同じファイルに解決される apply を `source_target_identical` で
+    拒否する。正本に marker をネストして書き込んでいた。
+  - 区切りの改行を 1 個だけ剥ぐようにした。`lstrip` で source 先頭の空行まで剥いで
+    恒久的に mismatch になっていた。
+  - `ai_entry_contract.py` の manifest パスで `~` を展開しない。`--home` を迂回して
+    実 home に解決していた。`~` は `tilde_unsupported_use_home_placeholder`、未知の
+    placeholder は `template_placeholder_unresolved`、空のパスは `path_value_invalid`。
+  - import pointer を部分文字列一致ではなく `@<path>` のパス解決と `samefile` で判定する。
+    フェンス・inline code・HTML コメント内の例示や `@<source>.backup` による false green、
+    `@~/` や相対パスでの false red、大小文字の扱いを `os.name` で代理したことによる
+    macOS での false red をなくした。instruction pointer の判定 (#41) は変えていない。
+  - exit code を 0=pass / 1=blocked / 2=tool_error / 3=human_review に分けた。required の
+    失敗が manual の確認待ちだけなら `human_review`。apply 成功時は `applied_entry` を返し、
+    manual entry の結果には `evidence` を載せる。
+  - 自前定義の code 以外の例外は型名だけに丸め、username を含む絶対パスを JSON に出さない。
+  - 既存 target を置き換えるときにファイルモードを引き継ぐ。`mkstemp` の 0600 が
+    `os.replace` 後に残っていた (POSIX)。
+  - `--apply` なしの `--entry-id` を `entry_id_requires_apply` で拒否する。何もしていなかった
+    `--json` は削除した (未 release)。
+  - テストが `from scripts import ...` に依存し、素の pytest で collection error になっていた。
+  - 自前 code かどうかをメッセージの形ではなく専用の例外型で判定する。entry id に `/` や
+    `\` を含む manifest で、#41 の `manifest_runtime_missing:<id>` などが
+    `manifest_invalid:ValueError` に潰れていた。
+  - import pointer のコード除外を CommonMark に合わせた。`~~~` の中の ```` ``` ````、長い
+    フェンスの中の短いフェンス、2 連 backtick の inline code、インデントコードブロック、
+    blockquote 内のフェンス、複数行にまたがる inline code の中の例示で pass していた。
+  - NUL 文字を含む manifest パスを `path_value_invalid` で止める。検査では `entry_missing`
+    と誤読され、apply では `os.replace` の `ValueError` が username 入りの絶対パスを含む
+    traceback と exit 1 になっていた。書き込み時の `ValueError` は
+    `target_write_failed:ValueError`、想定外の例外は `internal_error:<型名>` (exit 2) にする。
+  - required entry が entry 単位で `tool_error` (`entry_unreadable` 等) のとき、全体が
+    `blocked` (exit 1) になり exit code 表の 2=gate 自体の問題と矛盾していた。全体 status の
+    優先順位を `tool_error` > `blocked` > `human_review` > `pass` に統一した。
+  - 未クォートの空白入りパスの import (`@C:/Users/My Name/AI-CONSTITUTION.md`) が、#40/#41 では
+    pass だったのに stale になっていた。空白で切ったトークンが解決できないときは `@` から行末
+    (末尾の空白・句読点を除く) も候補にする。コード・HTML コメントと `user@host` の除外は維持。
+  - 深い入れ子の manifest で `json.loads` の `RecursionError` が `internal_error` に落ちていた。
+    検査と apply の両方で `manifest_json_invalid` (tool_error) に丸める。
+  - 読み取り専用の既存 target の置換に失敗したとき、モードを引き継いだ一時ファイルが
+    Windows で unlink できず残っていた。後始末で書き込み可能に戻してから消す。
+  - 引数エラー (未知の flag・manifest 指定の欠落) は argparse の usage を stderr に出して exit 2、
+    JSON は出ないことを docs に明記した。
 
 ### 追加
 
@@ -84,6 +134,16 @@
 - 非保証: 生成元の正本が正しいこと、配布物が最新の正本から生成されたこと。
   後者は正本側の配布台帳が担当する。
 - 非保証: github.com のページが対話 UI になること。エージェントが skill を無視したときの物理停止。
+- 保証: `ai_entry_contract.py` は marker が一意でない target を pass にも書き換えもしない。
+  apply は source 自身と非生成ファイルへ書かない。import pointer は gate の `--home` と
+  entry のディレクトリだけを基準に解決する。gate が生成する finding には source 本文と絶対パスを
+  載せない。manual entry の `evidence` は manifest 作成者が書いた文をそのまま返す。
+  想定外の例外でも traceback ではなく tool_error の JSON (exit 2) を返す。
+- 非保証: import pointer のコード除外は CommonMark のフェンス・インデントコード・
+  inline code・HTML コメント・blockquote に合わせた近似で、各 AI 製品の Markdown
+  パーサーとの完全一致ではない (リスト項目の行頭に書いたフェンス等は未対応)。
+- 非保証: instruction pointer の読込指示はキーワードの近傍判定で、文意の理解ではない。
+  manual entry の確認そのものと、AI 製品が入口を実際に読むことは保証しない。
 
 ## 0.5.1 - 2026-08-24
 
