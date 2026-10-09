@@ -441,6 +441,7 @@ CAN_APPROVE_EFFECT = (
 )
 
 _YAML_KEY = re.compile(r"^( *)(- +)?([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]+(.*))?$")
+_NON_LF_LINE_BREAKS = frozenset("\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
 _YAML_ALIAS = re.compile(r"(?:^|[\s\[{,])\*[A-Za-z0-9_-]")
 _ACTION_REFERENCE = re.compile(
     r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
@@ -505,9 +506,15 @@ def workflow_action_references(text: str) -> list[str] | None:
     job id、job の key、step の key の 3 段として追い、読み飛ばしは各段の key
     だけに効かせる。追えない構文(インデントの tab、alias、anchor、flow 形式、
     閉じない引用符、block scalar の `uses` など)に当たったら、推測せず None を返す。
+    最上位の `jobs` を一度も見なかった場合(文書全体の字下げ、`jobs` の無い文書)と、
+    LF 以外で行を切る文字(CR 単独、NEL、U+2028 など)を含む場合も None を返す。
     """
+    normalized = text.replace("\r\n", "\n")
+    if any(char in normalized for char in _NON_LF_LINE_BREAKS):
+        return None
     references: list[str] = []
     started = False
+    jobs_seen = False
     in_jobs = False
     job_col: int | None = None
     child_col: int | None = None
@@ -516,7 +523,7 @@ def workflow_action_references(text: str) -> list[str] | None:
     block_col: int | None = None
     skip_col: int | None = None
     scalar_col: int | None = None
-    for raw in text.splitlines():
+    for raw in normalized.split("\n"):
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
@@ -558,6 +565,7 @@ def workflow_action_references(text: str) -> list[str] | None:
             in_jobs = key == "jobs"
             if in_jobs and kind != "empty":
                 return None
+            jobs_seen = jobs_seen or in_jobs
             job_col = child_col = step_col = skip_col = None
             in_steps = False
             if kind == "block":
@@ -622,13 +630,14 @@ def workflow_action_references(text: str) -> list[str] | None:
             block_col = key_col
         elif kind == "plain":
             scalar_col = key_col
-    return references
+    return references if jobs_seen else None
 
 
 def derive_selected_actions(references: list[str]) -> dict[str, Any]:
     """workflow が実際に使う action から selected-actions の許可 list を導く。"""
     patterns: set[str] = set()
     third_party: set[str] = set()
+    used: set[str] = set()
     unmapped: set[str] = set()
     local = 0
     github_owned = False
@@ -643,7 +652,9 @@ def derive_selected_actions(references: list[str]) -> dict[str, Any]:
         )
         if match is None:
             unmapped.add(reference)
-        elif match["owner"].lower() in GITHUB_OWNED_ACTION_OWNERS:
+            continue
+        used.add(reference)
+        if match["owner"].lower() in GITHUB_OWNED_ACTION_OWNERS:
             github_owned = True
         else:
             third_party.add(reference)
@@ -652,46 +663,108 @@ def derive_selected_actions(references: list[str]) -> dict[str, Any]:
         "github_owned_used": github_owned,
         "patterns_allowed": sorted(patterns),
         "third_party_references": sorted(third_party),
+        "used_references": sorted(used),
         "local_references": local,
         "unmapped_references": sorted(unmapped),
     }
 
 
-def _pattern_regex(pattern: str) -> re.Pattern[str]:
-    parts: list[str] = []
+NEGATION_UNCERTAIN_CHARS = "?+["
+
+
+def _glob_tokens(pattern: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
     index = 0
     while index < len(pattern):
         if pattern.startswith("**", index):
-            parts.append(".*")
-            index += 2
+            tokens.append(("any", ""))
+            while pattern.startswith("*", index):
+                index += 1
         elif pattern[index] == "*":
-            parts.append("[^/]*")
+            tokens.append(("segment", ""))
             index += 1
         else:
-            parts.append(re.escape(pattern[index]))
+            tokens.append(("char", pattern[index]))
             index += 1
-    return re.compile("".join(parts))
+    return tokens
+
+
+def _glob_match(
+    pattern: str,
+    text: str,
+    *,
+    star_crosses_slash: bool = False,
+    ignore_case: bool = False,
+) -> bool:
+    """`*`(`/` を越えない)と `**`(越える)だけを持つ glob を、戻らずに照合する。
+
+    正規表現へ直すと、`*` の多い pattern で照合が指数的に遅くなるため、位置の集合を
+    1 文字ずつ進める。
+    """
+    if ignore_case:
+        pattern, text = pattern.lower(), text.lower()
+    tokens = _glob_tokens(pattern)
+
+    def settle(states: set[int]) -> set[int]:
+        pending = list(states)
+        while pending:
+            position = pending.pop()
+            if (
+                position < len(tokens)
+                and tokens[position][0] != "char"
+                and position + 1 not in states
+            ):
+                states.add(position + 1)
+                pending.append(position + 1)
+        return states
+
+    states = settle({0})
+    for char in text:
+        following: set[int] = set()
+        for position in states:
+            if position >= len(tokens):
+                continue
+            kind, literal = tokens[position]
+            if kind == "char":
+                if literal == char:
+                    following.add(position + 1)
+            elif kind == "any" or star_crosses_slash or char != "/":
+                following.add(position)
+        states = settle(following)
+        if not states:
+            return False
+    return len(tokens) in states
+
+
+def _negation_matches(pattern: str, reference: str) -> bool:
+    """拒否 pattern は、読み違えると許可側へ倒れるので、広く読む。"""
+    if any(char in pattern for char in NEGATION_UNCERTAIN_CHARS):
+        return True
+    return _glob_match(pattern, reference, star_crosses_slash=True, ignore_case=True)
 
 
 def allow_list_covers(patterns: list[str], reference: str) -> tuple[bool, list[str]]:
     """許可 list の pattern が workflow の参照を覆うかを、保守的に判定する。
 
-    `*` は `/` を越えない(越えると誤って「覆っている」と言うより、足りないと
-    言う方を選ぶ)。`!` で始まる pattern は拒否で、一致したら覆わない。
-    戻り値は (覆うか, 一致した拒否 pattern)。
+    許可側の pattern は、`*` が `/` を越えず、大文字と小文字を区別する(覆っていると
+    誤って言うより、足りないと言う方を選ぶ)。`!` の拒否 pattern は逆に、`*` が `/` も
+    越え、大文字と小文字を区別せず、`?` `+` `[` を含めば一致とみなす。拒否は順序に
+    関係なく優先する。戻り値は (覆うか, 一致した拒否 pattern)。
     """
     allowed = False
     conflicts: list[str] = []
     for pattern in patterns:
-        negated = pattern.startswith("!")
-        if not _pattern_regex(pattern[1:] if negated else pattern).fullmatch(reference):
-            continue
-        if negated:
-            if pattern not in conflicts:
+        if pattern.startswith("!"):
+            if _negation_matches(pattern[1:], reference) and pattern not in conflicts:
                 conflicts.append(pattern)
-        else:
+        elif _glob_match(pattern, reference):
             allowed = True
     return (allowed and not conflicts), conflicts
+
+
+def _overly_broad(pattern: str) -> bool:
+    """owner の部分に `*` を含む、または `**` を含む pattern は、広すぎるとみなす。"""
+    return "**" in pattern or "*" in pattern.split("/", 1)[0]
 
 
 def _decode_workflow(item: Any) -> str | None:
@@ -1535,16 +1608,31 @@ def _selected_patterns_setting(
     if derivation["state"] == "ok":
         missing: list[str] = []
         conflicts: list[str] = []
-        for reference in derivation["third_party_references"]:
+        third_party = set(derivation["third_party_references"])
+        for reference in derivation["used_references"]:
             covered, blocked_by = allow_list_covers(patterns, reference)
             if blocked_by:
                 conflicts.extend(item for item in blocked_by if item not in conflicts)
-            elif not covered:
+            elif not covered and reference in third_party:
                 missing.append(reference)
-        matches = not missing and not conflicts
+        positives = [item for item in patterns if not item.startswith("!")]
+        unused = list(
+            dict.fromkeys(
+                item
+                for item in positives
+                if not any(
+                    allow_list_covers([item], reference)[0]
+                    for reference in derivation["used_references"]
+                )
+            )
+        )
+        broad = list(dict.fromkeys(item for item in positives if _overly_broad(item)))
+        matches = not (missing or conflicts or unused or broad)
         extra: dict[str, Any] = {
             "derived_patterns": derivation["patterns_allowed"],
             "missing_references": missing,
+            "unused_patterns": unused,
+            "overly_broad_patterns": broad,
             "derivation": {
                 key: derivation[key]
                 for key in (
@@ -1578,7 +1666,7 @@ def _selected_patterns_setting(
         observed=patterns,
         recommended="repository_specific_least_privilege",
         source=selected_endpoint,
-        reason="workflowで使う第三者actionを覆う許可listにする",
+        reason="workflowで使う第三者actionだけを覆う許可listにする",
         effect="許可list外actionの実行可否に影響",
         proposed_operation=operation,
         rollback=rollback,

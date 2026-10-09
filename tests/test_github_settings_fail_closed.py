@@ -262,7 +262,7 @@ def test_pattern_matching_is_conservative_and_honours_negation():
 
 
 def test_existing_patterns_that_cover_used_references_are_satisfied():
-    responses = selected_with(compliant_responses(), ["googleapis/*", "unused/org@*"])
+    responses = selected_with(compliant_responses(), ["googleapis/*"])
     responses.update(workflow_responses({"release.yml": RELEASE_WORKFLOW}))
 
     _, by_name, _ = review(responses)
@@ -669,3 +669,329 @@ def test_every_unavailable_setting_carries_a_reason(name):
         for item in unavailable:
             assert item["unavailable_reason"], (name, profile, item["name"])
         assert all(unknown["reason"] for unknown in report["unknowns"]), name
+
+
+def indented(prefix, lines):
+    return "".join(prefix + line + "\n" for line in lines)
+
+
+WHOLE_DOCUMENT = (
+    "on: push",
+    "jobs:",
+    "  b:",
+    "    steps:",
+    "      - uses: third/party@v1",
+)
+
+
+@pytest.mark.parametrize("prefix", [" ", "  ", "    "])
+def test_document_indented_as_a_whole_is_refused_not_empty(prefix):
+    text = indented(prefix, WHOLE_DOCUMENT)
+
+    assert MODULE.workflow_action_references(text) is None
+
+
+def test_document_indented_after_a_document_marker_is_refused():
+    text = "---\n" + indented("  ", WHOLE_DOCUMENT)
+
+    assert MODULE.workflow_action_references(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "\n\n",
+        "# only a comment\n",
+        "name: x\non: [push]\n",
+        "env:\n  jobs: x\n",
+        "on:\n  push:\n",
+    ],
+)
+def test_document_without_a_top_level_jobs_key_is_refused(text):
+    assert MODULE.workflow_action_references(text) is None
+
+
+def test_top_level_jobs_with_no_job_is_a_scan_that_found_nothing():
+    assert MODULE.workflow_action_references("jobs:\n") == []
+
+
+def test_indented_workflow_blocks_the_switch_instead_of_deriving_an_empty_list():
+    responses = drifted_all_responses()
+    responses.update(workflow_responses({"w.yml": indented("  ", WHOLE_DOCUMENT)}))
+
+    _, by_name, _ = review(responses)
+
+    operation = by_name["allowed_actions"]["proposed_operation"]
+    assert operation["ready"] is False
+    assert operation["blocked_reason"] == (
+        "allow_list_derivation_unavailable:"
+        "workflow_scan_refused:.github/workflows/w.yml"
+    )
+    assert operation["steps"][1]["body"] is None
+
+
+NON_LF_BREAKS = [
+    "\r",
+    "\x0b",
+    "\x0c",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x85",
+    "\u2028",
+    "\u2029",
+]
+HIDING_PLACES = {
+    "comment": "      # note{c}      - uses: third/party@v1\n",
+    "quoted": '      - run: "a{c}      - uses: third/party@v1"\n',
+    "plain": "      - run: a{c}      - uses: third/party@v1\n",
+    "block": "      - run: |\n          a{c}      - uses: third/party@v1\n",
+}
+
+
+@pytest.mark.parametrize("place", sorted(HIDING_PLACES))
+@pytest.mark.parametrize("char", NON_LF_BREAKS)
+def test_characters_that_split_lines_in_other_readers_are_refused(char, place):
+    text = (
+        "jobs:\n  b:\n    steps:\n"
+        + HIDING_PLACES[place].replace("{c}", char)
+        + "      - uses: actions/checkout@v4\n"
+    )
+
+    assert MODULE.workflow_action_references(text) is None
+
+
+def test_crlf_documents_are_read_like_lf_documents():
+    body = jobs_text("- uses: actions/checkout@v4", "- uses: owner/tool@v2")
+
+    assert MODULE.workflow_action_references(body.replace("\n", "\r\n")) == [
+        "actions/checkout@v4",
+        "owner/tool@v2",
+    ]
+
+
+def test_lone_carriage_return_mixed_with_crlf_is_refused():
+    body = jobs_text("- uses: actions/checkout@v4").replace("\n", "\r\n")
+
+    assert MODULE.workflow_action_references(body + "# x\ry: 1\r\n") is None
+
+
+def item_for(patterns, profile="solo_public", workflow=RELEASE_WORKFLOW):
+    responses = selected_with(compliant_responses(), patterns)
+    responses.update(workflow_responses({"release.yml": workflow}))
+    _, by_name, _ = review(responses, profile)
+    return by_name["selected_actions_patterns"]
+
+
+def test_unused_pattern_next_to_a_covering_pattern_is_not_satisfied():
+    solo = item_for(["googleapis/*", "unused/org@*"])
+    risky = item_for(["googleapis/*", "unused/org@*"], "high_risk_public")
+
+    assert solo["classification"] == "recommended_change"
+    assert solo["unused_patterns"] == ["unused/org@*"]
+    assert solo["overly_broad_patterns"] == []
+    assert solo["proposed_operation"] is None
+    assert solo["rollback"] is None
+    assert risky["classification"] == "human_decision"
+    assert risky["blocks_intent"] is True
+
+
+@pytest.mark.parametrize(
+    "patterns, unused, broad",
+    [
+        (["googleapis/*", "evil/backdoor@*"], ["evil/backdoor@*"], []),
+        (["*/*"], [], ["*/*"]),
+        (["**"], [], ["**"]),
+        (["goo*/*"], [], ["goo*/*"]),
+        (["googleapis/**"], [], ["googleapis/**"]),
+        (["*/*", "evil/backdoor@*"], ["evil/backdoor@*"], ["*/*"]),
+    ],
+)
+def test_overly_wide_allow_lists_are_never_no_change(patterns, unused, broad):
+    for profile, classification in (
+        ("solo_public", "recommended_change"),
+        ("team_public", "recommended_change"),
+        ("high_risk_public", "human_decision"),
+    ):
+        item = item_for(patterns, profile)
+
+        assert item["classification"] == classification, (patterns, profile)
+        assert item["unused_patterns"] == unused
+        assert item["overly_broad_patterns"] == broad
+        assert item["proposed_operation"] is None
+        assert item["rollback"] is None
+        assert item["blocks_intent"] is (profile == "high_risk_public")
+
+
+def test_patterns_with_no_third_party_use_are_all_unused_and_block_high_risk():
+    responses = selected_with(compliant_responses(), ["third-party/*"])
+    _, by_name, _ = review(responses, "high_risk_public")
+
+    item = by_name["selected_actions_patterns"]
+    assert item["tier"] == "required"
+    assert item["classification"] == "human_decision"
+    assert item["blocks_intent"] is True
+    assert item["unused_patterns"] == ["third-party/*"]
+    assert item["proposed_operation"] is None
+
+
+def test_explicit_pattern_for_a_github_owned_action_is_not_reported_as_unused():
+    responses = selected_with(
+        compliant_responses(), ["actions/checkout@*", "actions/setup-python@*"]
+    )
+
+    _, by_name, _ = review(responses)
+
+    item = by_name["selected_actions_patterns"]
+    assert item["classification"] == "no_change"
+    assert item["unused_patterns"] == []
+
+
+def test_negated_patterns_are_not_reported_as_unused_or_broad():
+    item = item_for(["googleapis/*", "!evil/*", "!unused/*"])
+
+    assert item["classification"] == "no_change"
+    assert item["unused_patterns"] == []
+    assert item["overly_broad_patterns"] == []
+
+
+def test_missing_reference_is_added_while_unused_patterns_stay_flagged_not_removed():
+    item = item_for(["third-party/*"])
+
+    assert item["classification"] == "recommended_change"
+    assert item["unused_patterns"] == ["third-party/*"]
+    assert item["proposed_operation"]["overlay"] == {
+        "patterns_allowed": ["third-party/*", "googleapis/release-please-action@*"]
+    }
+
+
+def test_exact_and_wildcard_patterns_that_match_a_used_reference_stay_satisfied():
+    for patterns in (
+        [f"googleapis/release-please-action@{PINNED_SHA}"],
+        ["googleapis/release-please-action@*"],
+        ["googleapis/*"],
+    ):
+        item = item_for(patterns)
+
+        assert item["classification"] == "no_change", patterns
+        assert item["unused_patterns"] == []
+        assert item["overly_broad_patterns"] == []
+
+
+@pytest.mark.parametrize(
+    "patterns, reference, conflicts",
+    [
+        (["**", "!bad-org/*"], "bad-org/tool/sub@v1", ["!bad-org/*"]),
+        (["**", "!Bad-Org/*"], "bad-org/tool@v1", ["!Bad-Org/*"]),
+        (["**", "!bad-org/too?l@*"], "bad-org/tool@v1", ["!bad-org/too?l@*"]),
+        (["**", "!bad-org/to+l@*"], "bad-org/tool@v1", ["!bad-org/to+l@*"]),
+        (["**", "!bad-org/to[o]l@*"], "bad-org/tool@v1", ["!bad-org/to[o]l@*"]),
+        (["!bad-org/*", "**"], "bad-org/tool/sub@v1", ["!bad-org/*"]),
+        (["**", "!BAD-ORG/**"], "Bad-Org/tool/sub@v1", ["!BAD-ORG/**"]),
+    ],
+)
+def test_negated_pattern_is_read_broadly_so_it_never_slips_through(
+    patterns, reference, conflicts
+):
+    assert MODULE.allow_list_covers(patterns, reference) == (False, conflicts)
+
+
+def test_negated_pattern_that_cannot_match_does_not_block():
+    covers = MODULE.allow_list_covers
+
+    assert covers(["**", "!bad-org/*"], "good/tool@v1") == (True, [])
+    assert covers(["**", "!bad-org/tool@v1"], "bad-org/tool@v2") == (True, [])
+
+
+def test_positive_patterns_stay_narrow_and_case_sensitive():
+    covers = MODULE.allow_list_covers
+
+    assert covers(["Owner/*"], "owner/x@v1")[0] is False
+    assert covers(["owner/*"], "owner/x/y@v1")[0] is False
+    assert covers(["owner/x@v?"], "owner/x@v1")[0] is False
+
+
+def test_patterns_with_many_wildcards_are_answered_exactly_and_quickly():
+    covers = MODULE.allow_list_covers
+    heavy = "*a" * 40 + "b"
+
+    matching = "*a" * 40
+
+    assert covers([heavy], "a" * 60) == (False, [])
+    assert covers(["**", "!" + heavy], "a" * 60) == (True, [])
+    assert covers([matching], "a" * 60) == (True, [])
+    assert covers(["**", "!" + matching], "a" * 60) == (False, ["!" + matching])
+
+
+def test_negation_hidden_behind_a_broad_pattern_is_reported_for_the_used_reference():
+    responses = selected_with(compliant_responses(), ["**", "!bad-org/*"])
+    responses.update(
+        workflow_responses({"w.yml": jobs_text("- uses: bad-org/tool/sub@v1")})
+    )
+
+    _, by_name, _ = review(responses, "high_risk_public")
+
+    item = by_name["selected_actions_patterns"]
+    assert item["classification"] == "human_decision"
+    assert item["conflicting_negated_patterns"] == ["!bad-org/*"]
+    assert item["overly_broad_patterns"] == ["**"]
+    assert item["proposed_operation"] is None
+
+
+def test_packet_keys_the_changelog_names_really_exist_in_the_packet():
+    produced = {}
+    responses = selected_with(compliant_responses(), ["**", "!googleapis/*"])
+    responses.update(workflow_responses({"release.yml": RELEASE_WORKFLOW}))
+    _, by_name, _ = review(responses)
+    produced["selected_actions_patterns"] = set(by_name["selected_actions_patterns"])
+
+    responses = compliant_responses()
+    responses[WORKFLOWS_ENDPOINT] = MODULE.ApiUnavailable(
+        status_code=403, reason="forbidden_or_plan_unavailable"
+    )
+    _, by_name, _ = review(responses)
+    produced["selected_actions_patterns"] |= set(by_name["selected_actions_patterns"])
+
+    responses = compliant_responses()
+    responses[CLASSIC_ENDPOINT] = MODULE.ApiUnavailable(
+        status_code=403, reason="forbidden_or_plan_unavailable"
+    )
+    responses[check_runs_endpoint(PR_HEAD_SHA)] = {"check_runs": [{"name": "lint"}]}
+    _, by_name, _ = review(responses)
+    produced["required_status_checks"] = set(
+        by_name["required_status_checks"]["observed_value"]
+    )
+
+    assert {
+        "conflicting_negated_patterns",
+        "derivation_unavailable_reason",
+        "unused_patterns",
+        "overly_broad_patterns",
+        "missing_references",
+        "derived_patterns",
+    } <= produced["selected_actions_patterns"]
+    assert "sources_unavailable" in produced["required_status_checks"]
+
+
+def test_negated_pattern_hitting_a_github_owned_used_reference_is_reported():
+    responses = selected_with(compliant_responses(), ["!actions/checkout@*"])
+
+    _, by_name, _ = review(responses)
+
+    item = by_name["selected_actions_patterns"]
+    assert item["classification"] == "recommended_change"
+    assert item["conflicting_negated_patterns"] == ["!actions/checkout@*"]
+    assert item["proposed_operation"] is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"jobs": {"b": {"steps": [{"uses": "x/y@v1"}]}}}\n',
+        "- jobs:\n    b:\n      steps:\n        - uses: x/y@v1\n",
+        "jobs :\n  b:\n    steps:\n      - uses: x/y@v1\n",
+    ],
+)
+def test_documents_whose_top_level_is_not_a_plain_jobs_mapping_are_refused(text):
+    assert MODULE.workflow_action_references(text) is None

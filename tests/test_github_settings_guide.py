@@ -225,5 +225,18 @@ def test_changelog_records_the_packet_shape_changes():
         "`body`",
         "`SEQUENCE`",
         "`body_basis`",
+        "`body: null`",
+        "`conflicting_negated_patterns`",
+        "`derivation_unavailable_reason`",
+        "`unused_patterns`",
+        "`overly_broad_patterns`",
+        "`sources_unavailable`",
     ):
         assert needle in shape, needle
+
+
+def test_guide_states_that_unused_and_overly_broad_patterns_are_not_satisfied():
+    assert "`unused_patterns`" in GUIDE
+    assert "`overly_broad_patterns`" in GUIDE
+    assert "消す案は出さない" in GUIDE
+    assert "広く読む" in GUIDE

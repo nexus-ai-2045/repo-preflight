@@ -280,7 +280,7 @@ def test_workflow_action_references_fail_closed_on_constructs_it_cannot_follow()
         )
         is None
     )
-    assert MODULE.workflow_action_references("name: x\non: [push]\n") == []
+    assert MODULE.workflow_action_references("name: x\non: [push]\n") is None
 
 
 def test_allow_list_derivation_classifies_each_reference_kind():

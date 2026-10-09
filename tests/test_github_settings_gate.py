@@ -180,6 +180,27 @@ def test_actions_permission_preview_never_embeds_observed_values_in_a_fixed_body
     assert item["rollback"]["overlay"] == {"sha_pinning_required": False}
 
 
+def test_high_risk_profile_blocks_unreviewed_selected_action_patterns():
+    responses = compliant_responses()
+    selected = dict(
+        responses["repos/example/repo/actions/permissions/selected-actions"]
+    )
+    selected["patterns_allowed"] = ["third-party/*"]
+    responses["repos/example/repo/actions/permissions/selected-actions"] = selected
+    get, _ = fake_api(responses)
+
+    report = MODULE.review_repository("example/repo", "high_risk_public", api_get=get)
+    item = next(
+        setting
+        for setting in report["settings"]
+        if setting["name"] == "selected_actions_patterns"
+    )
+
+    assert item["tier"] == "required"
+    assert item["classification"] == "human_decision"
+    assert item["blocks_intent"] is True
+
+
 def test_high_risk_profile_blocks_selected_patterns_missing_a_used_action():
     responses = compliant_responses()
     responses.update(workflow_responses({"release.yml": RELEASE_WORKFLOW}))
