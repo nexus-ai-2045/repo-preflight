@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### 修正
+
+- `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
+  protection だけで保護された repository を「保護なし」の必須変更と誤判定していた。
+  `branches/{default}/protection` も読み、ruleset と累積して評価する（GitHub は両方が掛かると全規則を
+  強制し、同じ規則は厳しい方が効く）。保護の無い branch は本文 `Branch not protected` の 404、権限不足は
+  `Not Found` の 404 で区別し、権限不足は `false` と推測せず `unavailable` にする。classic 側の
+  `enforce_admins` 無効と PR 要件の bypass 許可は bypass actor として数える。設定名
+  （`default_branch_ruleset`、`ruleset_*`）は packet schema v1 の互換のため変えず、
+  `enforced_by` に由来、`sources_unavailable` に確認できなかった情報源を出す。
+- 必須 status check の照合先を、default branch の HEAD から、直近に merge された PR（新しい順に最大 5 件）の
+  head commit の check-runs と commit status へ変えた。PR でしか走らない check（`pr-body-hygiene` など）を
+  HEAD では観測できないため、必須 check が空洞化している誤判定になっていた。merge 済み PR が無い、または
+  取得できない場合は `unavailable` にする。
+- Actions 設定（`actions/permissions`、`actions/permissions/workflow`、`selected-actions`）の変更案が、観測時の
+  値を固定 body に埋めていたため、順に実行すると先の変更を戻していた。実行直前に取り直した現在値へ、
+  承認された項目の変更だけを重ねて 1 回 PUT する手順（`fresh_read` / `copy_from_fresh_read` / `overlay`）で
+  示す形に変えた。`allowed_actions` を `selected` へ変える案は、`all` の間 `selected-actions` が 409 を返すため
+  「切り替え → 許可 list 設定」の 2 段にし、許可 list は default branch の `.github/workflows` の `uses:` から導く
+  （GitHub 製は `github_owned_allowed`、それ以外は `OWNER/REPO@*`）。`selected_actions_patterns` も、導出した
+  list と照合し、全消去の案を出さない。導出できない構文の workflow は推測せず `unavailable` にする。
+- 設定ガイドと packet の推奨度の食い違いを揃えた。PR 経由・branch を最新にする・review thread 解決・承認数・
+  `can_approve_pull_request_reviews` は推奨（必須ではない）。`can_approve_pull_request_reviews` が ON のとき、
+  `GITHUB_TOKEN` による PR の作成も止まる旨と、「ON を維持して理由を記録する、または GitHub App token へ移して
+  から OFF にする」例外を packet に出す（release-please などは workflow から検出する）。ガイドと packet の推奨度の
+  対応は `tests/test_github_settings_guide.py` が機械で照合する。
+- `references/github-settings.md` を 2026-10-09 の確認内容で更新した（`sha_pinning_required` を有効にする前の
+  順序、CodeQL の必須化、immutable releases、workflow execution protections と `pull_request_target` の既定
+  rule、private vulnerability reporting の件数制限と構造化 form、classic protection の ruleset 変換、Copilot code
+  review の承認）。
+
 ## 0.6.0 - 2026-10-06
 
 ### 追加
