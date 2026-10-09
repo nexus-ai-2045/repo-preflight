@@ -32,6 +32,60 @@
   順序、CodeQL の必須化、immutable releases、workflow execution protections と `pull_request_target` の既定
   rule、private vulnerability reporting の件数制限と構造化 form、classic protection の ruleset 変換、Copilot code
   review の承認）。
+- 「取れない・読めない時に、満たしている側へ倒れる」経路を塞いだ。
+  - workflow の `uses:` を読む走査器を、job id・job の key・step の key の 3 段を追う形に
+    書き直した。job 名が `container` や `env` でも中身を読み飛ばさない。`uses:` の値が block
+    scalar、最上位が flow 記法や引用符付きの key、閉じない引用符、anchor・alias・tab などは、
+    `[]` を返さず読み取り不能（`workflow_scan_refused`）にする。読み取り不能の間は、selected へ
+    切り替える案を `ready: false` にし、既存の許可 list を消す案を出さない。
+  - 許可 list の判定を、集合の等値から「使用中の参照を既存の pattern が覆うか」に変えた（`*` は
+    `/` を越えない保守的な判定で、`!` の拒否も見る）。足りない分だけを追加し、既存の pattern は
+    消さず、SHA 固定の pattern を `@*` へ緩めない。`allowed_actions` が `local_only`（selected より
+    厳しい）のときは緩める案を出さない。workflow が読めないときは `unavailable` にする。
+  - selected への切り替え案は、導出できない参照（`docker://`、式）や、走査していない local action
+    （`./`、`$/`）があるとき `ready: false` と理由（`allow_list_needs_review:...`）を出す。
+  - ruleset の詳細に `bypass_actors` が無いとき（書き込み権限が無いと返らない）は、bypass が無い
+    とは読まず `unavailable` にする。
+  - 必須 check の照合は、情報源のどれかが確認不能の間は、照合できても満たしたと言わず
+    `unavailable` にする。
+  - ruleset の一覧は `per_page=100` で読み、上限まで埋まっていたら `unavailable` にする。
+    `~DEFAULT_BRANCH` だけを include し exclude が空の active な ruleset だけを default branch の
+    保護として数え、それ以外の対象指定（`~ALL`、`refs/heads/<既定>`、glob、exclude 付き）は数えず
+    `unavailable` にする（正しい解釈は別の作業）。
+  - `unavailable` なのに理由が空になる箇所（classic の項目欠落、許可 list の導出失敗など）に理由を
+    付けた。
+
+### packet の形の変化
+
+- Actions の変更案（`actions/permissions`、`actions/permissions/workflow`、`selected-actions`）から
+  `body` がなくなり、`fresh_read`・`copy_from_fresh_read`・`overlay`・`put_once` になった。
+  `allowed_actions` を `selected` へ変える案は `SEQUENCE`（`steps`、`ready`、`blocked_reason`）に
+  なった。
+- `body_basis` の値の名前が変わった。ruleset 系は `fresh_all_effective_ruleset_bodies_required` から
+  `fresh_all_effective_protection_bodies_required` へ、rollback の `requirement` は
+  `capture_each_fresh_ruleset_body_before_change` から
+  `capture_each_fresh_protection_body_before_change` へ。Actions 系は
+  `fresh_get_then_overlay_approved_changes_only`、許可 list の 2 段目は
+  `derived_from_default_branch_workflows` または `derivation_unavailable` になった。
+- `recommended_value` の文字列が変わった。`default_branch_ruleset` は
+  `active_ruleset_for_default_branch` から `ruleset_or_classic_branch_protection_on_default_branch`
+  へ、`required_status_checks` は `all_required_check_contexts_currently_emitted` から
+  `all_required_check_contexts_emitted_on_recent_merged_pr_heads` へ。
+- `required_status_checks` の `observed_value` は、`observed_on_default_branch` が
+  `observed_on_recent_merged_pr_heads` と `evidence_pull_requests` になった。
+  `strict_required_status_checks_policy` の `observed_value` は一覧から真偽値になった。
+  `default_branch_ruleset` は、classic だけで保護されているとき `classic_branch_protection` を返す。
+- `ruleset_bypass_actors` の `observed_value` の要素に、classic 由来の `{source, actor}` の形が
+  混ざる。ruleset 由来は従来どおり `{ruleset_id, actor_type, actor_id, bypass_mode}`。
+- 追加された項目: 設定ごとの `enforced_by` と `sources_unavailable`（対象は
+  `default_branch_ruleset`、`ruleset_deletion_protection`、`ruleset_non_fast_forward_protection`、
+  `ruleset_pull_request`、`required_review_thread_resolution`、
+  `strict_required_status_checks_policy`）、`selected_actions_patterns` の `derived_patterns`・
+  `missing_references`・`derivation`、`can_approve_pull_request_reviews` の `exception`。
+- 推奨度が required から recommended になった項目: `ruleset_pull_request`、
+  `required_review_thread_resolution`、`strict_required_status_checks_policy`、
+  `required_approving_review_count`、`can_approve_pull_request_reviews`。足りなくても
+  `needs_human_input` で止まらなくなる。
 
 ## 0.6.0 - 2026-10-06
 

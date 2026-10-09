@@ -23,6 +23,7 @@ PULLS_ENDPOINT = (
     f"repos/{REPO}/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=30"
 )
 WORKFLOWS_ENDPOINT = f"repos/{REPO}/contents/.github/workflows?ref=main"
+RULESETS_ENDPOINT = f"repos/{REPO}/rulesets?per_page=100"
 ACTIONS_ENDPOINT = f"repos/{REPO}/actions/permissions"
 WORKFLOW_PERMISSIONS_ENDPOINT = f"repos/{REPO}/actions/permissions/workflow"
 SELECTED_ENDPOINT = f"repos/{REPO}/actions/permissions/selected-actions"
@@ -161,7 +162,7 @@ def compliant_responses() -> dict[str, object]:
             "verified_allowed": False,
             "patterns_allowed": [],
         },
-        f"repos/{repo}/rulesets": [{"id": 7, "enforcement": "active"}],
+        RULESETS_ENDPOINT: [{"id": 7, "enforcement": "active"}],
         f"repos/{repo}/rulesets/7": {
             "id": 7,
             "name": "Protect main",
@@ -203,7 +204,7 @@ def compliant_responses() -> dict[str, object]:
 def classic_only_responses(**classic: Any) -> dict[str, object]:
     """rulesets が空で classic branch protection だけが掛かった repository。"""
     responses = compliant_responses()
-    responses[f"repos/{REPO}/rulesets"] = []
+    responses[RULESETS_ENDPOINT] = []
     responses[CLASSIC_ENDPOINT] = classic_protection(**classic)
     return responses
 

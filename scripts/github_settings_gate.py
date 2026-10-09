@@ -235,6 +235,7 @@ def _simple_setting(
     rollback_body: dict[str, Any] | None = None,
     operation: dict[str, Any] | None = None,
     rollback_operation: dict[str, Any] | None = None,
+    satisfied_values: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     if error or data is None or field not in data:
         unavailable_reason = error.reason if error else "field_not_returned"
@@ -272,7 +273,7 @@ def _simple_setting(
             if rollback_operation is not None
             else _operation(method, endpoint, old_body)
         ),
-        matches=observed == recommended,
+        matches=observed == recommended or observed in satisfied_values,
     )
 
 
@@ -314,6 +315,7 @@ def _complete_put_setting(
     preserved_fields: tuple[str, ...],
     reason: str,
     effect: str,
+    satisfied_values: tuple[Any, ...] = (),
 ) -> dict[str, Any]:
     """必須fieldを取り直したうえで、一項目だけを重ねるPUT手順を作る。"""
     missing = [key for key in required_fields if data is None or key not in data]
@@ -352,6 +354,7 @@ def _complete_put_setting(
         rollback_operation=_fresh_overlay_put(
             endpoint, preserved_fields, observed_overlay
         ),
+        satisfied_values=satisfied_values,
     )
 
 
@@ -413,6 +416,8 @@ def _security_setting(
 
 
 MAX_WORKFLOW_FILES = 50
+RULESETS_PAGE_SIZE = 100
+LOCAL_ACTION_PREFIXES = ("./", "$/")
 GITHUB_OWNED_ACTION_OWNERS = frozenset({"actions", "github"})
 PR_CREATING_ACTIONS = (
     "googleapis/release-please-action",
@@ -437,21 +442,6 @@ CAN_APPROVE_EFFECT = (
 
 _YAML_KEY = re.compile(r"^( *)(- +)?([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t]+(.*))?$")
 _YAML_ALIAS = re.compile(r"(?:^|[\s\[{,])\*[A-Za-z0-9_-]")
-_MAPPING_SKIP_KEYS = frozenset(
-    {
-        "with",
-        "env",
-        "outputs",
-        "defaults",
-        "inputs",
-        "secrets",
-        "permissions",
-        "strategy",
-        "services",
-        "container",
-        "concurrency",
-    }
-)
 _ACTION_REFERENCE = re.compile(
     r"^(?P<owner>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
     r"(?P<path>(?:/[^@\s]+)?)@(?P<ref>\S+)$"
@@ -459,23 +449,73 @@ _ACTION_REFERENCE = re.compile(
 _WORKFLOW_FILE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 
-def _yaml_scalar(value: str) -> str | None:
-    if value[:1] in {"'", '"'}:
-        end = value.find(value[0], 1)
-        return None if end == -1 else value[1:end]
-    return re.split(r"\s+#", value, maxsplit=1)[0].strip()
+_QUOTES = ("'", '"')
+
+
+def _closing_quote(value: str) -> int | None:
+    quote_char = value[0]
+    index = 1
+    while index < len(value):
+        char = value[index]
+        if quote_char == '"' and char == "\\":
+            index += 2
+            continue
+        if char == quote_char:
+            if quote_char == "'" and value[index + 1 : index + 2] == "'":
+                index += 2
+                continue
+            return index
+        index += 1
+    return None
+
+
+def _value_token(value: str) -> tuple[str, str] | None:
+    """key の値を (種類, 本文) に分ける。引用符が閉じない等、読めない値は None。"""
+    value = value.strip()
+    if not value or value.startswith("#"):
+        return "empty", ""
+    first = value[0]
+    if first in _QUOTES:
+        end = _closing_quote(value)
+        if end is None:
+            return None
+        rest = value[end + 1 :].strip()
+        if rest and not rest.startswith("#"):
+            return None
+        inner = value[1:end]
+        return "quoted", inner.replace("''", "'") if first == "'" else inner
+    if first in "|>":
+        return "block", ""
+    plain = re.split(r"(?:^|\s)#", value, maxsplit=1)[0].strip()
+    if first in "&!*":
+        return "anchor", plain
+    if first in "{[":
+        return "flow", plain
+    return "plain", plain
+
+
+def _flow_balanced(text: str) -> bool:
+    return text.count("{") == text.count("}") and text.count("[") == text.count("]")
 
 
 def workflow_action_references(text: str) -> list[str] | None:
     """workflow YAML の `jobs` 配下にある `uses:` の値を、出現順に返す。
 
-    stdlib だけで安全に追える構文だけを読み、追えない構文(インデントの tab、
-    alias、flow 形式の steps など)に当たったら推測せず None を返す。
+    stdlib だけで安全に追える構文だけを読む。`jobs` の下を
+    job id、job の key、step の key の 3 段として追い、読み飛ばしは各段の key
+    だけに効かせる。追えない構文(インデントの tab、alias、anchor、flow 形式、
+    閉じない引用符、block scalar の `uses` など)に当たったら、推測せず None を返す。
     """
     references: list[str] = []
+    started = False
     in_jobs = False
+    job_col: int | None = None
+    child_col: int | None = None
+    step_col: int | None = None
+    in_steps = False
     block_col: int | None = None
     skip_col: int | None = None
+    scalar_col: int | None = None
     for raw in text.splitlines():
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
@@ -487,47 +527,113 @@ def workflow_action_references(text: str) -> list[str] | None:
             block_col = None
         if "\t" in raw[: len(raw) - len(raw.lstrip())] or _YAML_ALIAS.search(stripped):
             return None
+        if indent == 0 and stripped in {"---", "..."}:
+            if started or stripped == "...":
+                return None
+            continue
         match = _YAML_KEY.match(raw.rstrip())
         if match is None:
-            if in_jobs and "uses" in stripped:
+            if indent == 0:
                 return None
-            continue
-        key_col = indent + len(match.group(2) or "")
+            if not in_jobs:
+                continue
+            sequence_entry = stripped == "-" or stripped.startswith("- ")
+            if skip_col is not None and (
+                indent > skip_col or (indent == skip_col and sequence_entry)
+            ):
+                continue
+            if scalar_col is not None and indent > scalar_col:
+                continue
+            return None
+        started = True
+        dash = match.group(2)
+        key_col = indent + len(dash or "")
         key = match.group(3)
-        value = (match.group(4) or "").strip()
-        if value[:1] in {"|", ">"}:
-            block_col = key_col
-            continue
-        if indent == 0 and match.group(2) is None:
+        token = _value_token(match.group(4) or "")
+        if token is None:
+            return None
+        kind, value = token
+        scalar_col = None
+        if indent == 0 and dash is None:
             in_jobs = key == "jobs"
-            skip_col = None
+            if in_jobs and kind != "empty":
+                return None
+            job_col = child_col = step_col = skip_col = None
+            in_steps = False
+            if kind == "block":
+                block_col = 0
             continue
         if not in_jobs:
+            if kind == "block":
+                block_col = key_col
             continue
+        if kind == "anchor":
+            return None
         if skip_col is not None:
             if key_col > skip_col:
+                if kind == "block":
+                    block_col = key_col
                 continue
             skip_col = None
-        if value[:1] in {"{", "["} and (key == "steps" or "uses" in value):
+        if job_col is None:
+            if dash is not None or kind != "empty":
+                return None
+            job_col = key_col
+            continue
+        if key_col < job_col:
+            return None
+        if key_col == job_col and dash is None:
+            if kind != "empty":
+                return None
+            child_col = step_col = None
+            in_steps = False
+            continue
+        if dash is not None:
+            if not in_steps or child_col is None or indent < child_col:
+                return None
+            step_col = key_col
+            at_job_level = False
+        elif child_col is None:
+            child_col = key_col
+            at_job_level = True
+        elif key_col == child_col:
+            in_steps = False
+            at_job_level = True
+        elif in_steps and step_col is not None and key_col == step_col:
+            at_job_level = False
+        else:
+            return None
+        if kind == "flow" and (
+            not _flow_balanced(value) or key == "steps" or "uses" in value
+        ):
             return None
         if key == "uses":
-            reference = _yaml_scalar(value) if value else None
-            if not reference:
+            if kind not in {"plain", "quoted"} or not value or "\\" in value:
                 return None
-            references.append(reference)
-        elif key in _MAPPING_SKIP_KEYS and not value:
+            references.append(value)
+        elif at_job_level and key == "steps":
+            if kind != "empty":
+                return None
+            in_steps = True
+            step_col = None
+        elif kind == "empty":
             skip_col = key_col
+        elif kind == "block":
+            block_col = key_col
+        elif kind == "plain":
+            scalar_col = key_col
     return references
 
 
 def derive_selected_actions(references: list[str]) -> dict[str, Any]:
     """workflow が実際に使う action から selected-actions の許可 list を導く。"""
     patterns: set[str] = set()
+    third_party: set[str] = set()
     unmapped: set[str] = set()
     local = 0
     github_owned = False
     for reference in references:
-        if reference.startswith("./"):
+        if reference.startswith(LOCAL_ACTION_PREFIXES):
             local += 1
             continue
         match = (
@@ -540,13 +646,52 @@ def derive_selected_actions(references: list[str]) -> dict[str, Any]:
         elif match["owner"].lower() in GITHUB_OWNED_ACTION_OWNERS:
             github_owned = True
         else:
+            third_party.add(reference)
             patterns.add(f"{match['owner']}/{match['repo']}{match['path']}@*")
     return {
         "github_owned_used": github_owned,
         "patterns_allowed": sorted(patterns),
+        "third_party_references": sorted(third_party),
         "local_references": local,
         "unmapped_references": sorted(unmapped),
     }
+
+
+def _pattern_regex(pattern: str) -> re.Pattern[str]:
+    parts: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            parts.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            parts.append("[^/]*")
+            index += 1
+        else:
+            parts.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(parts))
+
+
+def allow_list_covers(patterns: list[str], reference: str) -> tuple[bool, list[str]]:
+    """許可 list の pattern が workflow の参照を覆うかを、保守的に判定する。
+
+    `*` は `/` を越えない(越えると誤って「覆っている」と言うより、足りないと
+    言う方を選ぶ)。`!` で始まる pattern は拒否で、一致したら覆わない。
+    戻り値は (覆うか, 一致した拒否 pattern)。
+    """
+    allowed = False
+    conflicts: list[str] = []
+    for pattern in patterns:
+        negated = pattern.startswith("!")
+        if not _pattern_regex(pattern[1:] if negated else pattern).fullmatch(reference):
+            continue
+        if negated:
+            if pattern not in conflicts:
+                conflicts.append(pattern)
+        else:
+            allowed = True
+    return (allowed and not conflicts), conflicts
 
 
 def _decode_workflow(item: Any) -> str | None:
@@ -642,7 +787,16 @@ def _switch_to_selected_operation(
     first = _fresh_overlay_put(
         actions_endpoint, ACTIONS_PERMISSION_FIELDS, {"allowed_actions": "selected"}
     )
+    review_reasons: list[str] = []
     if derivation["state"] == "ok":
+        if derivation["unmapped_references"]:
+            review_reasons.append(
+                f"unmapped_references:{len(derivation['unmapped_references'])}"
+            )
+        if derivation["local_references"]:
+            review_reasons.append(
+                f"local_actions_not_scanned:{derivation['local_references']}"
+            )
         second: dict[str, Any] = {
             "method": "PUT",
             "endpoint": selected_endpoint,
@@ -681,11 +835,15 @@ def _switch_to_selected_operation(
             "selected へ切り替えてから許可 list を設定する"
         ),
         "steps": [first, second],
-        "ready": derivation["state"] == "ok",
+        "ready": derivation["state"] == "ok" and not review_reasons,
     }
     if derivation["state"] != "ok":
         operation["blocked_reason"] = (
             f"allow_list_derivation_unavailable:{derivation['reason']}"
+        )
+    elif review_reasons:
+        operation["blocked_reason"] = "allow_list_needs_review:" + ",".join(
+            review_reasons
         )
     return operation
 
@@ -786,31 +944,51 @@ class _ProtectionSources:
 def _read_rulesets(
     repository: str, api_get: Callable[[str], Any]
 ) -> tuple[list[dict[str, Any]], str | None]:
-    summaries, list_error = _fetch(api_get, f"repos/{repository}/rulesets")
+    """default branch を対象にした active な ruleset の詳細と、読めなかった理由を返す。
+
+    対象 branch の解釈(`~DEFAULT_BRANCH` 以外の include、exclude、glob)は
+    ここでは行わない。解釈できない ruleset は数えず、理由に残す。
+    """
+    summaries, list_error = _fetch(
+        api_get, f"repos/{repository}/rulesets?per_page={RULESETS_PAGE_SIZE}"
+    )
     if list_error is not None:
         return [], list_error.reason
     if not isinstance(summaries, list):
         return [], "invalid_rulesets_response"
+    if len(summaries) >= RULESETS_PAGE_SIZE:
+        return [], "rulesets_listing_may_be_truncated"
     details: list[dict[str, Any]] = []
-    detail_error: str | None = None
+    reasons: list[str] = []
     for summary in summaries:
         ruleset_id = summary.get("id") if isinstance(summary, dict) else None
         if ruleset_id is None:
             continue
         detail, error = _fetch(api_get, f"repos/{repository}/rulesets/{ruleset_id}")
         if error is not None:
-            detail_error = detail_error or error.reason
+            if error.reason not in reasons:
+                reasons.append(error.reason)
         elif isinstance(detail, dict):
             details.append(detail)
-    candidates = [
-        item
-        for item in details
-        if item.get("target") == "branch"
-        and item.get("enforcement") == "active"
-        and "~DEFAULT_BRANCH"
-        in (((item.get("conditions") or {}).get("ref_name") or {}).get("include") or [])
-    ]
-    return candidates, detail_error
+    candidates: list[dict[str, Any]] = []
+    not_interpreted: list[str] = []
+    for item in details:
+        if item.get("target") != "branch" or item.get("enforcement") != "active":
+            continue
+        ref_name = (item.get("conditions") or {}).get("ref_name") or {}
+        include = ref_name.get("include")
+        if (
+            isinstance(include, list)
+            and all(isinstance(entry, str) for entry in include)
+            and set(include) == {"~DEFAULT_BRANCH"}
+            and not ref_name.get("exclude")
+        ):
+            candidates.append(item)
+        else:
+            not_interpreted.append(str(item.get("id")))
+    if not_interpreted:
+        reasons.append("ruleset_scope_not_interpreted:" + ",".join(not_interpreted))
+    return candidates, ";".join(reasons) or None
 
 
 def _read_classic_protection(
@@ -1055,10 +1233,13 @@ def _branch_protection_observations(
                 else None
             ),
             matches=matches,
-            unavailable_reason=unavailable_reason
-            or (
-                sources.unavailable_detail(sources.unavailable)
-                if matches is None and sources.unavailable
+            unavailable_reason=(
+                (
+                    unavailable_reason
+                    or sources.unavailable_detail(sources.unavailable)
+                    or "unavailable_without_reason"
+                )
+                if matches is None
                 else None
             ),
             extra=extra,
@@ -1095,6 +1276,9 @@ def _branch_protection_observations(
             True,
             matches,
             reason,
+            unavailable_reason=sources.unavailable_detail(
+                verdict["sources_unavailable"]
+            ),
             extra=_verdict_extra(verdict),
         )
 
@@ -1156,7 +1340,12 @@ def _branch_protection_observations(
             api_get, repository, default_branch, required_contexts
         )
         if required_contexts <= observed_names:
-            checks_matches = True
+            checks_matches = None if sources.unavailable else True
+            checks_reason = (
+                sources.unavailable_detail(sources.unavailable)
+                if sources.unavailable
+                else None
+            )
         elif evidence_errors:
             checks_matches = None
             checks_reason = ";".join(sorted(set(evidence_errors)))
@@ -1172,7 +1361,14 @@ def _branch_protection_observations(
 
     bypass_actors: list[dict[str, Any]] = []
     bypass_unavailable = list(sources.unavailable)
+    bypass_reasons = (
+        [sources.unavailable_detail(sources.unavailable)] if bypass_unavailable else []
+    )
     for item in rulesets:
+        if "bypass_actors" not in item:
+            bypass_reasons.append("rulesets:bypass_actors_not_returned")
+            if "rulesets" not in bypass_unavailable:
+                bypass_unavailable.append("rulesets")
         for actor in item.get("bypass_actors") or []:
             if not isinstance(actor, dict):
                 continue
@@ -1189,6 +1385,7 @@ def _branch_protection_observations(
         if admins_enforced is None:
             if CLASSIC_SOURCE not in bypass_unavailable:
                 bypass_unavailable.append(CLASSIC_SOURCE)
+                bypass_reasons.append(f"{CLASSIC_SOURCE}:field_not_returned")
         elif admins_enforced is False:
             bypass_actors.append(
                 {"source": CLASSIC_SOURCE, "actor": "repository_administrators"}
@@ -1285,11 +1482,26 @@ def _branch_protection_observations(
             ),
             matches=bypass_matches,
             unavailable_reason=(
-                sources.unavailable_detail(bypass_unavailable)
+                ";".join(dict.fromkeys(bypass_reasons))
                 if bypass_matches is None
                 else None
             ),
         ),
+    ]
+
+
+def _missing_allow_list_patterns(patterns: list[str], missing: list[str]) -> list[str]:
+    """足りない参照だけを追加する。既存の pattern は消さず、SHA 固定は緩めない。"""
+    additions: set[str] = set()
+    for reference in missing:
+        action = reference.split("@", 1)[0]
+        pinned_before = any(
+            not pattern.startswith("!") and pattern.split("@", 1)[0] == action
+            for pattern in patterns
+        )
+        additions.add(reference if pinned_before else f"{action}@*")
+    return patterns + [
+        pattern for pattern in sorted(additions) if pattern not in patterns
     ]
 
 
@@ -1316,17 +1528,23 @@ def _selected_patterns_setting(
         )
     patterns = [str(item) for item in (selected or {}).get("patterns_allowed") or []]
     derivation = evidence.allow_list()
+    operation: dict[str, Any] | None = None
+    rollback: dict[str, Any] | None = None
+    unavailable_reason: str | None = None
+    matches: bool | None
     if derivation["state"] == "ok":
-        derived = derivation["patterns_allowed"]
-        matches = sorted(patterns) == derived
-        operation: dict[str, Any] | None = _fresh_overlay_put(
-            selected_endpoint, SELECTED_ACTIONS_FIELDS, {"patterns_allowed": derived}
-        )
-        rollback: dict[str, Any] | None = _fresh_overlay_put(
-            selected_endpoint, SELECTED_ACTIONS_FIELDS, {"patterns_allowed": patterns}
-        )
-        extra = {
-            "derived_patterns": derived,
+        missing: list[str] = []
+        conflicts: list[str] = []
+        for reference in derivation["third_party_references"]:
+            covered, blocked_by = allow_list_covers(patterns, reference)
+            if blocked_by:
+                conflicts.extend(item for item in blocked_by if item not in conflicts)
+            elif not covered:
+                missing.append(reference)
+        matches = not missing and not conflicts
+        extra: dict[str, Any] = {
+            "derived_patterns": derivation["patterns_allowed"],
+            "missing_references": missing,
             "derivation": {
                 key: derivation[key]
                 for key in (
@@ -1337,9 +1555,22 @@ def _selected_patterns_setting(
                 )
             },
         }
+        if conflicts:
+            extra["conflicting_negated_patterns"] = conflicts
+        elif missing:
+            operation = _fresh_overlay_put(
+                selected_endpoint,
+                SELECTED_ACTIONS_FIELDS,
+                {"patterns_allowed": _missing_allow_list_patterns(patterns, missing)},
+            )
+            rollback = _fresh_overlay_put(
+                selected_endpoint,
+                SELECTED_ACTIONS_FIELDS,
+                {"patterns_allowed": patterns},
+            )
     else:
-        matches = not patterns
-        operation = rollback = None
+        matches = None
+        unavailable_reason = derivation["reason"]
         extra = {"derivation_unavailable_reason": derivation["reason"]}
     return _setting(
         name="selected_actions_patterns",
@@ -1347,11 +1578,12 @@ def _selected_patterns_setting(
         observed=patterns,
         recommended="repository_specific_least_privilege",
         source=selected_endpoint,
-        reason="workflowで使う第三者actionだけを許可する",
+        reason="workflowで使う第三者actionを覆う許可listにする",
         effect="許可list外actionの実行可否に影響",
         proposed_operation=operation,
         rollback=rollback,
         matches=matches,
+        unavailable_reason=unavailable_reason,
         extra=extra,
     )
 
@@ -1378,6 +1610,7 @@ def _actions_policy_settings(
         recommended: Any,
         reason: str,
         effect: str,
+        satisfied_values: tuple[Any, ...] = (),
     ) -> dict[str, Any]:
         return _complete_put_setting(
             endpoint=actions_endpoint,
@@ -1391,6 +1624,7 @@ def _actions_policy_settings(
             preserved_fields=ACTIONS_PERMISSION_FIELDS,
             reason=reason,
             effect=effect,
+            satisfied_values=satisfied_values,
         )
 
     def workflow_item(
@@ -1421,6 +1655,7 @@ def _actions_policy_settings(
         "selected",
         "実行可能な第三者actionを明示的に制限する",
         "許可list外のaction実行を拒否",
+        satisfied_values=("local_only",),
     )
     if allowed_actions["proposed_operation"] is not None:
         allowed_actions = {

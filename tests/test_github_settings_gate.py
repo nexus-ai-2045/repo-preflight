@@ -1,4 +1,10 @@
-from github_settings_fixtures import MODULE, compliant_responses, fake_api
+from github_settings_fixtures import (
+    MODULE,
+    RELEASE_WORKFLOW,
+    compliant_responses,
+    fake_api,
+    workflow_responses,
+)
 
 
 def test_solo_public_compliant_profile_passes_and_only_reads():
@@ -174,8 +180,9 @@ def test_actions_permission_preview_never_embeds_observed_values_in_a_fixed_body
     assert item["rollback"]["overlay"] == {"sha_pinning_required": False}
 
 
-def test_high_risk_profile_blocks_unreviewed_selected_action_patterns():
+def test_high_risk_profile_blocks_selected_patterns_missing_a_used_action():
     responses = compliant_responses()
+    responses.update(workflow_responses({"release.yml": RELEASE_WORKFLOW}))
     selected = dict(
         responses["repos/example/repo/actions/permissions/selected-actions"]
     )
@@ -206,7 +213,7 @@ def test_multiple_default_branch_rulesets_are_evaluated_cumulatively():
         "name": "PR and checks",
         "rules": original_rules[2:],
     }
-    responses["repos/example/repo/rulesets"] = [
+    responses["repos/example/repo/rulesets?per_page=100"] = [
         {"id": 7, "enforcement": "active"},
         {"id": 8, "enforcement": "active"},
     ]

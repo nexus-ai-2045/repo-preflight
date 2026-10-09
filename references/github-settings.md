@@ -71,7 +71,7 @@ branch自動削除はGitHub上のremote head branchだけを対象とする。lo
 
 ## rulesetとmerge
 
-default branchの保護は、rulesetとclassic branch protectionのどちらで掛けてもよい。両方が掛かった場合は全ての規則が強制され、同じ規則が違う強さで定義されていれば厳しい方が効く（[About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)）。repo-preflightも両方を読み、累積して評価する。packetの`default_branch_ruleset`と`ruleset_`で始まる設定名は、classic branch protectionで満たされた場合も満たされたものとして扱い、`enforced_by`に由来（`ruleset:<id>`または`classic_branch_protection`）を、確認できなかった情報源を`sources_unavailable`に示す。名前はpacket schema v1との互換のために変えていない。
+default branchの保護は、rulesetとclassic branch protectionのどちらで掛けてもよい。両方が掛かった場合は全ての規則が強制され、同じ規則が違う強さで定義されていれば厳しい方が効く（[About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)）。repo-preflightも両方を読み、累積して評価する。packetの`default_branch_ruleset`、`ruleset_deletion_protection`、`ruleset_non_fast_forward_protection`、`ruleset_pull_request`、`required_review_thread_resolution`、`strict_required_status_checks_policy`は、classic branch protectionで満たされた場合も満たされたものとして扱い、`enforced_by`に由来（`ruleset:<id>`または`classic_branch_protection`）を、確認できなかった情報源を`sources_unavailable`に示す。`ruleset_bypass_actors`と`required_status_checks`は`enforced_by`を持たず、前者は`observed_value`の各要素の`ruleset_id`または`source`に、後者は`observed_value.evidence_pull_requests`に由来を示す。名前はpacket schema v1との互換のために変えていない。
 
 | 設定 | 推奨度 | 通常の選択 | 選択理由と例外 |
 |---|---|---|---|
@@ -89,7 +89,9 @@ default branchの保護は、rulesetとclassic branch protectionのどちらで�
 
 auto-mergeは全PRを自動でmergeする設定ではない。各PRで個別に指定し、必須reviewとstatus checksを通過した後に実行される。それでも最終mergeを人が明示実行したい運用ではOFFを維持する。
 
-必須status checksの名前は、PRでしか走らないcheck（例: `pr-body-hygiene`）があるため、default branchのHEADではなく、直近にmergeされたPRのhead commitのcheck-runsとcommit statusで照合する。直近のPRがpaths filterなどで一部のcheckを実行しないことがあるので、新しい順に最大5件のmerge済みPRを見る。merge済みPRが無い、またはAPIが取得できない場合は`確認不能`にし、`false`と推測しない。
+必須status checksの名前は、PRでしか走らないcheck（例: `pr-body-hygiene`）があるため、default branchのHEADではなく、直近にmergeされたPRのhead commitのcheck-runsとcommit statusで照合する。直近のPRがpaths filterなどで一部のcheckを実行しないことがあるので、新しい順に最大5件のmerge済みPRを見る。merge済みPRが無い、またはAPIが取得できない場合は`確認不能`にし、`false`と推測しない。情報源（rulesetとclassic protection）のどれかが`確認不能`の間は、必須checkが照合できても満たしたとは言わない。
+
+読めない情報を、満たしている側へ倒さない。rulesetは、`~DEFAULT_BRANCH`だけをincludeしてexcludeが空のactiveなものだけをdefault branchの保護として数える。それ以外の対象指定（`~ALL`、`refs/heads/main`の直接指定、glob、exclude付き）は解釈せず、その情報源を`確認不能`にする。rulesetの一覧は`per_page=100`で読み、上限まで埋まっていたら`確認不能`にする。rulesetの詳細に`bypass_actors`が返らないときは、bypassが無いとは読まず`確認不能`にする（[Get a repository ruleset](https://docs.github.com/en/rest/repos/rules)に、`bypass_actors`はrulesetへの書き込み権限が無いと返らないとある）。
 
 ### 2026-10-09の見直しで確認した点
 
@@ -119,6 +121,8 @@ workflow内に`permissions:`を明記する。repository既定権限だけへ依
 - 変更は「実行直前にGETで取り直した現在値へ、承認された項目の変更だけを重ねて1回PUTする」。同じendpointで複数の項目を承認したときは、重ねる変更を合成して1回で送る。repo-preflightのpacketも固定bodyではなく、`fresh_read`、`copy_from_fresh_read`、`overlay`でこの手順を示す。
 - `allowed_actions`を`all`から`selected`へ変えるときは2段にする。`all`の間は`selected-actions` endpointが409を返す（`All actions and workflows are allowed on this repository`）ため、先に`selected`へ切り替え、その後に許可listを設定する。docsにも、`selected-actions`のPUTは`allowed_actions`が`selected`であることが前提と書かれている。
 - 許可listはrepositoryの`.github/workflows`で実際に使われているactionから導く。`actions/`と`github/`のactionは`github_owned_allowed`、それ以外は`OWNER/REPO@*`（サブディレクトリのactionや再利用workflowは`OWNER/REPO/PATH@*`）をpatternにする。`verified_allowed`は`false`にする。`./`のlocal actionは許可が要らない。`docker://`や式を含む参照は導出できないので人が判断する。repo-preflightが読むのは`.github/workflows`直下のfileだけで、`.github/actions`のcomposite action内の`uses`や、第三者actionが内部で使うactionは含まない。実行して拒否されたものは追加する。
+- 既に`selected`のときは、workflowが使う参照を既存のpatternが覆っているかで判定する。`*`は`/`を越えない保守的な照合で、`!`の拒否patternも見る。覆っていれば満たしているとし、足りない分だけを追加する案にする。既存のpatternは消さず、SHA固定のpatternを`@*`へ緩めない。`local_only`は`selected`より厳しいので、緩める案を出さない。workflowを読めないときは、許可listの項目を`確認不能`にする。
+- `docker://`や式を含む参照、走査していないlocal action（`./`、`$/`）があるときは、切り替え案を`ready: false`にして理由を出す。
 
 ### `sha_pinning_required`を有効にする前の順序
 
@@ -136,6 +140,7 @@ workflow内に`permissions:`を明記する。repository既定権限だけへ依
 
 - [GitHub Actions設定](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository)
 - [Actions permissions REST API](https://docs.github.com/en/rest/actions/permissions)
+- [Get a repository ruleset](https://docs.github.com/en/rest/repos/rules)
 - [GitHub ActionsをDependabotで更新](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/auto-update-actions)
 - [Workflow execution protectionsのGA（2026-09-17）](https://github.blog/changelog/2026-09-17-workflow-execution-protections-in-github-actions-generally-available)
 - [About Actions policies](https://docs.github.com/en/actions/concepts/about-actions-policies)

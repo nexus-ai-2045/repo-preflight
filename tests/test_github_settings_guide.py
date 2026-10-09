@@ -180,3 +180,50 @@ def test_guide_explains_that_ruleset_named_settings_also_cover_classic():
 def test_classic_conversion_is_optional_when_classic_already_satisfies():
     assert "移行は任意" in GUIDE
     assert "併存して全て強制" in GUIDE
+
+
+ENFORCED_BY_SETTINGS = (
+    "default_branch_ruleset",
+    "ruleset_deletion_protection",
+    "ruleset_non_fast_forward_protection",
+    "ruleset_pull_request",
+    "required_review_thread_resolution",
+    "strict_required_status_checks_policy",
+)
+CHANGELOG = (Path(__file__).resolve().parents[1] / "CHANGELOG.md").read_text(
+    encoding="utf-8"
+)
+
+
+def test_guide_names_exactly_the_settings_that_report_enforced_by():
+    _, by_name, _ = review(compliant_responses())
+    reporting = {name for name, item in by_name.items() if "enforced_by" in item}
+    sentence = next(
+        line
+        for line in GUIDE.splitlines()
+        if "`enforced_by`" in line and "`ruleset_" in line
+    )
+
+    assert reporting == set(ENFORCED_BY_SETTINGS)
+    for name in ENFORCED_BY_SETTINGS:
+        assert f"`{name}`" in sentence
+    for name in ("ruleset_bypass_actors", "required_status_checks"):
+        assert f"`{name}`" in sentence
+        assert "enforced_by" not in by_name[name]
+
+
+def test_changelog_records_the_packet_shape_changes():
+    section = re.search(r"## Unreleased\n(.*?)\n## ", CHANGELOG, re.S)[1]
+
+    assert "### packet の形の変化" in section
+    shape = section.split("### packet の形の変化", 1)[1]
+    for needle in (
+        "{source, actor}",
+        "default_branch_ruleset",
+        "required_status_checks",
+        "recommended_value",
+        "`body`",
+        "`SEQUENCE`",
+        "`body_basis`",
+    ):
+        assert needle in shape, needle

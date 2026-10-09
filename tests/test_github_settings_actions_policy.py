@@ -347,7 +347,7 @@ def test_already_selected_without_needed_pattern_proposes_overlay_with_derived_l
     assert item["rollback"]["overlay"] == {"patterns_allowed": []}
 
 
-def test_patterns_without_derivation_are_reviewed_and_never_cleared_blindly():
+def test_patterns_without_derivation_are_unavailable_and_never_cleared_blindly():
     responses = compliant_responses()
     responses[SELECTED_ENDPOINT] = {
         "github_owned_allowed": True,
@@ -361,7 +361,9 @@ def test_patterns_without_derivation_are_reviewed_and_never_cleared_blindly():
     _, by_name, _ = review(responses)
 
     item = by_name["selected_actions_patterns"]
-    assert item["classification"] == "recommended_change"
+    assert item["classification"] == "unavailable"
+    assert item["observed_value"] == "unknown"
+    assert item["unavailable_reason"] == "forbidden_or_plan_unavailable"
     assert item["proposed_operation"] is None
 
 

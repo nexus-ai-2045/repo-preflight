@@ -7,6 +7,7 @@ from github_settings_fixtures import (
     PR_HEAD_SHA,
     PULLS_ENDPOINT,
     REPO,
+    RULESETS_ENDPOINT,
     check_runs_endpoint,
     classic_only_responses,
     classic_protection,
@@ -58,7 +59,7 @@ def test_classic_only_repository_satisfies_default_branch_ruleset():
 
 def test_classic_branch_not_protected_and_no_ruleset_is_a_required_change():
     responses = compliant_responses()
-    responses[f"repos/{REPO}/rulesets"] = []
+    responses[RULESETS_ENDPOINT] = []
 
     report, by_name, _ = review(responses)
 
@@ -72,7 +73,7 @@ def test_classic_branch_not_protected_and_no_ruleset_is_a_required_change():
 
 def test_classic_permission_denied_is_unavailable_not_false():
     responses = compliant_responses()
-    responses[f"repos/{REPO}/rulesets"] = []
+    responses[RULESETS_ENDPOINT] = []
     responses[CLASSIC_ENDPOINT] = MODULE.ApiUnavailable(
         status_code=404, reason="not_found_or_plan_unavailable"
     )
@@ -126,7 +127,7 @@ def test_unsatisfied_family_is_unavailable_when_the_other_source_is_unreadable()
 
 def test_both_sources_unreadable_marks_every_branch_setting_unavailable():
     responses = compliant_responses()
-    responses[f"repos/{REPO}/rulesets"] = MODULE.ApiUnavailable(
+    responses[RULESETS_ENDPOINT] = MODULE.ApiUnavailable(
         status_code=403, reason="forbidden_or_plan_unavailable"
     )
     responses[CLASSIC_ENDPOINT] = MODULE.ApiUnavailable(
