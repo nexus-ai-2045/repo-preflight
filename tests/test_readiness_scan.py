@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import struct
@@ -1062,6 +1063,96 @@ def test_percent_encoded_secret_is_scanned(tmp_path: Path):
     report = MODULE.scan(repo)
 
     assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
+# 合成値。実在の鍵ではない。旧形式 (sk- + 英数字48) と project 形式 (sk-proj-...)。
+OPENAI_LEGACY_SHAPE = "sk-" + "Xy9" * 16
+OPENAI_PROJECT_SHAPE = "sk-" + "proj-" + "Ab3_" * 10
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "task-" + "orchestra-2026-09-05",
+        '{"id": "task-' + 'orchestra-2026-09-05", "status": "resolved"}',
+        "references/task-" + "orchestra-theme-sweep.md",
+        "elon-musk-" + "predicts-ai-will-surpass-humans",
+    ],
+)
+def test_openai_rule_ignores_sk_inside_a_word(text: str):
+    """英単語の途中の "sk-" ("task-" / "musk-") を OpenAI 形式の鍵と取り違えない。"""
+    data = text.encode("utf-8")
+
+    assert MODULE.secret_matches(data) == {}
+    assert MODULE.text_has(MODULE.SECRET_PATTERNS, data) is False
+
+
+@pytest.mark.parametrize("key", [OPENAI_LEGACY_SHAPE, OPENAI_PROJECT_SHAPE])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "note\n",
+        "    ",
+        "token ",
+        '"',
+        "'",
+        "`",
+        "(",
+        "/",
+        "key=",
+        "OPENAI_API_KEY=",
+        "api_key: ",
+        "Authorization: Bearer ",
+        # JSON や文字列 literal の空白 escape の直後 (例: "line1\nsk-...")
+        "line1\\n",
+        "line1\\r",
+        "col1\\t",
+    ],
+)
+def test_openai_rule_still_detects_key_after_a_boundary(prefix: str, key: str):
+    data = (prefix + key + "\n").encode("utf-8")
+
+    matches = MODULE.secret_matches(data)
+
+    assert list(matches.elements()) == [
+        ("openai_key", hashlib.sha256(key.encode("utf-8")).hexdigest())
+    ]
+
+
+@pytest.mark.parametrize("glue", ["x", "9", "_", "-"])
+def test_openai_rule_does_not_match_sk_glued_to_a_word_character(glue: str):
+    """意図した取りこぼし: 直前が英数字・"_"・"-" の "sk-" は検出しない。
+
+    単語の途中の "sk-" を拾わないための代償で、この形に貼り付いた鍵は見逃す。
+    他の規則 (gh*_ / github_pat_ / AKIA / xox*-) はこの制限を持たない。
+    """
+    assert MODULE.secret_matches((glue + OPENAI_LEGACY_SHAPE).encode("utf-8")) == {}
+
+
+def test_task_slug_ledger_passes_secret_scan_in_tree_and_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    ledger = repo / "ledger.json"
+    slug = "task-" + "orchestra-2026-09-05"
+    ledger.write_text(json.dumps({"id": slug, "status": "open"}), encoding="utf-8")
+    git(repo, "add", ledger.name)
+    git(repo, "commit", "-m", "add ledger")
+    ledger.write_text(json.dumps({"id": slug, "status": "done"}), encoding="utf-8")
+    git(repo, "add", ledger.name)
+    git(repo, "commit", "-m", "resolve ledger entry")
+
+    for report in (MODULE.scan(repo), MODULE.scan(repo, base_ref=base)):
+        assert report["checks"]["secret_scan"]["status"] == "pass"
+
+    (repo / "settings.txt").write_text(
+        "OPENAI_API_KEY=" + OPENAI_LEGACY_SHAPE + "\n", encoding="utf-8"
+    )
+    git(repo, "add", "settings.txt")
+    git(repo, "commit", "-m", "add key")
+
+    for report in (MODULE.scan(repo), MODULE.scan(repo, base_ref=base)):
+        assert report["checks"]["secret_scan"]["status"] == "fail"
 
 
 def test_secret_bearing_filename_is_redacted_from_evidence(tmp_path: Path):
