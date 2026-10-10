@@ -56,6 +56,96 @@ def set_remote_base(repo: Path, name: str = "main") -> str:
     return f"origin/{name}"
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/".join(["src", "home", "alice", "page.py"]),
+        "/".join(["src", "Users", "alice", "page.py"]),
+        "/".join([".", "home", "alice", "page.py"]),
+        "/".join(["..", "Users", "alice", "page.py"]),
+    ],
+)
+def test_relative_path_components_are_not_personal_paths(path: str):
+    data = path.encode("utf-8")
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+    assert not MODULE.personal_path_matches(data)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "-I",
+        "-L",
+        "-F",
+        "-o",
+        "-isystem",
+        "-iquote",
+        "-iframework",
+        "-include",
+        "-imacros",
+        "-idirafter",
+        "-customoption",
+        "--custom-option_42",
+    ],
+)
+@pytest.mark.parametrize("root", ["/ho" + "me", "/Us" + "ers"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_cli_option_absolute_path_keeps_match_hash(
+    option: str, root: str, encoding: str
+):
+    absolute = f"{root}/alice/include"
+    data = f"gcc {option}{absolute}".encode(encoding)
+    relative = f"src/{option}{absolute}".encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    if encoding == "utf-8":
+        assert MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+        assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, relative)
+    assert MODULE.personal_path_matches(data) == MODULE.personal_path_matches(
+        absolute.encode(encoding)
+    )
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, relative)
+    assert not MODULE.personal_path_matches(relative)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/ho" + "me/alice/page.py",
+        "/Us" + "ers/alice/page.py",
+        "C:/Us" + "ers/alice/page.py",
+        "C:\\Us" + "ers\\alice\\page.py",
+        "'/ho" + "me/alice/page.py'",
+        '"/Us' + 'ers/alice/page.py"',
+        "path=/ho" + "me/alice/page.py",
+        "file:///ho" + "me/alice/page.py",
+        "file:///Us" + "ers/alice/page.py",
+        "%2Fho" + "me%2Falice%2Fpage.py",
+        "file%3A%2F%2F%2Fho" + "me%2Falice%2Fpage.py",
+    ],
+)
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_absolute_personal_paths_remain_detected(path: str, encoding: str):
+    data = path.encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert MODULE.personal_path_matches(data)
+
+
+def test_relative_fixture_path_passes_worktree_and_deleted_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    fixture = repo / "fixture.txt"
+    fixture.write_text(
+        "/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8"
+    )
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "add relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
+    fixture.unlink()
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "remove relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
+
+
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
     """出力は常にJSON。formatを選ぶflagは受け付けない。
 
@@ -340,6 +430,116 @@ def test_target_diff_merge_compares_base_containing_parent(tmp_path: Path):
     report = MODULE.scan(repo, base_ref=base)
 
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def historical_base_merge(repo: Path, feature_body: str = "safe\n") -> tuple[str, str]:
+    """古いmainをmergeした後、進んだmainを再びmergeする履歴を作る。"""
+    git(repo, "branch", "feature")
+    (repo / "baseline.txt").write_text(
+        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "baseline.txt")
+    git(repo, "commit", "-m", "advance original base")
+    old_base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    (repo / "feature.txt").write_text(feature_body, encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "feature change")
+    # 削除済みのbranch導入内容も履歴上の検査対象に残す。
+    (repo / "feature.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "--allow-empty", "-m", "clean feature tip")
+    git(repo, "merge", "--no-ff", old_base, "-m", "merge original base")
+    historical_merge = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    git(repo, "checkout", "main")
+    (repo / "base-progress.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "base-progress.txt")
+    git(repo, "commit", "-m", "advance current base")
+    base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    git(repo, "merge", "--no-ff", base, "-m", "merge current base")
+    return base, historical_merge
+
+
+def test_target_diff_historical_merge_uses_unique_base_ancestor(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base, historical_merge = historical_base_merge(repo)
+    expected = subprocess.check_output(
+        ["git", "rev-parse", f"{historical_merge}^2"], cwd=repo, text=True
+    ).strip()
+
+    assert MODULE.comparison_parent(repo, base, historical_merge) == expected
+    report = MODULE.scan(repo, base_ref=base)
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("feature_body", "check"),
+    [
+        ("C:/Us" + "ers/feature-user/project\n", "personal_path_scan"),
+        ("github_pat_" + "B" * 30 + "\n", "secret_scan"),
+    ],
+)
+def test_target_diff_historical_merge_retains_transient_branch_findings(
+    tmp_path: Path, feature_body: str, check: str
+):
+    repo = make_repo(tmp_path)
+    base, _historical_merge = historical_base_merge(repo, feature_body)
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"][check]["status"] == "fail"
+    assert report["status"] == "blocked"
+
+
+def test_comparison_parent_keeps_first_parent_for_ambiguous_base_ancestors(
+    tmp_path: Path,
+):
+    repo = make_repo(tmp_path)
+    _base, historical_merge = historical_base_merge(repo)
+    expected = subprocess.check_output(
+        ["git", "rev-parse", f"{historical_merge}^1"], cwd=repo, text=True
+    ).strip()
+    # このbaseは両親の子孫。候補を一意に決められない場合はfirst parentを保つ。
+    assert MODULE.comparison_parent(repo, "HEAD", historical_merge) == expected
+
+
+@pytest.mark.parametrize(
+    ("parents", "relations", "expected"),
+    [
+        ("first", {}, "first"),
+        ("first second", {}, "first"),
+        # ancestor候補が先にあっても、baseを含む親を優先する。
+        ("first second", {("first", "base"): 0, ("base", "second"): 0}, "second"),
+    ],
+)
+def test_comparison_parent_preserves_existing_priority_and_fallback(
+    tmp_path: Path, monkeypatch, parents: str, relations: dict, expected: str
+):
+    def run(command, **_kwargs):
+        if command[1] == "show":
+            return CompletedProcess(command, 0, stdout=parents)
+        return CompletedProcess(command, relations.get(tuple(command[-2:]), 1))
+
+    monkeypatch.setattr(MODULE, "run_subprocess", run)
+
+    assert MODULE.comparison_parent(tmp_path, "base", "merge") == expected
+
+
+def test_comparison_parent_ancestor_query_error_fails_closed(
+    tmp_path: Path, monkeypatch
+):
+    def run(command, **_kwargs):
+        if command[1] == "show":
+            return CompletedProcess(command, 0, stdout="first second")
+        return CompletedProcess(command, 128 if command[-1] == "base" else 1)
+
+    monkeypatch.setattr(MODULE, "run_subprocess", run)
+
+    with pytest.raises(RuntimeError, match="git_target_diff_inventory_failed"):
+        MODULE.comparison_parent(tmp_path, "base", "merge")
 
 
 def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):

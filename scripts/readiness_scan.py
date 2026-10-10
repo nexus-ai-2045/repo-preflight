@@ -322,10 +322,15 @@ class ReviewedSecretExceptions:
         ]
 
 
+# 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
+# CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
+_UNIX_PATH_START = (
+    r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
+)
 PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
-    re.compile(r"/Us" + r"ers/[^/\s]+"),
-    re.compile(r"/ho" + r"me/[^/\s]+"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s]+)"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s]+)"),
 )
 PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
 
@@ -340,12 +345,24 @@ def personal_path_matches(data: bytes) -> Counter:
             continue
         for candidate in (text, unquote(text)):
             matches |= Counter(
-                (rule, hashlib.sha256(match.group().encode("utf-8")).hexdigest())
+                (
+                    rule,
+                    hashlib.sha256(
+                        (
+                            match.groupdict().get("personal_path") or match.group()
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
                 for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
                 for match in pattern.finditer(candidate)
             )
     matches |= Counter(
-        (rule, hashlib.sha256(match.group()).hexdigest())
+        (
+            rule,
+            hashlib.sha256(
+                match.groupdict().get("personal_path") or match.group()
+            ).hexdigest(),
+        )
         for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
         for match in re.finditer(pattern.pattern.encode("ascii"), data)
     )
@@ -864,7 +881,7 @@ def cmo3_contents_xml(data: bytes) -> bytes | None:
 
 
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
-    """Choose the parent containing the scanned base, or the empty tree."""
+    """Prefer a base-containing parent, then a unique base ancestor."""
     parents = run_subprocess(
         ["git", "show", "-s", "--format=%P", commit],
         cwd=repo,
@@ -896,6 +913,22 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
             return parent
         if contains_base.returncode != 1:
             raise RuntimeError("git_target_diff_inventory_failed")
+    if len(candidates) > 1:
+        # mainが先へ進んでも、過去のmergeで取り込んだmain由来の追加を
+        # branchの新規追加として再検出しない。曖昧ならfirst parentを保つ。
+        base_ancestors = []
+        for parent in candidates:
+            ancestor_of_base = run_subprocess(
+                ["git", "merge-base", "--is-ancestor", parent, base_ref],
+                cwd=repo,
+                capture_output=True,
+            )
+            if ancestor_of_base.returncode == 0:
+                base_ancestors.append(parent)
+            elif ancestor_of_base.returncode != 1:
+                raise RuntimeError("git_target_diff_inventory_failed")
+        if len(base_ancestors) == 1:
+            return base_ancestors[0]
     return candidates[0]
 
 
