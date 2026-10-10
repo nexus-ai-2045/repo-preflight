@@ -1,98 +1,10 @@
-import importlib.util
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "github_settings_gate.py"
-SPEC = importlib.util.spec_from_file_location("github_settings_gate", SCRIPT)
-MODULE = importlib.util.module_from_spec(SPEC)
-assert SPEC.loader
-sys.modules[SPEC.name] = MODULE
-SPEC.loader.exec_module(MODULE)
-
-
-def compliant_responses() -> dict[str, object]:
-    repo = "example/repo"
-    return {
-        f"repos/{repo}": {
-            "full_name": repo,
-            "visibility": "public",
-            "default_branch": "main",
-            "owner": {"login": "example", "type": "User"},
-            "delete_branch_on_merge": True,
-            "allow_squash_merge": True,
-            "allow_merge_commit": False,
-            "allow_rebase_merge": False,
-            "allow_auto_merge": False,
-            "security_and_analysis": {
-                "dependabot_security_updates": {"status": "enabled"},
-                "secret_scanning": {"status": "enabled"},
-                "secret_scanning_push_protection": {"status": "enabled"},
-            },
-        },
-        "user": {"login": "example"},
-        f"repos/{repo}/actions/permissions": {
-            "enabled": True,
-            "allowed_actions": "selected",
-            "sha_pinning_required": True,
-        },
-        f"repos/{repo}/actions/permissions/workflow": {
-            "default_workflow_permissions": "read",
-            "can_approve_pull_request_reviews": False,
-        },
-        f"repos/{repo}/actions/permissions/selected-actions": {
-            "github_owned_allowed": True,
-            "verified_allowed": False,
-            "patterns_allowed": [],
-        },
-        f"repos/{repo}/rulesets": [{"id": 7, "enforcement": "active"}],
-        f"repos/{repo}/rulesets/7": {
-            "id": 7,
-            "name": "Protect main",
-            "target": "branch",
-            "enforcement": "active",
-            "bypass_actors": [],
-            "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
-            "rules": [
-                {"type": "deletion"},
-                {"type": "non_fast_forward"},
-                {
-                    "type": "pull_request",
-                    "parameters": {
-                        "required_approving_review_count": 0,
-                        "require_code_owner_review": True,
-                        "required_review_thread_resolution": True,
-                    },
-                },
-                {
-                    "type": "required_status_checks",
-                    "parameters": {
-                        "strict_required_status_checks_policy": True,
-                        "required_status_checks": [{"context": "test"}],
-                    },
-                },
-            ],
-        },
-        f"repos/{repo}/commits/main/check-runs?per_page=100": {
-            "check_runs": [{"name": "test"}]
-        },
-        f"repos/{repo}/commits/main/status": {"statuses": []},
-        f"repos/{repo}/private-vulnerability-reporting": {"enabled": True},
-        f"repos/{repo}/code-scanning/default-setup": {"state": "configured"},
-    }
-
-
-def fake_api(responses: dict[str, object]):
-    calls: list[str] = []
-
-    def get(endpoint: str):
-        calls.append(endpoint)
-        value = responses[endpoint]
-        if isinstance(value, Exception):
-            raise value
-        return value
-
-    return get, calls
+from github_settings_fixtures import (
+    MODULE,
+    RELEASE_WORKFLOW,
+    compliant_responses,
+    fake_api,
+    workflow_responses,
+)
 
 
 def test_solo_public_compliant_profile_passes_and_only_reads():
@@ -223,7 +135,9 @@ def test_team_profile_requires_one_approval_but_solo_does_not():
         if item["name"] == "required_approving_review_count"
     )
     assert solo_item["classification"] == "no_change"
-    assert team_item["classification"] == "human_decision"
+    assert team_item["classification"] == "recommended_change"
+    assert team_item["tier"] == "recommended"
+    assert team_item["blocks_intent"] is False
     assert team_item["recommended_value"] == {"minimum": 1}
 
 
@@ -239,10 +153,10 @@ def test_remote_parser_accepts_https_and_ssh_but_rejects_other_hosts():
     assert MODULE.repository_from_remote("https://gitlab.com/acme/tool.git") is None
 
 
-def test_actions_permission_preview_preserves_required_enabled_field():
+def test_actions_permission_preview_never_embeds_observed_values_in_a_fixed_body():
     responses = compliant_responses()
     actions = dict(responses["repos/example/repo/actions/permissions"])
-    actions["allowed_actions"] = "all"
+    actions["sha_pinning_required"] = False
     responses["repos/example/repo/actions/permissions"] = actions
     get, _ = fake_api(responses)
 
@@ -250,19 +164,46 @@ def test_actions_permission_preview_preserves_required_enabled_field():
     item = next(
         setting
         for setting in report["settings"]
-        if setting["name"] == "allowed_actions"
+        if setting["name"] == "sha_pinning_required"
     )
+    operation = item["proposed_operation"]
 
-    assert item["proposed_operation"]["body"] == {
-        "enabled": True,
-        "allowed_actions": "selected",
-        "sha_pinning_required": True,
+    assert "body" not in operation
+    assert operation["method"] == "PUT"
+    assert operation["endpoint"] == "repos/example/repo/actions/permissions"
+    assert operation["fresh_read"] == {
+        "method": "GET",
+        "endpoint": "repos/example/repo/actions/permissions",
     }
-    assert item["rollback"]["body"]["enabled"] is True
+    assert operation["overlay"] == {"sha_pinning_required": True}
+    assert operation["copy_from_fresh_read"] == ["enabled", "allowed_actions"]
+    assert item["rollback"]["overlay"] == {"sha_pinning_required": False}
 
 
 def test_high_risk_profile_blocks_unreviewed_selected_action_patterns():
     responses = compliant_responses()
+    selected = dict(
+        responses["repos/example/repo/actions/permissions/selected-actions"]
+    )
+    selected["patterns_allowed"] = ["third-party/*"]
+    responses["repos/example/repo/actions/permissions/selected-actions"] = selected
+    get, _ = fake_api(responses)
+
+    report = MODULE.review_repository("example/repo", "high_risk_public", api_get=get)
+    item = next(
+        setting
+        for setting in report["settings"]
+        if setting["name"] == "selected_actions_patterns"
+    )
+
+    assert item["tier"] == "required"
+    assert item["classification"] == "human_decision"
+    assert item["blocks_intent"] is True
+
+
+def test_high_risk_profile_blocks_selected_patterns_missing_a_used_action():
+    responses = compliant_responses()
+    responses.update(workflow_responses({"release.yml": RELEASE_WORKFLOW}))
     selected = dict(
         responses["repos/example/repo/actions/permissions/selected-actions"]
     )
@@ -293,7 +234,7 @@ def test_multiple_default_branch_rulesets_are_evaluated_cumulatively():
         "name": "PR and checks",
         "rules": original_rules[2:],
     }
-    responses["repos/example/repo/rulesets"] = [
+    responses["repos/example/repo/rulesets?per_page=100"] = [
         {"id": 7, "enforcement": "active"},
         {"id": 8, "enforcement": "active"},
     ]
@@ -315,7 +256,7 @@ def test_multiple_default_branch_rulesets_are_evaluated_cumulatively():
         assert by_name[name]["classification"] == "no_change", name
 
 
-def test_required_check_context_must_exist_on_current_default_branch():
+def test_required_check_context_must_exist_on_recent_merged_pr_head():
     responses = compliant_responses()
     ruleset = dict(responses["repos/example/repo/rulesets/7"])
     rules = list(ruleset["rules"])
