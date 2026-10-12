@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
-from scripts import ai_entry_contract as gate
+import pytest
+
+# scripts/ は package ではない (scripts/__init__.py が無い)。他のテストと同じく
+# ファイルパスから読み込み、repo root が sys.path に無い素の pytest でも collect できる。
+_MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "ai_entry_contract.py"
+_SPEC = importlib.util.spec_from_file_location("ai_entry_contract", _MODULE_PATH)
+gate = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(gate)
 
 
 def write_manifest(tmp_path: Path, entries: list[dict]) -> Path:
@@ -238,15 +249,17 @@ def test_pointer_missing_is_blocked(tmp_path: Path) -> None:
     assert report["findings"] == ["claude:source_pointer_missing"]
 
 
-def test_pointer_case_mismatch_is_not_accepted_on_posix(tmp_path: Path) -> None:
+def test_pointer_case_matching_follows_filesystem_semantics(tmp_path: Path) -> None:
+    # 大文字小文字の同一視は OS 名ではなくファイルシステムの性質。判定は
+    # samefile ベースなので、case 違いの pointer が実際にファイルへ届くなら
+    # pass、届かないなら blocked になる (macOS の APFS 既定は posix だが
+    # case-insensitive)。
     home = tmp_path / "home"
     home.mkdir()
     source = home / "AI-CONSTITUTION.md"
     source.write_text("source\n", encoding="utf-8")
-    (home / "CLAUDE.md").write_text(
-        f"@{str(source).replace('AI-CONSTITUTION', 'ai-constitution')}\n",
-        encoding="utf-8",
-    )
+    variant = Path(str(source).replace("AI-CONSTITUTION", "ai-constitution"))
+    (home / "CLAUDE.md").write_text(f"@{variant}\n", encoding="utf-8")
     manifest = write_manifest(
         tmp_path,
         [
@@ -261,7 +274,11 @@ def test_pointer_case_mismatch_is_not_accepted_on_posix(tmp_path: Path) -> None:
 
     report = gate.check_manifest(manifest, home=home)
 
-    if gate.os.name == "nt":
+    try:
+        reaches = variant.samefile(source)
+    except OSError:
+        reaches = False
+    if reaches:
         assert report["status"] == "pass"
     else:
         assert report["status"] == "blocked"
@@ -571,5 +588,794 @@ def test_manual_entry_stops_at_human_review(tmp_path: Path) -> None:
 
     report = gate.check_manifest(manifest, home=home)
 
-    assert report["status"] == "blocked"
+    # manual の確認待ちだけなら drift (blocked) とは区別して human_review にする。
+    assert report["status"] == "human_review"
     assert report["entries"][0]["status"] == "human_review"
+    assert report["entries"][0]["evidence"] == "Cursor Settings > Rules"
+
+
+# ---------------------------------------------------------------------------
+# PR#40 レビュー指摘 (B1〜B12) の回帰テスト。
+# ---------------------------------------------------------------------------
+
+GROK_ENTRY = {
+    "id": "grok",
+    "runtime": "grok",
+    "path": "{HOME}/AGENTS.md",
+    "strategy": "materialized",
+}
+CLAUDE_ENTRY = {
+    "id": "claude",
+    "runtime": "claude-code",
+    "path": "{HOME}/CLAUDE.md",
+    "strategy": "pointer",
+}
+CURSOR_ENTRY = {
+    "id": "cursor",
+    "runtime": "cursor",
+    "strategy": "manual",
+    "evidence": "Cursor Settings > Rules",
+}
+
+
+def make_home(tmp_path: Path, source_text: str = "# source\n") -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "AI-CONSTITUTION.md").write_text(source_text, encoding="utf-8")
+    return home
+
+
+def pointer_report(tmp_path: Path, entry_text: str) -> dict:
+    home = make_home(tmp_path)
+    (home / "CLAUDE.md").write_text(entry_text, encoding="utf-8")
+    manifest = write_manifest(tmp_path, [CLAUDE_ENTRY])
+    return gate.check_manifest(manifest, home=home)
+
+
+def test_b1_source_with_end_marker_is_refused_not_grown(tmp_path: Path) -> None:
+    # source に END marker があると、旧実装は再 apply ごとに末尾へ残骸が増えた。
+    home = make_home(tmp_path, f"# source\n{gate.END_MARKER}\ntail\n")
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    applied = gate.apply_entry(manifest, entry_id="grok", home=home)
+    checked = gate.check_manifest(manifest, home=home)
+
+    assert applied["status"] == "tool_error"
+    assert applied["findings"] == ["source_contains_projection_markers"]
+    assert not (home / "AGENTS.md").exists()
+    assert checked["status"] == "blocked"
+    assert checked["findings"] == ["grok:entry_missing"]
+
+
+def test_b1_check_reports_source_markers_for_existing_projection(
+    tmp_path: Path,
+) -> None:
+    home = make_home(tmp_path, "# source\n")
+    (home / "AGENTS.md").write_text(
+        gate.render_materialized("# source\n"), encoding="utf-8"
+    )
+    (home / "AI-CONSTITUTION.md").write_text(
+        f"# source\n{gate.END_MARKER}\n", encoding="utf-8"
+    )
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["grok:source_contains_projection_markers"]
+
+
+def test_b1_reapply_is_idempotent_and_keeps_overlay(tmp_path: Path) -> None:
+    home = make_home(tmp_path, "# source\n")
+    target = home / "AGENTS.md"
+    target.write_text(
+        "# prefix overlay\n"
+        + gate.render_materialized("# old\n")
+        + "\n\n# suffix overlay\n",
+        encoding="utf-8",
+    )
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    first = gate.apply_entry(manifest, entry_id="grok", home=home)
+    once = target.read_text(encoding="utf-8")
+    second = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert first["status"] == second["status"] == "pass"
+    assert target.read_text(encoding="utf-8") == once
+    assert once.startswith("# prefix overlay\n")
+    assert once.endswith(f"{gate.END_MARKER}\n\n\n# suffix overlay\n")
+
+
+def test_b2_apply_refuses_source_target_identical(tmp_path: Path) -> None:
+    home = make_home(tmp_path, "# source\n")
+    manifest = write_manifest(
+        tmp_path, [{**GROK_ENTRY, "path": "{HOME}/AI-CONSTITUTION.md"}]
+    )
+
+    report = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["source_target_identical"]
+    assert (home / "AI-CONSTITUTION.md").read_text(encoding="utf-8") == "# source\n"
+
+
+@pytest.mark.parametrize(
+    "overlay_kind",
+    ["quoted_end_marker", "quoted_header", "text_between_header_and_begin"],
+)
+def test_b3_ambiguous_overlay_fails_closed_without_deleting(
+    tmp_path: Path, overlay_kind: str
+) -> None:
+    home = make_home(tmp_path, "# source\n")
+    generated = gate.render_materialized("# source\n")
+    if overlay_kind == "quoted_end_marker":
+        text = f"overlay quotes `{gate.END_MARKER}` here\n" + generated
+    elif overlay_kind == "quoted_header":
+        header = generated.splitlines()[0]
+        text = generated + f"\nexample header: {header}\n"
+    else:
+        header, rest = generated.split("\n", 1)
+        text = f"{header}\nuser note between header and begin\n{rest}"
+    target = home / "AGENTS.md"
+    target.write_text(text, encoding="utf-8")
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    checked = gate.check_manifest(manifest, home=home)
+    applied = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert checked["status"] == "blocked"
+    assert checked["findings"] == ["grok:projection_markers_ambiguous"]
+    assert applied["status"] == "tool_error"
+    assert applied["findings"] == ["projection_markers_ambiguous"]
+    assert target.read_text(encoding="utf-8") == text
+
+
+def test_b4_duplicated_generated_block_is_not_false_green(tmp_path: Path) -> None:
+    home = make_home(tmp_path, "# source\n")
+    generated = gate.render_materialized("# source\n")
+    tampered = generated.replace("# source", "# tampered copy")
+    (home / "AGENTS.md").write_text(generated + tampered, encoding="utf-8")
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["grok:projection_markers_ambiguous"]
+
+
+def test_b5_source_leading_blank_lines_round_trip(tmp_path: Path) -> None:
+    home = make_home(tmp_path, "\n\n# source after blank lines\n")
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    applied = gate.apply_entry(manifest, entry_id="grok", home=home)
+    checked = gate.check_manifest(manifest, home=home)
+
+    assert applied["status"] == "pass"
+    assert checked["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("path_value", "finding"),
+    [
+        ("~/AGENTS.md", "tilde_unsupported_use_home_placeholder"),
+        ("{USERPROFILE}/AGENTS.md", "template_placeholder_unresolved"),
+        ("   ", "path_value_invalid"),
+    ],
+)
+def test_b6_resolve_template_rejects_implicit_home(
+    tmp_path: Path, path_value: str, finding: str
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [{**GROK_ENTRY, "path": path_value}])
+
+    report = gate.check_manifest(manifest, home=home)
+
+    # #41: entry の resolve 失敗は manifest 自体の問題としてレポート全体を止める。
+    assert report["status"] == "tool_error"
+    assert report["findings"] == [finding]
+    assert report["entries"] == []
+    with pytest.raises(ValueError, match=finding):
+        gate.resolve_template(path_value, home=home, project=None)
+
+
+@pytest.mark.parametrize(
+    "entry_text",
+    [
+        "```\n@{source}\n```\n",
+        "例: `@{source}`\n",
+        "<!-- @{source} -->\n",
+        "<!--\n@{source}\n-->\n",
+        "@{source}.backup\n",
+        "mail@{source}\n",
+        "See ``@~/AI-CONSTITUTION.md`` for syntax\n",
+        "~~~\n```\n@~/AI-CONSTITUTION.md\n```\n~~~\n",
+        "````\n```\n@~/AI-CONSTITUTION.md\n```\n````\n",
+        "```\n~~~\n@~/AI-CONSTITUTION.md\n~~~\n```\n",
+        "Example:\n\n    @~/AI-CONSTITUTION.md\n",
+        "Example:\n\n\t@~/AI-CONSTITUTION.md\n",
+        "# Title\n    @~/AI-CONSTITUTION.md\n",
+        "```\n@~/AI-CONSTITUTION.md\n",
+        "> ```\n> @~/AI-CONSTITUTION.md\n> ```\n",
+        "`multi\n@~/AI-CONSTITUTION.md`\n",
+        "<!--\n\n@~/AI-CONSTITUTION.md\n\n-->\n",
+    ],
+    ids=[
+        "fence",
+        "inline_code",
+        "html_comment",
+        "multiline_comment",
+        "backup",
+        "mid",
+        "double_backtick_span",
+        "tilde_fence_wraps_backticks",
+        "long_fence_wraps_short",
+        "backtick_fence_wraps_tildes",
+        "indented_code",
+        "tab_indented_code",
+        "indented_after_heading",
+        "unclosed_fence",
+        "blockquote_fence",
+        "multiline_code_span",
+        "comment_with_blank_lines",
+    ],
+)
+def test_b7_import_pointer_examples_are_not_false_green(
+    tmp_path: Path, entry_text: str
+) -> None:
+    source = tmp_path / "home" / "AI-CONSTITUTION.md"
+    report = pointer_report(tmp_path, entry_text.format(source=source))
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["claude:source_pointer_missing"]
+
+
+@pytest.mark.parametrize(
+    "entry_text",
+    [
+        "@~/AI-CONSTITUTION.md\n",
+        "@AI-CONSTITUTION.md\n",
+        "@./AI-CONSTITUTION.md\n",
+        "@../home/AI-CONSTITUTION.md\n",
+        "See @~/AI-CONSTITUTION.md.\n",
+        "```\nexample\n```\n@~/AI-CONSTITUTION.md\n",
+        "~~~\n```\n~~~\n@~/AI-CONSTITUTION.md\n",
+        "Use `x` then @~/AI-CONSTITUTION.md\n",
+        "Literal ` backtick @~/AI-CONSTITUTION.md\n",
+        "intro\n    @~/AI-CONSTITUTION.md\n",
+        "> @~/AI-CONSTITUTION.md\n",
+    ],
+    ids=[
+        "home_tilde",
+        "relative",
+        "dot_relative",
+        "parent_relative",
+        "sentence",
+        "after_closed_fence",
+        "after_tilde_fence_with_backticks",
+        "after_code_span",
+        "unmatched_backtick",
+        "paragraph_continuation",
+        "blockquote",
+    ],
+)
+def test_b7_import_pointer_resolves_home_and_relative_paths(
+    tmp_path: Path, entry_text: str
+) -> None:
+    report = pointer_report(tmp_path, entry_text)
+
+    assert report["status"] == "pass"
+
+
+def test_b7_tilde_pointer_uses_gate_home_not_real_home(tmp_path: Path) -> None:
+    # ``~/`` は gate の home で展開する。別名のファイルへは到達しない。
+    report = pointer_report(tmp_path, "@~/OTHER.md\n")
+
+    assert report["status"] == "blocked"
+
+
+def test_b8_exit_codes_distinguish_human_review(tmp_path: Path, capsys) -> None:
+    home = make_home(tmp_path)
+    (home / "CLAUDE.md").write_text("@~/AI-CONSTITUTION.md\n", encoding="utf-8")
+    cases = [
+        ([CLAUDE_ENTRY], 0, "pass"),
+        ([CLAUDE_ENTRY, CURSOR_ENTRY], 3, "human_review"),
+        ([CLAUDE_ENTRY, {**CURSOR_ENTRY, "required": False}], 0, "pass"),
+        ([GROK_ENTRY, CURSOR_ENTRY], 1, "blocked"),
+    ]
+    for entries, exit_code, status in cases:
+        manifest = write_manifest(tmp_path, entries)
+        code = gate.main(["--manifest", str(manifest), "--home", str(home)])
+        report = json.loads(capsys.readouterr().out)
+        assert (code, report["status"]) == (exit_code, status)
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    assert gate.main(["--manifest", str(broken), "--home", str(home)]) == 2
+    assert json.loads(capsys.readouterr().out)["findings"] == ["manifest_json_invalid"]
+
+
+def test_b8_apply_success_is_identified_even_when_manual_remains(
+    tmp_path: Path, capsys
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY, CURSOR_ENTRY])
+
+    code = gate.main(
+        [
+            "--manifest",
+            str(manifest),
+            "--home",
+            str(home),
+            "--apply",
+            "--entry-id",
+            "grok",
+        ]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert code == 3
+    assert report["status"] == "human_review"
+    assert report["applied_entry"] == "grok"
+    assert report["entries"][0]["status"] == "pass"
+
+
+def test_b9_os_error_details_are_not_exposed(tmp_path: Path, monkeypatch) -> None:
+    home = make_home(tmp_path)
+    (home / "CLAUDE.md").write_text("# entry\n", encoding="utf-8")
+    manifest = write_manifest(tmp_path, [CLAUDE_ENTRY])
+    secret_path = str(tmp_path / "private-user" / "secret")
+
+    def explode(*args, **kwargs):
+        raise OSError(2, "No such file or directory", secret_path)
+
+    monkeypatch.setattr(gate, "has_pointer", explode)
+    report = gate.check_manifest(manifest, home=home)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["entry_invalid:FileNotFoundError"]
+    assert "private-user" not in json.dumps(report)
+
+
+def test_b9_manifest_read_failure_is_type_name_only(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    manifest_dir = tmp_path / "private-user-manifest.json"
+    manifest_dir.mkdir()
+
+    checked = gate.check_manifest(manifest_dir, home=home)
+    applied = gate.apply_entry(manifest_dir, entry_id="grok", home=home)
+
+    for report in (checked, applied):
+        assert report["status"] == "tool_error"
+        assert "private-user" not in json.dumps(report)
+        assert all(":" in finding for finding in report["findings"])
+
+
+def test_b9_stdlib_value_error_is_rounded_to_type_name() -> None:
+    # 自前 code かどうかはメッセージの形ではなく例外の型 (ContractError) で決める。
+    own = gate._safe_error_code(gate.ContractError("manifest_path_missing:grok"), "x")
+    stdlib = gate._safe_error_code(ValueError("bad value C:\\Users\\me\\a"), "x")
+    path_suffix = gate._safe_error_code(ValueError("code:/home/me/secret"), "x")
+    look_alike = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
+
+    assert own == "manifest_path_missing:grok"
+    assert stdlib == "x:ValueError"
+    assert path_suffix == "x:ValueError"
+    assert look_alike == "x:ValueError"
+
+
+@pytest.mark.parametrize(
+    ("entry", "finding"),
+    [
+        (
+            {
+                "id": "gemini/cli",
+                "runtime": "",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+            },
+            "manifest_runtime_missing:gemini/cli",
+        ),
+        (
+            {
+                "id": "gemini\\cli",
+                "runtime": "gemini",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+                "extra": 1,
+            },
+            "manifest_entry_fields_invalid:gemini\\cli",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "path": "{HOME}/G.md", "strategy": "copy"},
+            "manifest_strategy_invalid:a/b",
+        ),
+        (
+            {
+                "id": "a/b",
+                "runtime": "x",
+                "path": "{HOME}/G.md",
+                "strategy": "pointer",
+                "pointer_kind": "link",
+            },
+            "manifest_pointer_kind_invalid:a/b",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "strategy": "pointer"},
+            "manifest_path_missing:a/b",
+        ),
+        (
+            {"id": "a/b", "runtime": "x", "strategy": "manual"},
+            "manifest_evidence_missing:a/b",
+        ),
+    ],
+    ids=["runtime", "fields", "strategy", "pointer_kind", "path", "evidence"],
+)
+def test_b9_manifest_findings_keep_entry_id_with_path_separator(
+    tmp_path: Path, entry: dict, finding: str
+) -> None:
+    # #41 の finding 名は entry id に / や \ を含んでも型名に潰さない。
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [entry])
+
+    checked = gate.check_manifest(manifest, home=home)
+    applied = gate.apply_entry(manifest, entry_id=entry["id"], home=home)
+
+    for report in (checked, applied):
+        assert report["status"] == "tool_error"
+        assert report["findings"] == [finding]
+
+
+def test_b9_nul_in_path_is_manifest_error_not_traceback(tmp_path: Path) -> None:
+    # NUL 入りパスは is_file() が黙って False (entry_missing と誤読) を返し、
+    # apply では os.replace の ValueError が traceback と絶対パスを漏らした。
+    home = make_home(tmp_path)
+    manifest = write_manifest(
+        tmp_path,
+        [{**GROK_ENTRY, "id": "g", "path": "{HOME}/a\u0000b"}],
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(_MODULE_PATH),
+            "--manifest",
+            str(manifest),
+            "--home",
+            str(home),
+            "--apply",
+            "--entry-id",
+            "g",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    checked = gate.check_manifest(manifest, home=home)
+
+    assert completed.returncode == 2
+    assert completed.stderr == ""
+    assert json.loads(completed.stdout)["findings"] == ["path_value_invalid"]
+    assert checked["status"] == "tool_error"
+    assert checked["findings"] == ["path_value_invalid"]
+
+
+def test_b9_write_value_error_is_structured_tool_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+    secret = str(tmp_path / "private-user")
+
+    def fail_replace(*args, **kwargs):
+        raise ValueError(f"replace: embedded null character in dst {secret}")
+
+    monkeypatch.setattr(gate.os, "replace", fail_replace)
+    report = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["target_write_failed:ValueError"]
+    assert "private-user" not in json.dumps(report)
+
+
+def test_b9_unexpected_exception_is_json_tool_error(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    def explode(*args, **kwargs):
+        raise RuntimeError(str(tmp_path / "private-user"))
+
+    monkeypatch.setattr(gate, "check_manifest", explode)
+    code = gate.main(["--manifest", str(manifest), "--home", str(home)])
+    out = capsys.readouterr().out
+
+    assert code == 2
+    assert json.loads(out)["findings"] == ["internal_error:RuntimeError"]
+    assert "private-user" not in out
+
+
+def test_b10_apply_keeps_existing_target_mode(tmp_path: Path, monkeypatch) -> None:
+    home = make_home(tmp_path)
+    target = home / "AGENTS.md"
+    target.write_text(gate.render_materialized("# old\n"), encoding="utf-8")
+    if os.name != "nt":
+        target.chmod(0o644)
+    expected_mode = target.stat().st_mode & 0o7777
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+    chmod_calls: list[int] = []
+    real_chmod = gate.os.chmod
+
+    def recording_chmod(path, mode, *args, **kwargs):
+        chmod_calls.append(mode)
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(gate.os, "chmod", recording_chmod)
+    report = gate.apply_entry(manifest, entry_id="grok", home=home)
+
+    assert report["status"] == "pass"
+    assert chmod_calls == [expected_mode]
+    if os.name != "nt":
+        # mkstemp の 0600 が os.replace で残らない。
+        assert target.stat().st_mode & 0o7777 == 0o644
+
+
+def test_b11_entry_id_without_apply_is_error(tmp_path: Path, capsys) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    code = gate.main(
+        ["--manifest", str(manifest), "--home", str(home), "--entry-id", "grok"]
+    )
+    report = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert report["findings"] == ["entry_id_requires_apply"]
+    assert not (home / "AGENTS.md").exists()
+
+
+def test_b11_json_flag_is_removed(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    with pytest.raises(SystemExit) as excinfo:
+        gate.main(["--manifest", str(manifest), "--home", str(home), "--json"])
+
+    assert excinfo.value.code == 2
+
+
+def test_b12_test_module_imports_without_repo_root_on_sys_path(
+    tmp_path: Path,
+) -> None:
+    # 素の pytest (rootdir が sys.path に入らない) でも collection error にならない。
+    child_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    code = (
+        "import runpy, sys; "
+        "sys.path[:] = [p for p in sys.path if p not in ('', '.')]; "
+        f"runpy.run_path({str(Path(__file__).resolve())!r})"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=tmp_path,
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# PR 再レビュー指摘 (M1〜M6) の回帰テスト。
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEEP_JSON = "[" * 200000 + "]" * 200000
+
+
+def test_m1_required_entry_tool_error_makes_whole_report_tool_error(
+    tmp_path: Path, capsys
+) -> None:
+    # entry 単位の読み取り失敗は gate 自体の問題 (exit 2) で、drift (exit 1) ではない。
+    home = make_home(tmp_path)
+    (home / "CLAUDE.md").write_bytes(b"\xff\xfe\xfa not utf-8\n")
+    manifest = write_manifest(tmp_path, [CLAUDE_ENTRY, GROK_ENTRY, CURSOR_ENTRY])
+
+    report = gate.check_manifest(manifest, home=home)
+    code = gate.main(["--manifest", str(manifest), "--home", str(home)])
+    printed = json.loads(capsys.readouterr().out)
+
+    assert report["entries"][0]["status"] == "tool_error"
+    assert report["entries"][1]["status"] == "missing"
+    assert report["status"] == "tool_error"
+    assert "claude:entry_unreadable:UnicodeDecodeError" in report["findings"]
+    assert (code, printed["status"]) == (2, "tool_error")
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["tool_error", "stale", "human_review"], "tool_error"),
+        (["human_review", "tool_error"], "tool_error"),
+        (["stale", "human_review"], "blocked"),
+        (["missing"], "blocked"),
+        (["human_review", "human_review"], "human_review"),
+        ([], "pass"),
+    ],
+)
+def test_m1_overall_status_priority(statuses: list[str], expected: str) -> None:
+    failures = [{"status": status} for status in statuses]
+
+    assert gate._overall_status(failures) == expected
+
+
+def spaced_pointer_report(tmp_path: Path, template: str) -> dict:
+    # 空白を含む home (例: C:/Users/My Name) を作る。
+    home = tmp_path / "My Name" / "home"
+    home.mkdir(parents=True)
+    source = home / "AI-CONSTITUTION.md"
+    source.write_text("# source\n", encoding="utf-8")
+    (home / "CLAUDE.md").write_text(
+        template.format(source=source.as_posix()), encoding="utf-8"
+    )
+    manifest = write_manifest(tmp_path, [CLAUDE_ENTRY])
+    return gate.check_manifest(manifest, home=home)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "@{source}\n",
+        "See @{source}.\n",
+        "@{source}   \n",
+        "> @{source}\n",
+    ],
+    ids=["bare", "sentence_period", "trailing_space", "blockquote"],
+)
+def test_m2_unquoted_import_path_with_spaces_passes(
+    tmp_path: Path, template: str
+) -> None:
+    # 未クォートの空白入りパスの import は #40/#41 で pass だった。
+    report = spaced_pointer_report(tmp_path, template)
+
+    assert report["status"] == "pass", report
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "```\n@{source}\n```\n",
+        "Use `@{source}` here\n",
+        "<!-- @{source} -->\n",
+        "user@{source}\n",
+        "@{source}.backup\n",
+        "@{source} and more\n",
+    ],
+    ids=[
+        "fence",
+        "code_span",
+        "html_comment",
+        "user_at_host",
+        "other_path",
+        "trailing_words",
+    ],
+)
+def test_m2_path_with_spaces_keeps_exclusions(tmp_path: Path, template: str) -> None:
+    report = spaced_pointer_report(tmp_path, template)
+
+    assert report["status"] == "blocked"
+    assert report["findings"] == ["claude:source_pointer_missing"]
+
+
+def test_m3_deeply_nested_manifest_is_json_invalid(tmp_path: Path, capsys) -> None:
+    home = make_home(tmp_path)
+    manifest = tmp_path / "deep.json"
+    manifest.write_text(DEEP_JSON, encoding="utf-8")
+
+    checked = gate.check_manifest(manifest, home=home)
+    applied = gate.apply_entry(manifest, entry_id="grok", home=home)
+    code = gate.main(["--manifest", str(manifest), "--home", str(home)])
+    printed = json.loads(capsys.readouterr().out)
+
+    for report in (checked, applied, printed):
+        assert report["status"] == "tool_error"
+        assert report["findings"] == ["manifest_json_invalid"]
+    assert code == 2
+
+
+def test_m3_deeply_nested_manifest_cli_has_no_traceback(tmp_path: Path) -> None:
+    home = make_home(tmp_path)
+    manifest = tmp_path / "deep.json"
+    manifest.write_text(DEEP_JSON, encoding="utf-8")
+
+    for extra in ([], ["--apply", "--entry-id", "grok"]):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(_MODULE_PATH),
+                "--manifest",
+                str(manifest),
+                "--home",
+                str(home),
+                *extra,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 2, result.stderr
+        assert "Traceback" not in result.stderr
+        assert json.loads(result.stdout)["findings"] == ["manifest_json_invalid"]
+
+
+def test_m4_read_only_target_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # 読み取り専用 target のモードを引き継いだ一時ファイルは、置換失敗後も消す。
+    home = make_home(tmp_path)
+    target = home / "AGENTS.md"
+    target.write_text(gate.render_materialized("# old\n"), encoding="utf-8")
+    target.chmod(0o444)
+    manifest = write_manifest(tmp_path, [GROK_ENTRY])
+
+    def fail_replace(*args, **kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(gate.os, "replace", fail_replace)
+    try:
+        report = gate.apply_entry(manifest, entry_id="grok", home=home)
+        leftovers = sorted(p.name for p in home.glob(".repo-preflight-entry-*"))
+    finally:
+        for path in [target, *home.glob(".repo-preflight-entry-*")]:
+            os.chmod(path, 0o644)
+
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["target_write_failed:PermissionError"]
+    assert leftovers == []
+
+
+def _doc(rel: str) -> str:
+    return (REPO_ROOT / rel).read_text(encoding="utf-8")
+
+
+def test_m5_docs_scope_absolute_path_promise_to_gate_findings() -> None:
+    # manual entry の evidence は manifest 作成者の文をそのまま返すため、
+    # 「レポートに絶対パスを載せない」は gate が生成する finding に限定して書く。
+    for rel in ("docs/ai-constitution-entry-contract.md", "CHANGELOG.md"):
+        text = _doc(rel)
+        assert "レポートにsource本文や絶対パスを載せない" not in text, rel
+        assert "レポートに source 本文と絶対パスを載せない" not in text, rel
+        assert "gate が生成する finding" in text or "gateが生成するfinding" in text
+        assert "そのまま返す" in text, rel
+
+
+def test_m6_argparse_errors_are_usage_on_stderr_exit_2(capsys) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        gate.main([])
+    captured = capsys.readouterr()
+
+    assert excinfo.value.code == 2
+    assert captured.out == ""
+    assert "usage:" in captured.err
+
+    contract = _doc("docs/ai-constitution-entry-contract.md")
+    assert "argparse" in contract and "stderr" in contract
+    assert "JSONは出ません" in contract
+    assert "`tool_error` > `blocked` > `human_review` > `pass`" in contract
+
+
+def test_m6_runtime_support_overall_status_matches_exit_codes() -> None:
+    text = _doc("docs/runtime-support.md")
+    section = text.split("## AI憲法の入口保証", 1)[1].split("\n## ", 1)[0]
+
+    assert "判定だけがmanifest全体の `blocked` / `pass` を決めます" not in section
+    for status, code in (
+        ("pass", 0),
+        ("blocked", 1),
+        ("tool_error", 2),
+        ("human_review", 3),
+    ):
+        assert f"`{status}` (exit {code})" in section, status
