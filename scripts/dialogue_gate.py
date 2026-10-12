@@ -715,7 +715,31 @@ def build_confirmations(
             "scope": "repository_consistency_only",
             "rerun_if_base_or_head_changes": True,
         }
-    return [base]
+    if intent != "release":
+        return [base]
+    return [
+        {
+            "id": "confirm_release_body_ja",
+            "kind": "intent_confirmation",
+            "severity": "required",
+            "question": "Release本文（日本語・非空）を用意したか?",
+            "options": [
+                {
+                    "id": "approve",
+                    "label": "日本語の非空 Release 本文を用意した",
+                },
+                {"id": "cancel", "label": "まだ用意していない / キャンセル"},
+            ],
+            "default": "cancel",
+            "blocks_intent": True,
+            "auto_apply_safe": False,
+            "proposed": {
+                "action": "prepare_release_body_ja",
+                "reminder": "GitHub Release 本文は日本語で、空にしない",
+            },
+        },
+        base,
+    ]
 
 
 def dialogue_status(

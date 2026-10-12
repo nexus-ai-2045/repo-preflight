@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "repo-preflight"
-version = "0.5.1"
+version = "0.6.0"
 description = "Evidence-driven preflight scanner and lifecycle skill for repositories, run before widening who can see them."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = "MIT"
 dependencies = []
 
 [project.optional-dependencies]
-test = ["black>=25,<27", "pytest>=8,<10"]
+test = ["black>=26.5.1,<27", "pytest>=9.1.1,<10"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

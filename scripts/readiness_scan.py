@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+from collections import Counter
+from datetime import datetime, timedelta, timezone
 import difflib
 import importlib.util
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from typing import Callable, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -18,6 +23,7 @@ SCHEMA = "repo-preflight.scan/v3"
 GUARANTEES = (
     "ローカルGitの現在treeと履歴を読み取り専用で検査する",
     "選択した検査scopeでsecret候補・個人path・作者名義を機械判定し、repo全体modeでは必須文書とCI設定も確認する",
+    "repo全体modeでは作業treeの Live2D Cubism .cmo3 を展開して個人pathを判定し、展開できないfileは unknown にする",
     "status は CLI が担当する自動検査の結果だけを表す (pass / blocked / tool_error)",
     "publication_decision は常に人間レビュー要求とし、自動で公開承認しない",
     "検出結果に秘密値そのものを出力しない",
@@ -28,10 +34,11 @@ GUARANTEES = (
 )
 
 NON_GUARANTEES = (
-    "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内は見逃し得る)",
+    "秘密情報が存在しないことの完全保証 (独自形式・符号化・大容量blob・バイナリ内、英数字・_・- に直結した sk- 形式の鍵は見逃し得る)",
+    "個人pathが存在しないことの完全保証 (.cmo3 の展開はrepo全体modeの作業treeだけ。履歴・--base-ref差分内の .cmo3、他の独自形式・圧縮・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
-    "通常scanにおけるGitHub remote設定の現在状態 (configure_settings intentでのみ別途read-only取得する)",
+    "通常scanにおけるGitHub remote設定全体の現在状態 (configure_settings intentで別途取得。レビュー済み個人path例外はprivate確認のみ)",
     "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
@@ -82,18 +89,294 @@ DEPENDENCY_FILES = (
     "build.gradle.kts",
 )
 SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    # "sk-" は英単語の語尾 (task- / desk- / risk- / musk- …) にそのまま現れ、
+    # 後続の kebab-case も本体の文字種に収まるため、前側の区切りを要求する。
+    # 直前が英数字・"_"・"-" なら一致させない。escape された空白 (\n \r \t) の
+    # 直後は、literal 上は英字が前にあっても区切りとして扱う。
+    # 他の規則の接頭辞は語の途中に現れにくいので、この制限を持たせない。
+    re.compile(r"(?:(?<![A-Za-z0-9_-])|(?<=\\[nrt]))sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
 )
+SECRET_RULE_IDS = (
+    "openai_key",
+    "github_token",
+    "github_pat",
+    "aws_access_key",
+    "slack_token",
+    "private_key",
+)
+
+
+def secret_matches(data: bytes) -> Counter:
+    """同じ検出のraw/URL復号/文字encoding間の重複は最大件数にまとめる。"""
+    matches = Counter()
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        for candidate in (text, unquote(text)):
+            counts = Counter(
+                (rule, hashlib.sha256(match.group().encode("utf-8")).hexdigest())
+                for rule, pattern in zip(SECRET_RULE_IDS, SECRET_PATTERNS, strict=True)
+                for match in pattern.finditer(candidate)
+            )
+            matches |= counts
+    return matches
+
+
+class ReviewedSecretExceptions:
+    """明示指定された、内容と検出を完全束縛するレビュー済み例外。"""
+
+    def __init__(self, policy_path: Path, remote: str):
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate_key")
+                result[key] = value
+            return result
+
+        try:
+            raw_policy = policy_path.read_bytes()
+            if len(raw_policy) > 1_000_000:
+                raise ValueError("size")
+            policy = json.loads(
+                raw_policy.decode("utf-8"), object_pairs_hook=unique_object
+            )
+            if (
+                not isinstance(policy, dict)
+                or set(policy) != {"version", "entries"}
+                or type(policy["version"]) is not int
+                or policy["version"] not in {1, 2}
+                or not isinstance(policy["entries"], list)
+            ):
+                raise ValueError("schema")
+            # 生の認証値やquery/fragment付きremoteはidentity根拠として使わない。
+            match = re.fullmatch(
+                r"(?:https://github[.]com/|git@github[.]com:|ssh://git@github[.]com/)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:[.]git)?",
+                remote,
+            )
+            if not match:
+                raise ValueError("origin")
+            identity = match.group(1)
+            if len(policy["entries"]) > 1000:
+                raise ValueError("entry_limit")
+            self.entries = []
+            ids = set()
+            bindings = set()
+            keys = {
+                "id",
+                "repo",
+                "path",
+                "content_sha256",
+                "rule",
+                "match_sha256",
+                "occurrence_count",
+                "review_reason",
+            }
+            if policy["version"] == 2:
+                keys |= {"expires_at", "review_reference"}
+            for entry in policy["entries"]:
+                if not isinstance(entry, dict) or set(entry) != keys:
+                    raise ValueError("entry")
+                if any(
+                    not isinstance(entry[key], str)
+                    for key in keys - {"occurrence_count"}
+                ):
+                    raise ValueError("type")
+                if (
+                    not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", entry["id"])
+                    or entry["id"] in ids
+                    or text_has(SECRET_PATTERNS + PATH_PATTERNS, entry["id"].encode())
+                ):
+                    raise ValueError("id")
+                if any(
+                    text_has(SECRET_PATTERNS, entry[key].encode("utf-8"))
+                    for key in ("repo", "path")
+                ):
+                    raise ValueError("credential_in_binding")
+                rel = entry["path"]
+                if (
+                    not rel
+                    or rel.startswith("/")
+                    or "\\" in rel
+                    or ":" in rel
+                    or any(part in {"", ".", ".."} for part in rel.split("/"))
+                    or any(ord(char) < 32 for char in rel)
+                ):
+                    raise ValueError("path")
+                if entry["repo"] != identity or entry["rule"] not in (
+                    SECRET_RULE_IDS + (PATH_RULE_IDS if policy["version"] == 2 else ())
+                ):
+                    raise ValueError("identity_or_rule")
+                if any(
+                    not re.fullmatch(r"[0-9a-f]{64}", entry[key])
+                    for key in ("content_sha256", "match_sha256")
+                ):
+                    raise ValueError("digest")
+                if (
+                    type(entry["occurrence_count"]) is not int
+                    or entry["occurrence_count"] <= 0
+                    or not entry["review_reason"].strip()
+                ):
+                    raise ValueError("count_or_reason")
+                # 理由にもcredentialを保存しない。値や理由はreportへ出さない。
+                if text_has(SECRET_PATTERNS, entry["review_reason"].encode()):
+                    raise ValueError("credential_in_reason")
+                if policy["version"] == 2:
+                    if (
+                        not re.fullmatch(
+                            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", entry["expires_at"]
+                        )
+                        or not entry["review_reference"].strip()
+                        or text_has(SECRET_PATTERNS, entry["review_reference"].encode())
+                    ):
+                        raise ValueError("expiry_or_review")
+                    expires = datetime.strptime(
+                        entry["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    if expires <= now or expires > now + timedelta(days=90):
+                        raise ValueError("expired_or_excessive_validity")
+                binding = tuple(
+                    entry[key]
+                    for key in (
+                        "repo",
+                        "path",
+                        "content_sha256",
+                        "rule",
+                        "match_sha256",
+                    )
+                )
+                if binding in bindings:
+                    raise ValueError("duplicate_entry")
+                bindings.add(binding)
+                ids.add(entry["id"])
+                self.entries.append(entry)
+        except (OSError, UnicodeError, ValueError, TypeError, RecursionError) as exc:
+            raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
+        self.applied = Counter()
+        self.path_applied = Counter()
+        self.has_path_entries = any(
+            entry["rule"] in PATH_RULE_IDS for entry in self.entries
+        )
+        if self.has_path_entries:
+            # REST originをlive取得。local設定、保存済みsnapshotやunknownは根拠にしない。
+            try:
+                settings = load_github_settings_module()
+                live = settings.gh_api_get("https://api.github.com/repos/" + identity)
+                if (
+                    not isinstance(live, dict)
+                    or live.get("full_name") != identity
+                    or live.get("private") is not True
+                    or live.get("visibility") != "private"
+                ):
+                    raise ValueError("private_origin_required")
+            except (OSError, RuntimeError, ValueError, TypeError) as exc:
+                raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
+
+    def _unreviewed(
+        self, path: str, data: bytes, matches: Counter, applied: Counter
+    ) -> bool:
+        content_digest = hashlib.sha256(data).hexdigest()
+        for entry in self.entries:
+            key = (entry["rule"], entry["match_sha256"])
+            if (
+                entry["path"] == path
+                and entry["content_sha256"] == content_digest
+                and matches.get(key) == entry["occurrence_count"]
+            ):
+                applied[entry["id"]] += matches.pop(key)
+        return bool(matches)
+
+    def has_unreviewed(self, path: str, data: bytes) -> bool:
+        return self._unreviewed(path, data, secret_matches(data), self.applied)
+
+    def has_unreviewed_paths(
+        self, path: str, data: bytes, scanned_data: bytes | None = None
+    ) -> bool:
+        return self._unreviewed(
+            path,
+            data,
+            personal_path_matches(data if scanned_data is None else scanned_data),
+            self.path_applied,
+        )
+
+    def all_paths_reviewed(self, path: str, data: bytes) -> bool:
+        # diffは部分textのhashでは除外しない。新blob内の全検出が束縛された場合だけ。
+        return bool(personal_path_matches(data)) and not self.has_unreviewed_paths(
+            path, data
+        )
+
+    def report(self, *, personal_paths: bool = False):
+        return [
+            {"id": key, "occurrence_count": count}
+            for key, count in sorted(
+                (self.path_applied if personal_paths else self.applied).items()
+            )
+        ]
+
+
+# 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
+# CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
+_UNIX_PATH_START = (
+    r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
+)
 PATH_PATTERNS = (
     re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
-    re.compile(r"/Us" + r"ers/[^/\s]+"),
-    re.compile(r"/ho" + r"me/[^/\s]+"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s]+)"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s]+)"),
 )
+PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
+
+
+def personal_path_matches(data: bytes) -> Counter:
+    """検出値を保持せず、encoding・URL復号・binary間の重複は最大件数で束縛する。"""
+    matches = Counter()
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        for candidate in (text, unquote(text)):
+            matches |= Counter(
+                (
+                    rule,
+                    hashlib.sha256(
+                        (
+                            match.groupdict().get("personal_path") or match.group()
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                )
+                for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
+                for match in pattern.finditer(candidate)
+            )
+    matches |= Counter(
+        (
+            rule,
+            hashlib.sha256(
+                match.groupdict().get("personal_path") or match.group()
+            ).hexdigest(),
+        )
+        for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS, strict=True)
+        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+    )
+    return matches
+
+
+# Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
+# 入れている。生byteには個人pathが現れないので、展開した XML を判定する。
+# 形式は実物からの実測で、公開仕様ではない。
+CMO3_SUFFIX = ".cmo3"
+CMO3_ENTRY_NAME = b"contents"
+CMO3_MAX_XML_BYTES = 64 * 1024 * 1024
+_CMO3_XOR_TABLE = bytes(value ^ 0xE3 for value in range(256))
+_ZIP_LOCAL_HEADER = re.compile(re.escape(b"PK\x03\x04"))
 
 # 親プロセスの GIT_DIR / GIT_WORK_TREE 等は、--repo で指した path と別の
 # repository へ判定対象を飛ばす。subdirectory を囲っている repo へ広げるのと
@@ -199,7 +482,9 @@ def effective_identity(value: str) -> str:
 
 
 def history_hits(
-    repo: Path, rev_args: tuple[str, ...] = ("--all",)
+    repo: Path,
+    rev_args: tuple[str, ...] = ("--all",),
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
 ) -> tuple[list[str], list[str]]:
     objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *rev_args],
@@ -251,6 +536,33 @@ def history_hits(
             raise RuntimeError("git_history_inventory_failed")
         if fields[1] == "blob" and size <= 2_000_000:
             eligible.append((object_id, name, size))
+    aliases: dict[str, set[str]] = {}
+    if reviewed_exceptions is not None:
+        # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
+        roots = run_subprocess(
+            ["git", "log", "--format=%T", *rev_args], cwd=repo, capture_output=True
+        )
+        if roots.returncode:
+            raise RuntimeError("git_history_inventory_failed")
+        for tree in set(roots.stdout.splitlines()):
+            tree_files = run_subprocess(
+                ["git", "ls-tree", "-r", "-z", tree.decode("ascii")],
+                cwd=repo,
+                capture_output=True,
+            )
+            if tree_files.returncode:
+                raise RuntimeError("git_history_inventory_failed")
+            for record in tree_files.stdout.split(b"\0"):
+                if not record:
+                    continue
+                metadata, sep, raw_path = record.partition(b"\t")
+                fields = metadata.split()
+                if not sep or len(fields) != 3:
+                    raise RuntimeError("git_history_inventory_failed")
+                if fields[1] == b"blob":
+                    aliases.setdefault(fields[2].decode("ascii"), set()).add(
+                        raw_path.decode("utf-8", errors="surrogateescape")
+                    )
     secret_hits: set[str] = set()
     path_hits: set[str] = set()
     eligible.reverse()
@@ -288,10 +600,32 @@ def history_hits(
                 data = batch.stdout[start:end]
                 cursor = end + 1
                 label = f"history:{sanitized_evidence_label(name or object_id[:12])}"
-                if text_has(SECRET_PATTERNS, data):
-                    secret_hits.add(label)
-                if text_has(PATH_PATTERNS, data):
-                    path_hits.add(label)
+                if reviewed_exceptions is None:
+                    if text_has(SECRET_PATTERNS, data):
+                        secret_hits.add(label)
+                else:
+                    names = aliases.get(object_id)
+                    if not names:
+                        # detached blob/tag等でpath根拠なしなら例外を使わない。
+                        if text_has(SECRET_PATTERNS, data):
+                            secret_hits.add(label)
+                    for alias in sorted(names or ()):
+                        if reviewed_exceptions.has_unreviewed(alias, data):
+                            secret_hits.add(
+                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                            )
+                if reviewed_exceptions is None:
+                    if text_has(PATH_PATTERNS, data):
+                        path_hits.add(label)
+                else:
+                    names = aliases.get(object_id)
+                    if not names and personal_path_matches(data):
+                        path_hits.add(label)
+                    for alias in sorted(names or ()):
+                        if reviewed_exceptions.has_unreviewed_paths(alias, data):
+                            path_hits.add(
+                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                            )
         except (UnicodeDecodeError, ValueError, IndexError) as exc:
             raise RuntimeError("git_history_inventory_failed") from exc
         if cursor != len(batch.stdout):
@@ -300,7 +634,11 @@ def history_hits(
 
 
 def diff_added_lines_have(
-    repo: Path, patterns: tuple[re.Pattern, ...], *diff_args: str
+    repo: Path,
+    patterns: tuple[re.Pattern, ...],
+    *diff_args: str,
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
+    scan_path: str | None = None,
 ) -> bool:
     """Return whether added text lines in one Git diff match ``patterns``.
 
@@ -308,6 +646,52 @@ def diff_added_lines_have(
     its file also contains a new, unrelated line.  Patch metadata is excluded;
     only actual ``+`` lines are decoded by ``text_has``.
     """
+    if reviewed_exceptions is not None and reviewed_exceptions.has_path_entries:
+        inventory = run_subprocess(
+            [
+                "git",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                *diff_args,
+                "--",
+            ],
+            cwd=repo,
+            capture_output=True,
+        )
+        if inventory.returncode:
+            raise RuntimeError("git_target_diff_inventory_failed")
+        for raw_path in inventory.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            path = raw_path.decode("utf-8", errors="surrogateescape")
+            if len(diff_args) == 2:
+                blob = run_subprocess(
+                    ["git", "show", f"{diff_args[1]}:{path}"],
+                    cwd=repo,
+                    capture_output=True,
+                )
+                data = blob.stdout if blob.returncode == 0 else None
+            else:
+                candidate = repo / path
+                if candidate.is_symlink():
+                    data = None
+                else:
+                    try:
+                        data = candidate.read_bytes()
+                    except FileNotFoundError:
+                        data = None
+                    except OSError as exc:
+                        raise RuntimeError("git_target_diff_inventory_failed") from exc
+            if data is not None and reviewed_exceptions.all_paths_reviewed(path, data):
+                continue
+            if diff_added_lines_have(repo, patterns, *diff_args, scan_path=path):
+                return True
+        return False
+    pathspec = ["--", ":(literal)" + scan_path] if scan_path is not None else ["--"]
     result = run_subprocess(
         [
             "git",
@@ -317,7 +701,7 @@ def diff_added_lines_have(
             "--no-color",
             "--unified=0",
             *diff_args,
-            "--",
+            *pathspec,
         ],
         cwd=repo,
         capture_output=True,
@@ -352,7 +736,7 @@ def diff_added_lines_have(
             "--numstat",
             "-z",
             *diff_args,
-            "--",
+            *pathspec,
         ],
         cwd=repo,
         capture_output=True,
@@ -445,8 +829,59 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
+def cmo3_contents_xml(data: bytes) -> bytes | None:
+    """Return the ``contents`` XML inside a .cmo3, or None if it cannot be read.
+
+    XOR-ing every byte with 0xE3 exposes a zip local file header.  Its flag
+    0x0808 leaves the header sizes at zero, so the raw deflate stream right
+    after the header is inflated until the stream itself ends, then checked
+    against the CRC-32 and size in the data descriptor that follows it (raw
+    deflate alone can decode damaged bytes into plausible garbage).  The header
+    offset is not fixed, so every signature is tried.  A truncated or corrupt
+    entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
+    the whole file unreadable rather than partly clean.
+    """
+    plain = data.translate(_CMO3_XOR_TABLE)
+    documents: list[bytes] = []
+    for match in _ZIP_LOCAL_HEADER.finditer(plain):
+        offset = match.start()
+        if len(plain) < offset + 30:
+            continue
+        (method,) = struct.unpack_from("<H", plain, offset + 8)
+        name_length, extra_length = struct.unpack_from("<HH", plain, offset + 26)
+        name_start = offset + 30
+        if (
+            method != 8
+            or plain[name_start : name_start + name_length] != CMO3_ENTRY_NAME
+        ):
+            continue
+        # 上限は全entryの合計に効かせる (0 は zlib で「無制限」の意味になる)
+        remaining = CMO3_MAX_XML_BYTES - sum(map(len, documents))
+        if remaining <= 0:
+            return None
+        inflater = zlib.decompressobj(-15)
+        try:
+            document = inflater.decompress(
+                plain[name_start + name_length + extra_length :], remaining
+            )
+        except zlib.error:
+            return None
+        if not inflater.eof:
+            return None
+        descriptor = inflater.unused_data
+        if descriptor.startswith(b"PK\x07\x08"):
+            descriptor = descriptor[4:]
+        if len(descriptor) < 12:
+            return None
+        crc, _compressed_size, size = struct.unpack_from("<III", descriptor)
+        if crc != zlib.crc32(document) or size != len(document):
+            return None
+        documents.append(document)
+    return b"\n".join(documents) if documents else None
+
+
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
-    """Choose the parent containing the scanned base, or the empty tree."""
+    """Prefer a base-containing parent, then a unique base ancestor."""
     parents = run_subprocess(
         ["git", "show", "-s", "--format=%P", commit],
         cwd=repo,
@@ -478,10 +913,30 @@ def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:
             return parent
         if contains_base.returncode != 1:
             raise RuntimeError("git_target_diff_inventory_failed")
+    if len(candidates) > 1:
+        # mainが先へ進んでも、過去のmergeで取り込んだmain由来の追加を
+        # branchの新規追加として再検出しない。曖昧ならfirst parentを保つ。
+        base_ancestors = []
+        for parent in candidates:
+            ancestor_of_base = run_subprocess(
+                ["git", "merge-base", "--is-ancestor", parent, base_ref],
+                cwd=repo,
+                capture_output=True,
+            )
+            if ancestor_of_base.returncode == 0:
+                base_ancestors.append(parent)
+            elif ancestor_of_base.returncode != 1:
+                raise RuntimeError("git_target_diff_inventory_failed")
+        if len(base_ancestors) == 1:
+            return base_ancestors[0]
     return candidates[0]
 
 
-def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
+def target_diff_personal_path_hits(
+    repo: Path,
+    base_ref: str,
+    reviewed_exceptions: ReviewedSecretExceptions | None = None,
+) -> list[str]:
     """Scan personal paths introduced anywhere after ``base_ref``.
 
     Each commit is compared with its first parent so a path that was introduced
@@ -502,9 +957,13 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
     hits: set[str] = set()
     for commit in commits.stdout.splitlines():
         parent = comparison_parent(repo, base_ref, commit)
-        if diff_added_lines_have(repo, PATH_PATTERNS, parent, commit):
+        if diff_added_lines_have(
+            repo, PATH_PATTERNS, parent, commit, reviewed_exceptions=reviewed_exceptions
+        ):
             hits.add(f"target-diff:commit:{commit[:12]}")
-    if diff_added_lines_have(repo, PATH_PATTERNS, "HEAD"):
+    if diff_added_lines_have(
+        repo, PATH_PATTERNS, "HEAD", reviewed_exceptions=reviewed_exceptions
+    ):
         hits.add("target-diff:working-tree")
     untracked = run_subprocess(
         ["git", "ls-files", "-z", "--others", "--exclude-standard"],
@@ -524,7 +983,14 @@ def target_diff_personal_path_hits(repo: Path, base_ref: str) -> list[str]:
         except OSError as exc:
             raise RuntimeError("git_target_diff_inventory_failed") from exc
         # 全体decode失敗時も raw bytes で拾う (診断は diff_added_lines_have と同じ)
-        if text_has(PATH_PATTERNS, data) or _bytes_pattern_hit(PATH_PATTERNS, data):
+        if (
+            reviewed_exceptions.has_unreviewed_paths(
+                path.relative_to(repo).as_posix(), data
+            )
+            if reviewed_exceptions is not None
+            else text_has(PATH_PATTERNS, data)
+            or _bytes_pattern_hit(PATH_PATTERNS, data)
+        ):
             hits.add("target-diff:untracked-worktree")
             break
     return sorted(hits)
@@ -664,6 +1130,11 @@ def load_github_settings_module():
     return module
 
 
+# impact_map 等の change-sensitive 整合性検査向け。README / OPERATIONS の最短
+# コマンド（base 未指定）でも同じ remote base を使う。
+DEFAULT_CONSISTENCY_BASE_REF = "origin/main"
+
+
 def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     script = Path(__file__).with_name("consistency_gate.py")
     spec = importlib.util.spec_from_file_location("consistency_gate", script)
@@ -672,6 +1143,33 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module.check(repo, base_ref=base_ref)
+
+
+def probe_consistency_base_ref(
+    repo: Path, consistency_base_ref: str
+) -> tuple[str, str] | None:
+    """usable な remote consistency base なら (symbolic, oid)、不可なら None。
+
+    条件は明示指定時と同じ: commit として解決でき、symbolic-full-name が
+    refs/remotes/origin/ 配下で、HEAD の祖先であること。
+    """
+    consistency_probe = run(
+        repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
+    )
+    consistency_symbolic = run(
+        repo, "git", "rev-parse", "--symbolic-full-name", consistency_base_ref
+    )
+    consistency_ancestor = run(
+        repo, "git", "merge-base", "--is-ancestor", consistency_base_ref, "HEAD"
+    )
+    if (
+        consistency_probe[0]
+        or consistency_symbolic[0]
+        or not consistency_symbolic[1].startswith("refs/remotes/origin/")
+        or consistency_ancestor[0]
+    ):
+        return None
+    return consistency_symbolic[1], consistency_probe[1]
 
 
 def repository_root_error(repo: Path) -> dict | None:
@@ -704,6 +1202,7 @@ def scan(
     release: bool = False,
     base_ref: str | None = None,
     consistency_base_ref: str | None = None,
+    reviewed_secret_exceptions: Path | None = None,
 ) -> dict:
     repo = repo.resolve()
     root_error = repository_root_error(repo)
@@ -716,25 +1215,21 @@ def scan(
     }
     resolved_consistency_base_ref: str | None = None
     consistency_base_oid: str | None = None
-    if consistency_base_ref and not base_ref:
-        consistency_probe = run(
-            repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
-        )
-        consistency_symbolic = run(
-            repo, "git", "rev-parse", "--symbolic-full-name", consistency_base_ref
-        )
-        consistency_ancestor = run(
-            repo, "git", "merge-base", "--is-ancestor", consistency_base_ref, "HEAD"
-        )
-        if (
-            consistency_probe[0]
-            or consistency_symbolic[0]
-            or not consistency_symbolic[1].startswith("refs/remotes/origin/")
-            or consistency_ancestor[0]
-        ):
+    # plain / publish / release で base 未指定のとき、impact_map 付きでも
+    # 最短コマンドが change_sensitive_scope_unavailable で落ちないよう
+    # origin/main を既定候補にする。usable でなければ従来どおり未指定のまま。
+    consistency_base_was_defaulted = False
+    if consistency_base_ref is None and base_ref is None:
+        defaulted = probe_consistency_base_ref(repo, DEFAULT_CONSISTENCY_BASE_REF)
+        if defaulted is not None:
+            consistency_base_ref = DEFAULT_CONSISTENCY_BASE_REF
+            resolved_consistency_base_ref, consistency_base_oid = defaulted
+            consistency_base_was_defaulted = True
+    if consistency_base_ref and not base_ref and not consistency_base_was_defaulted:
+        probed = probe_consistency_base_ref(repo, consistency_base_ref)
+        if probed is None:
             return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
-        resolved_consistency_base_ref = consistency_symbolic[1]
-        consistency_base_oid = consistency_probe[1]
+        resolved_consistency_base_ref, consistency_base_oid = probed
     if base_ref:
         base_probe = run(repo, "git", "rev-parse", "--verify", f"{base_ref}^{{commit}}")
         symbolic_probe = run(repo, "git", "rev-parse", "--symbolic-full-name", base_ref)
@@ -775,6 +1270,17 @@ def scan(
         resolved_base_ref = symbolic_probe[1]
         base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
+    reviewed_exceptions = None
+    if reviewed_secret_exceptions is not None:
+        try:
+            reviewed_exceptions = ReviewedSecretExceptions(
+                Path(reviewed_secret_exceptions), remote
+            )
+        except RuntimeError:
+            return {
+                "status": "tool_error",
+                "issues": ["reviewed_secret_exceptions_invalid"],
+            }
     missing = (
         [] if base_ref else [name for name in REQUIRED if not (repo / name).is_file()]
     )
@@ -791,6 +1297,7 @@ def scan(
                 invalid_documents.append(REVIEW_RECORD)
     credential_finding_count = 0
     path_hits: list[str] = []
+    unscanned_path_files: list[str] = []
     try:
         if base_ref:
             paths, deleted_paths = changed_working_tree_files(repo, base_ref)
@@ -821,13 +1328,37 @@ def scan(
                 "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
-        if text_has(SECRET_PATTERNS, data):
+        if (
+            reviewed_exceptions.has_unreviewed(rel, data)
+            if reviewed_exceptions is not None
+            else text_has(SECRET_PATTERNS, data)
+        ):
             credential_finding_count += 1
-        if not base_ref and text_has(PATH_PATTERNS, data):
+        if base_ref:
+            continue
+        if (
+            reviewed_exceptions.has_unreviewed_paths(rel, data)
+            if reviewed_exceptions is not None
+            else text_has(PATH_PATTERNS, data)
+        ):
             path_hits.append(sanitized_evidence_label(rel))
+        elif path.suffix.lower() == CMO3_SUFFIX:
+            # 展開できない .cmo3 を「個人pathなし」と数えない (unknown で止める)
+            xml = cmo3_contents_xml(data)
+            if xml is None:
+                unscanned_path_files.append(sanitized_evidence_label(rel))
+            elif (
+                reviewed_exceptions.has_unreviewed_paths(rel, data, xml)
+                if reviewed_exceptions is not None
+                else text_has(PATH_PATTERNS, xml)
+                or _bytes_pattern_hit(PATH_PATTERNS, xml)
+            ):
+                path_hits.append(sanitized_evidence_label(rel))
     try:
         history_credential_findings, history_path_hits = history_hits(
-            repo, (f"{base_ref}..HEAD",) if base_ref else ("--all",)
+            repo,
+            (f"{base_ref}..HEAD",) if base_ref else ("--all",),
+            reviewed_exceptions,
         )
         credential_finding_count += len(history_credential_findings)
     except RuntimeError:
@@ -838,7 +1369,9 @@ def scan(
         }
     if base_ref:
         try:
-            path_hits.extend(target_diff_personal_path_hits(repo, base_ref))
+            path_hits.extend(
+                target_diff_personal_path_hits(repo, base_ref, reviewed_exceptions)
+            )
         except RuntimeError:
             return {
                 "status": "tool_error",
@@ -913,10 +1446,21 @@ def scan(
         "secret_scan": {
             "status": "pass" if credential_finding_count == 0 else "fail",
             "finding_count": credential_finding_count,
+            "reviewed_exceptions": (
+                reviewed_exceptions.report() if reviewed_exceptions is not None else []
+            ),
         },
         "personal_path_scan": {
-            "status": "pass" if not path_hits else "fail",
+            "status": (
+                "fail" if path_hits else "unknown" if unscanned_path_files else "pass"
+            ),
             "files": path_hits,
+            "unscanned_files": unscanned_path_files,
+            **(
+                {"reviewed_exceptions": reviewed_exceptions.report(personal_paths=True)}
+                if reviewed_exceptions is not None
+                else {}
+            ),
         },
         "commit_identity": {
             "status": (
@@ -1055,6 +1599,7 @@ class ScanOptions:
         base_ref: str | None = None,
         consistency_base_ref: str | None = None,
         github_settings_profile: str = "solo_public",
+        reviewed_secret_exceptions: Path | None = None,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -1066,6 +1611,7 @@ class ScanOptions:
         self.base_ref = base_ref
         self.consistency_base_ref = consistency_base_ref
         self.github_settings_profile = github_settings_profile
+        self.reviewed_secret_exceptions = reviewed_secret_exceptions
 
 
 def boundary_sections() -> dict[str, list[str]]:
@@ -1109,6 +1655,8 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
             else None
         ),
         "github_settings_profile": options.github_settings_profile,
+        "reviewed_secret_exceptions_configured": options.reviewed_secret_exceptions
+        is not None,
     }
     enriched.update(boundary_sections())
     return enriched
@@ -1132,6 +1680,10 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.reviewed_secret_exceptions is not None:
+            scan_kwargs["reviewed_secret_exceptions"] = (
+                options.reviewed_secret_exceptions
+            )
         scan_report = scan(options.repo, **scan_kwargs)
         scan_report = enrich_report(
             scan_report,
@@ -1146,6 +1698,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 base_ref=options.base_ref,
                 consistency_base_ref=options.consistency_base_ref,
                 github_settings_profile=options.github_settings_profile,
+                reviewed_secret_exceptions=options.reviewed_secret_exceptions,
             ),
         )
     elif needs_scan and options.repo is None:
@@ -1219,6 +1772,8 @@ def format_check_line(name: str, check: dict) -> str:
             detail_parts.append(f"invalid={','.join(check['invalid'])}")
     if name == "personal_path_scan" and check.get("files"):
         detail_parts.append(f"files={len(check['files'])}")
+    if name == "personal_path_scan" and check.get("unscanned_files"):
+        detail_parts.append(f"unscanned={len(check['unscanned_files'])}")
     if name == "commit_identity":
         detail_parts.append(f"identities={check.get('identity_count', 0)}")
         if check.get("mismatch_count"):
@@ -1468,6 +2023,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="検査対象リポジトリ。--intent create_repo 以外では必須",
     )
     parser.add_argument(
+        "--reviewed-secret-exceptions",
+        type=Path,
+        help="明示レビュー済みの限定secret例外JSON。自動読込しない",
+    )
+    parser.add_argument(
         "--intent",
         choices=list(gate.INTENTS),
         help=(
@@ -1487,7 +2047,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--consistency-base-ref",
         help=(
             "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
-            "plain scan と publish/release 向け。impact_map を持つrepoの plain scan はこれが無いと tool_error になる"
+            "plain scan と publish/release 向け。"
+            f"未指定時は {DEFAULT_CONSISTENCY_BASE_REF} を試し、usable ならそれを使う"
         ),
     )
     parser.add_argument(
@@ -1553,6 +2114,7 @@ def resolve_options(
     input_fn: Callable[[str], str] = prompt_from_stdin,
     output_fn: Callable[[str], None] | None = None,
 ) -> ScanOptions:
+    reviewed_secret_exceptions = getattr(args, "reviewed_secret_exceptions", None)
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
     consistency_base_ref = getattr(args, "consistency_base_ref", None)
@@ -1563,8 +2125,7 @@ def resolve_options(
     # --consistency-base-ref は repo 全体 scan を狭めず、整合性の change-sensitive
     # 検査だけに scope を与える。target_diff 系 intent (push/open_pr/merge) は
     # 自前の --base-ref を持つので排他。plain scan (intent 無し) は repo 全体 scan
-    # そのものなので許可する。impact_map を持つ repo では plain scan がこれ無しに
-    # 常に tool_error になっていた (2026-09-19 実測、この repository 自身を含む)。
+    # そのものなので許可する。未指定時は scan() 側で origin/main を既定候補にする。
     if consistency_base_ref and not (
         intent in {"publish", "release"} or intent is None
     ):
@@ -1583,6 +2144,7 @@ def resolve_options(
             input_fn=input_fn,
             output_fn=output_fn,
         )
+        options.reviewed_secret_exceptions = reviewed_secret_exceptions
         options.intent = intent
         options.base_ref = base_ref
         options.consistency_base_ref = consistency_base_ref
@@ -1604,6 +2166,7 @@ def resolve_options(
             base_ref=base_ref,
             consistency_base_ref=consistency_base_ref,
             github_settings_profile=args.github_settings_profile,
+            reviewed_secret_exceptions=reviewed_secret_exceptions,
         )
     if args.repo is None:
         raise SystemExit(
@@ -1621,6 +2184,7 @@ def resolve_options(
         base_ref=base_ref,
         consistency_base_ref=consistency_base_ref,
         github_settings_profile=args.github_settings_profile,
+        reviewed_secret_exceptions=reviewed_secret_exceptions,
     )
 
 
@@ -1742,6 +2306,10 @@ def main(
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.reviewed_secret_exceptions is not None:
+            scan_kwargs["reviewed_secret_exceptions"] = (
+                options.reviewed_secret_exceptions
+            )
         report = scan(options.repo, **scan_kwargs)
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す

@@ -8,7 +8,7 @@ Repo Preflightは、ローカルGit repositoryを読み取り、見せる相手�
 
 - `scripts/readiness_scan.py`: Git状態、必須文書、履歴、secret候補、個人path、作者名義、CI、originを検査するread-only CLI。v0.3 では `--intent` で操作直前の質問パケットも返す
 - `scripts/dialogue_gate.py`: AI向け intent 対話パケット (proposals / confirmations) を組み立てる
-- `scripts/github_settings_gate.py`: `gh api`のGETだけでGitHub Settingsを実測し、運用profileとの差分と個別変更previewを組み立てる
+- `scripts/github_settings_gate.py`: `gh api`のGETだけでGitHub Settingsを実測し、運用profileとの差分と個別変更previewを組み立てる。default branchの保護はrulesetとclassic branch protectionを累積して評価し、必須checkは直近にmergeされたPRのhead commitで照合する。Actions設定の変更案は固定bodyではなく、実行直前に取り直した現在値へ承認項目だけを重ねて1回PUTする手順で示す
 - `SKILL.md`と`references/`: 状態、承認手順、必要文書、repository catalog登録の仕様。AI自動発火トリガーを定義
 - `tests/`: 一時Git repositoryを使い、履歴secret、読取不能、壊れたGit object、非ASCII path、gitlink、intent対話などのfail-closed挙動を固定
 - `assets/`: 対象repoへ明示的に適用する文書テンプレート。scannerから自動上書きしない
