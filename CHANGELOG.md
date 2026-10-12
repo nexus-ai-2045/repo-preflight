@@ -2,6 +2,104 @@
 
 ## Unreleased
 
+### 修正
+
+- `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
+  protection だけで保護された repository を「保護なし」の必須変更と誤判定していた。
+  `branches/{default}/protection` も読み、ruleset と累積して評価する（GitHub は両方が掛かると全規則を
+  強制し、同じ規則は厳しい方が効く）。保護の無い branch は本文 `Branch not protected` の 404、権限不足は
+  `Not Found` の 404 で区別し、権限不足は `false` と推測せず `unavailable` にする。classic 側の
+  `enforce_admins` 無効と PR 要件の bypass 許可は bypass actor として数える。設定名
+  （`default_branch_ruleset`、`ruleset_*`）は packet schema v1 の互換のため変えず、
+  `enforced_by` に由来、`sources_unavailable` に確認できなかった情報源を出す。
+- 必須 status check の照合先を、default branch の HEAD から、直近に merge された PR（新しい順に最大 5 件）の
+  head commit の check-runs と commit status へ変えた。PR でしか走らない check（`pr-body-hygiene` など）を
+  HEAD では観測できないため、必須 check が空洞化している誤判定になっていた。merge 済み PR が無い、または
+  取得できない場合は `unavailable` にする。
+- Actions 設定（`actions/permissions`、`actions/permissions/workflow`、`selected-actions`）の変更案が、観測時の
+  値を固定 body に埋めていたため、順に実行すると先の変更を戻していた。実行直前に取り直した現在値へ、
+  承認された項目の変更だけを重ねて 1 回 PUT する手順（`fresh_read` / `copy_from_fresh_read` / `overlay`）で
+  示す形に変えた。`allowed_actions` を `selected` へ変える案は、`all` の間 `selected-actions` が 409 を返すため
+  「切り替え → 許可 list 設定」の 2 段にし、許可 list は default branch の `.github/workflows` の `uses:` から導く
+  （GitHub 製は `github_owned_allowed`、それ以外は `OWNER/REPO@*`）。`selected_actions_patterns` も、導出した
+  list と照合し、全消去の案を出さない。導出できない構文の workflow は推測せず `unavailable` にする。
+- 設定ガイドと packet の推奨度の食い違いを揃えた。PR 経由・branch を最新にする・review thread 解決・承認数・
+  `can_approve_pull_request_reviews` は推奨（必須ではない）。`can_approve_pull_request_reviews` が ON のとき、
+  `GITHUB_TOKEN` による PR の作成も止まる旨と、「ON を維持して理由を記録する、または GitHub App token へ移して
+  から OFF にする」例外を packet に出す（release-please などは workflow から検出する）。ガイドと packet の推奨度の
+  対応は `tests/test_github_settings_guide.py` が機械で照合する。
+- `references/github-settings.md` を 2026-10-09 の確認内容で更新した（`sha_pinning_required` を有効にする前の
+  順序、CodeQL の必須化、immutable releases、workflow execution protections と `pull_request_target` の既定
+  rule、private vulnerability reporting の件数制限と構造化 form、classic protection の ruleset 変換、Copilot code
+  review の承認）。
+- 「取れない・読めない時に、満たしている側へ倒れる」経路を塞いだ。
+  - workflow の `uses:` を読む走査器を、job id・job の key・step の key の 3 段を追う形に
+    書き直した。job 名が `container` や `env` でも中身を読み飛ばさない。`uses:` の値が block
+    scalar、最上位が flow 記法や引用符付きの key、閉じない引用符、anchor・alias・tab などは、
+    `[]` を返さず読み取り不能（`workflow_scan_refused`）にする。読み取り不能の間は、selected へ
+    切り替える案を `ready: false` にし、既存の許可 list を消す案を出さない。最上位の `jobs` を
+    見なかった文書（文書全体の字下げなど）と、LF 以外で行を切る文字（CR 単独、NEL、U+2028、
+    U+2029、`\x0b`、`\x0c`、`\x1c` から `\x1e`）を含む文書も、読み取り不能にする。
+  - 許可 list の判定を、集合の等値から「使用中の参照を既存の pattern が覆うか」に変えた。許可側の
+    pattern は、`*` が `/` を越えず、大文字と小文字を区別する保守的な照合にした。`!` の拒否 pattern は
+    逆に広く読む（`*` が `/` も越え、大文字と小文字を区別せず、`?` `+` `[` を含めば一致とみなす）。
+    拒否は順序に関係なく優先する。どの使用中の参照にも一致しない pattern（`unused_patterns`）と、
+    owner に `*` を含む、または `**` を含む pattern（`overly_broad_patterns`）は、覆っていても満たして
+    いない扱いにする（solo では推奨、high_risk_public では要判断）。足りない参照があるときは、その分だけを
+    追加する案にし、既存の pattern は消さず、SHA 固定の pattern を `@*` へ緩めない。使われていない・
+    広すぎる pattern を消す案は出さない。照合は戻らない方式で、`*` の多い pattern でも固まらない。
+    `allowed_actions` が `local_only`（selected より厳しい）のときは緩める案を出さない。workflow が
+    読めないときは `unavailable` にする。
+  - selected への切り替え案は、導出できない参照（`docker://`、式）や、走査していない local action
+    （`./`、`$/`）があるとき `ready: false` と理由（`allow_list_needs_review:...`）を出す。
+  - ruleset の詳細に `bypass_actors` が無いとき（書き込み権限が無いと返らない）は、bypass が無い
+    とは読まず `unavailable` にする。
+  - 必須 check の照合は、情報源のどれかが確認不能の間は、照合できても満たしたと言わず
+    `unavailable` にする。
+  - ruleset の一覧は `per_page=100` で読み、上限まで埋まっていたら `unavailable` にする。
+    `~DEFAULT_BRANCH` だけを include し exclude が空の active な ruleset だけを default branch の
+    保護として数え、それ以外の対象指定（`~ALL`、`refs/heads/<既定>`、glob、exclude 付き）は数えず
+    `unavailable` にする（正しい解釈は別の作業）。
+  - `unavailable` なのに理由が空になる箇所（classic の項目欠落、許可 list の導出失敗など）に理由を
+    付けた。
+
+### packet の形の変化
+
+- Actions の変更案（`actions/permissions`、`actions/permissions/workflow`、`selected-actions`）は、
+  観測値を埋めた固定の `body` をやめ、`fresh_read`・`copy_from_fresh_read`・`overlay`・
+  `put_once` を持つ形になった（`body` は持たない）。`allowed_actions` を `selected` へ変える案は
+  `SEQUENCE`（`steps`、`ready`、`blocked_reason`）になり、その 2 段目（許可 list の設定）だけは、
+  workflow から導いた許可 list の `body` を持つ（導出できないときは `body: null`）。
+- `body_basis` の値の名前が変わった。ruleset 系は `fresh_all_effective_ruleset_bodies_required` から
+  `fresh_all_effective_protection_bodies_required` へ、rollback の `requirement` は
+  `capture_each_fresh_ruleset_body_before_change` から
+  `capture_each_fresh_protection_body_before_change` へ。Actions 系は
+  `fresh_get_then_overlay_approved_changes_only`、許可 list の 2 段目は
+  `derived_from_default_branch_workflows` または `derivation_unavailable` になった。
+- `recommended_value` の文字列が変わった。`default_branch_ruleset` は
+  `active_ruleset_for_default_branch` から `ruleset_or_classic_branch_protection_on_default_branch`
+  へ、`required_status_checks` は `all_required_check_contexts_currently_emitted` から
+  `all_required_check_contexts_emitted_on_recent_merged_pr_heads` へ。
+- `required_status_checks` の `observed_value` は、`observed_on_default_branch` が
+  `observed_on_recent_merged_pr_heads` と `evidence_pull_requests` になった。
+  `strict_required_status_checks_policy` の `observed_value` は一覧から真偽値になった。
+  `default_branch_ruleset` は、classic だけで保護されているとき `classic_branch_protection` を返す。
+- `ruleset_bypass_actors` の `observed_value` の要素に、classic 由来の `{source, actor}` の形が
+  混ざる。ruleset 由来は従来どおり `{ruleset_id, actor_type, actor_id, bypass_mode}`。
+- 追加された項目: 設定ごとの `enforced_by` と `sources_unavailable`（対象は
+  `default_branch_ruleset`、`ruleset_deletion_protection`、`ruleset_non_fast_forward_protection`、
+  `ruleset_pull_request`、`required_review_thread_resolution`、
+  `strict_required_status_checks_policy`）、`selected_actions_patterns` の `derived_patterns`・
+  `missing_references`・`unused_patterns`・`overly_broad_patterns`・`derivation`（拒否 pattern が
+  使用中の参照に一致するときは `conflicting_negated_patterns`、workflow が読めないときは
+  `derivation_unavailable_reason`）、`required_status_checks` の
+  `observed_value.sources_unavailable`（情報源の一部が確認不能のとき）、
+  `can_approve_pull_request_reviews` の `exception`。
+- 推奨度が required から recommended になった項目: `ruleset_pull_request`、
+  `required_review_thread_resolution`、`strict_required_status_checks_policy`、
+  `required_approving_review_count`、`can_approve_pull_request_reviews`。足りなくても
+  `needs_human_input` で止まらなくなる。
+
 ## 0.6.0 - 2026-10-06
 
 ### 追加
