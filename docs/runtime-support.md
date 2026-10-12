@@ -59,7 +59,9 @@ runtime skillの対応と、共通AI憲法が各製品の入口へ実際に届�
 `repo-preflight` CLIの必須依存を意味しません。`required` はそのmanifestで宣言した
 entry単位の必須性です。未導入または採用しないruntimeはentryを省略するか
 `required: false` にできます。任意entryの状態もreportには残り、採用した必須entryの
-判定だけがmanifest全体の `blocked` / `pass` を決めます。
+判定だけがmanifest全体のstatusを決めます。全体statusは `tool_error` > `blocked` > `human_review` > `pass`
+の優先順位で、`pass` (exit 0)・`blocked` (exit 1)・`tool_error` (exit 2)・`human_review` (exit 3)
+のいずれかです。引数エラーはargparseのusageをstderrに出してexit 2で終わり、JSONは出ません。
 
 ## 保証しないこと
 
