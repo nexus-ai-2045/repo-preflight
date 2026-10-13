@@ -327,10 +327,28 @@ class ReviewedSecretExceptions:
 _UNIX_PATH_START = (
     r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
 )
+# 引用したusernameは非emptyかつ閉じquote直後のseparatorまで検査する。
+# rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
+_QUOTED_WINDOWS_USER = r"(?:\"[^/\\'\"]+\"(?=[/\\])|'[^/\\'\"]+'(?=[/\\]))"
+_QUOTED_UNIX_USER = r"(?:\"[^/'\"]+\"(?=/)|'[^/'\"]+'(?=/))"
 PATH_PATTERNS = (
-    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s'\"]+"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s'\"]+)"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s'\"]+)"),
+    re.compile(
+        r"[A-Za-z]:[/\\]Us" + r"ers[/\\](?:[^/\\\s'\"]+|" + _QUOTED_WINDOWS_USER + r")"
+    ),
+    re.compile(
+        _UNIX_PATH_START
+        + r"(?P<personal_path>/Us"
+        + r"ers/(?:[^/\s'\"]+|"
+        + _QUOTED_UNIX_USER
+        + r"))"
+    ),
+    re.compile(
+        _UNIX_PATH_START
+        + r"(?P<personal_path>/ho"
+        + r"me/(?:[^/\s'\"]+|"
+        + _QUOTED_UNIX_USER
+        + r"))"
+    ),
 )
 PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
 
@@ -1343,7 +1361,10 @@ def scan(
         )
     elif identity_base is not None:
         probes["identities"] = run(
-            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>",
+            repo,
+            "git",
+            "log",
+            "--format=%an <%ae>|%cn <%ce>",
             f"{identity_base[1]}..HEAD",
         )
         probes["historical_identities"] = run(
@@ -1489,12 +1510,17 @@ def scan(
         )
     }
     historical_identity_lines = {
-        line for line in probes.get("historical_identities", probes["identities"])[1].splitlines()
+        line
+        for line in probes.get("historical_identities", probes["identities"])[
+            1
+        ].splitlines()
         if line
     }
     historical_identity_mismatches = {
-        line for line in historical_identity_lines
-        if expected_identity and (
+        line
+        for line in historical_identity_lines
+        if expected_identity
+        and (
             line.split("|")[0] != expected_identity
             or line.split("|")[-1] != expected_identity
         )
@@ -1583,8 +1609,9 @@ def scan(
             "effective_identity": effective_status,
             "effective_mismatch_count": len(effective_mismatches),
             "scope": (
-                "pending_commits" if identity_base else "target_diff" if base_ref
-                else "repository_history"
+                "pending_commits"
+                if identity_base
+                else "target_diff" if base_ref else "repository_history"
             ),
             "base_ref": identity_base[0] if identity_base else None,
             "base_oid": identity_base[1] if identity_base else None,

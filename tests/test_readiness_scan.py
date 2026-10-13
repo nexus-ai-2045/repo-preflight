@@ -218,12 +218,20 @@ def test_release_identity_base_separates_pending_commits_from_history(tmp_path: 
     (repo / "legacy.txt").write_text("historical commit\n", encoding="utf-8")
     git(repo, "add", "legacy.txt")
     git(
-        repo, "-c", "user.name=Legacy", "-c", "user.email=legacy@example.invalid",
-        "commit", "-m", "historical merge equivalent",
+        repo,
+        "-c",
+        "user.name=Legacy",
+        "-c",
+        "user.email=legacy@example.invalid",
+        "commit",
+        "-m",
+        "historical merge equivalent",
     )
     set_remote_base(repo)
     readme = repo / "README.md"
-    readme.write_text(readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8")
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8"
+    )
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "document current release")
     expected = "Test Author <test-author@example.invalid>"
@@ -241,7 +249,9 @@ def test_release_identity_base_separates_pending_commits_from_history(tmp_path: 
     assert scoped["checks"]["commit_identity"]["base_ref"] == "refs/remotes/origin/main"
     dialogue = MODULE.build_intent_dialogue(
         MODULE.ScanOptions(
-            repo=repo, intent="release", expected_identity=expected,
+            repo=repo,
+            intent="release",
+            expected_identity=expected,
             identity_base_ref="origin/main",
         )
     )
@@ -256,14 +266,23 @@ def test_release_identity_base_still_blocks_new_mismatch(tmp_path: Path):
     git(repo, "tag", "v1.0.0")
     set_remote_base(repo)
     readme = repo / "README.md"
-    readme.write_text(readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8")
+    readme.write_text(
+        readme.read_text(encoding="utf-8") + "\nVersion 1.1.0.\n", encoding="utf-8"
+    )
     git(repo, "add", "README.md")
     git(
-        repo, "-c", "user.name=Legacy", "-c", "user.email=legacy@example.invalid",
-        "commit", "-m", "wrong release identity",
+        repo,
+        "-c",
+        "user.name=Legacy",
+        "-c",
+        "user.email=legacy@example.invalid",
+        "commit",
+        "-m",
+        "wrong release identity",
     )
     report = MODULE.scan(
-        repo, release=True,
+        repo,
+        release=True,
         expected_identity="Test Author <test-author@example.invalid>",
         identity_base_ref="origin/main",
     )
@@ -288,15 +307,26 @@ def test_identity_base_cli_is_release_only(tmp_path: Path):
     for intent in ("publish", "push"):
         result = subprocess.run(
             [
-                sys.executable, str(SCRIPT), "--repo", str(repo),
-                "--intent", intent,
-                "--expected-identity", "Test Author <test-author@example.invalid>",
-                "--identity-base-ref", "origin/main",
+                sys.executable,
+                str(SCRIPT),
+                "--repo",
+                str(repo),
+                "--intent",
+                intent,
+                "--expected-identity",
+                "Test Author <test-author@example.invalid>",
+                "--identity-base-ref",
+                "origin/main",
             ],
-            text=True, encoding="utf-8", capture_output=True, check=False,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            check=False,
         )
         assert result.returncode == 2
         assert "--identity-base-ref requires --intent release" in result.stderr
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -2150,3 +2180,38 @@ def test_personal_path_patterns_ignore_quoted_synthetic_roots(synthetic_root: by
 def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
     assert MODULE.text_has(MODULE.PATH_PATTERNS, personal_path)
     assert MODULE.personal_path_matches(personal_path)
+
+
+@pytest.mark.parametrize(
+    "root, separator",
+    [
+        ("/Us" + "ers/", "/"),
+        ("/ho" + "me/", "/"),
+        ("C:/Us" + "ers/", "/"),
+        ("C:\\Us" + "ers\\", "\\"),
+    ],
+)
+@pytest.mark.parametrize("quote", ["'", '"'])
+@pytest.mark.parametrize("username", ["alice", "Alice Smith"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_quoted_username_personal_paths_remain_detected(
+    root: str, separator: str, quote: str, username: str, encoding: str
+):
+    absolute = f"{root}{quote}{username}{quote}{separator}project"
+    data = f"cd {absolute}".encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert MODULE.personal_path_matches(data)
+    assert MODULE.personal_path_matches(data) == MODULE.personal_path_matches(
+        absolute.encode(encoding)
+    )
+
+
+@pytest.mark.parametrize("root", ["/Us" + "ers/", "/ho" + "me/", "C:/Us" + "ers/"])
+@pytest.mark.parametrize("quote", ["'", '"'])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_empty_quoted_username_does_not_turn_root_into_personal_path(
+    root: str, quote: str, encoding: str
+):
+    data = f"{root}{quote}{quote}/project".encode(encoding)
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert not MODULE.personal_path_matches(data)

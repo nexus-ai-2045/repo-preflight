@@ -138,6 +138,42 @@ def build_proposals_from_scan(
     checks = scan.get("checks") or {}
     status = scan.get("status")
 
+    freshness = checks.get("readme_release_freshness") or {}
+    if freshness.get("status") in {"fail", "tool_error"}:
+        unavailable = freshness.get("status") == "tool_error"
+        proposals.append(
+            _proposal(
+                id="fix_readme_release_freshness",
+                kind="tool_error" if unavailable else "readme_freshness",
+                severity="required",
+                question=(
+                    "READMEの更新基準となるrelease tagと履歴を確認できません。"
+                    "完全な履歴と前回release tagを取得して再検査しますか?"
+                    if unavailable
+                    else "READMEが前回releaseから実内容更新されていません。"
+                    "今回の機能・制限・使い方をREADMEへ反映して再検査しますか?"
+                ),
+                current={
+                    "status": freshness.get("status"),
+                    "reason": freshness.get("reason"),
+                    "baseline": freshness.get("baseline"),
+                },
+                proposed={
+                    "action": (
+                        "restore_release_history_then_rerun"
+                        if unavailable
+                        else "update_release_readme_then_rerun"
+                    ),
+                    "recheck": "readme_release_freshness",
+                    "command": "python scripts/readiness_scan.py --repo PATH --intent release",
+                    "baseline_policy": "前回release tagを--consistency-base-refで明示して再検査する",
+                },
+                options=_yes_no_options("直して再検査", "中止する"),
+                default="yes",
+                why="READMEの設計がpassでも更新確認の必須判定を省略しない",
+            )
+        )
+
     if status == "tool_error":
         root_proposal = repo_root_error_proposal(intent=intent, scan=scan)
         if root_proposal is not None:
