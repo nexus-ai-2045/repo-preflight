@@ -329,8 +329,8 @@ _UNIX_PATH_START = (
 )
 # 引用したusernameは非emptyかつ閉じquote直後のseparatorまで検査する。
 # rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
-_QUOTED_WINDOWS_USER = r"(?:\"[^/\\'\"]+\"(?=[/\\])|'[^/\\'\"]+'(?=[/\\]))"
-_QUOTED_UNIX_USER = r"(?:\"[^/'\"]+\"(?=/)|'[^/'\"]+'(?=/))"
+_QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
+_QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
 PATH_PATTERNS = (
     re.compile(
         r"[A-Za-z]:[/\\]Us" + r"ers[/\\](?:[^/\\\s'\"]+|" + _QUOTED_WINDOWS_USER + r")"

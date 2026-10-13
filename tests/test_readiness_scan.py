@@ -2191,8 +2191,17 @@ def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
         ("C:\\Us" + "ers\\", "\\"),
     ],
 )
-@pytest.mark.parametrize("quote", ["'", '"'])
-@pytest.mark.parametrize("username", ["alice", "Alice Smith"])
+@pytest.mark.parametrize(
+    "quote, username",
+    [
+        ("'", "alice"),
+        ('"', "alice"),
+        ("'", "Alice Smith"),
+        ('"', "Alice Smith"),
+        ('"', "O'Brien"),
+        ("'", 'Alice"Smith'),
+    ],
+)
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 def test_quoted_username_personal_paths_remain_detected(
     root: str, separator: str, quote: str, username: str, encoding: str
