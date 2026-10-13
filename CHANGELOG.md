@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 公開説明のパス例を仮のホーム表記へ変更し、合成エラー値とテストのコメントから実ユーザーホーム形式を除いた。空白入りパスの処理と例外型による秘匿の検証は維持する。過去のコミットは変更しない。
+
 ### 修正
 
 - `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
@@ -189,7 +191,7 @@
   - required entry が entry 単位で `tool_error` (`entry_unreadable` 等) のとき、全体が
     `blocked` (exit 1) になり exit code 表の 2=gate 自体の問題と矛盾していた。全体 status の
     優先順位を `tool_error` > `blocked` > `human_review` > `pass` に統一した。
-  - 未クォートの空白入りパスの import (`@C:/Users/My Name/AI-CONSTITUTION.md`) が、#40/#41 では
+  - 未クォートの空白入りパスの import (`@C:/<home with spaces>/AI-CONSTITUTION.md`) が、#40/#41 では
     pass だったのに stale になっていた。空白で切ったトークンが解決できないときは `@` から行末
     (末尾の空白・句読点を除く) も候補にする。コード・HTML コメントと `user@host` の除外は維持。
   - 深い入れ子の manifest で `json.loads` の `RecursionError` が `internal_error` に落ちていた。
