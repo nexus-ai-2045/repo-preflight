@@ -2092,3 +2092,61 @@ def test_plain_scan_without_usable_default_still_reports_scope_unavailable(
         "change_sensitive_scope_unavailable"
     ]
     assert report["consistency_scope"] == {"mode": "same_as_scan"}
+
+
+def test_shallow_clone_cannot_pass_full_history_scan(tmp_path: Path):
+    source = make_repo(tmp_path)
+    token = "github_pat_" + "A" * 30
+    (source / "old.txt").write_text(token, encoding="utf-8")
+    git(source, "add", "old.txt")
+    git(source, "commit", "-m", "add historical secret")
+    (source / "old.txt").unlink()
+    git(source, "add", "-u")
+    git(source, "commit", "-m", "remove historical secret")
+
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", source.as_uri(), str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+    shallow_probe = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=shallow,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert shallow_probe.stdout.strip() == "true"
+    assert MODULE.scan(source)["checks"]["secret_scan"]["status"] == "fail"
+
+    report = MODULE.scan(shallow)
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["shallow_history_unavailable"]
+    assert token not in str(report)
+
+
+@pytest.mark.parametrize(
+    "synthetic_root",
+    (
+        b'assert "C:\\\\Us' + b'ers\\\\" not in text',
+        b'assert "/Us' + b'ers/" not in text',
+        b'assert "/ho' + b'me/" not in text',
+    ),
+)
+def test_personal_path_patterns_ignore_quoted_synthetic_roots(synthetic_root: bytes):
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, synthetic_root)
+    assert not MODULE.personal_path_matches(synthetic_root)
+
+
+@pytest.mark.parametrize(
+    "personal_path",
+    (
+        b"C:\\Us" + b"ers\\example-user\\project",
+        b"/Us" + b"ers/example-user/project",
+        b"/ho" + b"me/example-user/project",
+    ),
+)
+def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, personal_path)
+    assert MODULE.personal_path_matches(personal_path)

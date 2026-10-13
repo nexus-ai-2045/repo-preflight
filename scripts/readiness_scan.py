@@ -328,9 +328,9 @@ _UNIX_PATH_START = (
     r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
 )
 PATH_PATTERNS = (
-    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s]+)"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s]+)"),
+    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s'\"]+"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s'\"]+)"),
+    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s'\"]+)"),
 )
 PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
 
@@ -1285,6 +1285,12 @@ def scan(
     if root_error is not None:
         return root_error
     repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
+    if not base_ref:
+        shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+        if shallow_code or shallow not in {"true", "false"}:
+            return {"status": "tool_error", "issues": ["git_history_inventory_failed"]}
+        if shallow == "true":
+            return {"status": "tool_error", "issues": ["shallow_history_unavailable"]}
     if identity_base_ref:
         if not release or base_ref or not expected_identity:
             return {"status": "tool_error", "issues": ["invalid_identity_base_ref"]}
