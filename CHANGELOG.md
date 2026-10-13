@@ -100,7 +100,15 @@
   `required_approving_review_count`、`can_approve_pull_request_reviews`。足りなくても
   `needs_human_input` で止まらなくなる。
 
-## 0.6.0 - 2026-10-06
+## 0.6.0 - 2026-10-14
+
+### リリース前の確認と履歴検査
+
+- release intentで、直近の到達可能なリリースtagからREADME本文が更新されているかを必須検査する。空白だけの変更は更新扱いにせず、履歴が不足して比較元を決められない場合は停止する。公開前に確認したtagを `--consistency-base-ref` へ明示し、候補tagの作成後も比較基準を保持できる。
+- releaseに限り `--identity-base-ref` を追加し、今回のコミット名義を明示したremote refから照合する。既存全履歴の名義不一致は別に報告し、secretと個人パスの全履歴検査を狭めない。省略時の従来の全履歴名義照合は維持する。
+- `--base-ref`を指定しない全履歴検査では、shallow cloneを検出して `shallow_history_unavailable` で停止する。取得済みの範囲だけを全履歴検査済みと扱わない。
+- 引用符で終わるルートだけの合成パス例を誤検知しないようにした。相対パスとの境界、ユーザー名を含むWindows/macOS/Linux絶対パスの検出、限定例外のhash照合は維持する。
+- READMEへ現在のリリース確認と、必須レビュー記録の先頭markerの説明を追加した。GitHubへの書込み、公開、tag、releaseの操作は引き続き人間レビューと明示承認を要する。
 
 ### 追加
 
