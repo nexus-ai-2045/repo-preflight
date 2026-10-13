@@ -1,4 +1,4 @@
-# ADR-0005: releaseの今回名義と既存公開履歴を分けて報告する
+# ADR-0007: releaseの今回名義と既存公開履歴を分けて報告する
 
 - Status: Proposed
 - Date: 2026-10-01

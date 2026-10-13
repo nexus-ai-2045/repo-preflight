@@ -104,12 +104,13 @@ flowchart LR
 ## できること
 
 - **認証情報らしき文字列**（APIキー、トークン、秘密鍵の形）と**自分のPCのパス**。消したつもりでも履歴に残っていれば見つけます
+- Live2D Cubism の編集ファイル（`.cmo3`）は、今の作業ツリーにあるものを展開して**中のパス**まで調べます。展開できないときは合格にせず「検査できなかった」と止めます
 - **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
 - **コミットの名義**（作者・コミッターが意図した名前か）
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、日本語のときは表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、誤検知がないことを確認してからエラーへ上げます
 - GitHubの設定ガイドや運用記録の不足
-- `--intent configure_settings` のときだけ、GitHub Settings の現在値を read-only で実測する
+- `--intent configure_settings` ではGitHub Settings全体の現在値をread-onlyで実測する。通常検査のversion 2個人path例外でも、対象repoのprivate可視性だけはliveで確認する
 
 読むだけで、リポジトリの中身は一切書き換えません。Settings の変更も実行しません。
 
@@ -123,6 +124,7 @@ flowchart LR
 - GitHub Settings の**変更**。実測と差分previewは `configure_settings` まで
 - CIが remote で実際に成功したか
 - 「秘密情報が絶対に存在しない」という完全な保証
+- 「自分のPCのパスが絶対に残っていない」という完全な保証。`.cmo3` の中は履歴と `--base-ref` の差分では調べません。ほかの独自形式や圧縮ファイルの中も見逃し得ます
 
 内蔵の検出は、よくある形式に当てはめて探す補助機能です。**専門の検査ツールと人のレビューを必ず併用してください。**
 
@@ -277,3 +279,7 @@ v0.2.0 でリポジトリ名（`public-readiness` → `repo-preflight`）と、�
 ## License
 
 MIT License。詳細は [LICENSE](LICENSE) を参照してください。
+
+## レビュー済みの限定 secret 例外
+
+既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込せず、全束縛条件が一致した検出だけを除外します。private原資料の個人pathを扱うversion 2は、liveのprivate確認・UTC期限・人間レビュー参照を必須にします（[ADR-0006](docs/adr/0006-private-evidence-path-exceptions.md)）。この指定は公開・push・導入の承認ではありません。キー一覧・件数集約・結果フィールド・失敗時の扱いなど詳細は [ADR-0005](docs/adr/0005-reviewed-secret-exceptions.md) にあります。

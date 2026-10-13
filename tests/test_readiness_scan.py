@@ -1,9 +1,14 @@
+import hashlib
 import importlib.util
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 from subprocess import CompletedProcess
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "readiness_scan.py"
 SPEC = importlib.util.spec_from_file_location("readiness_scan", SCRIPT)
@@ -292,6 +297,94 @@ def test_identity_base_cli_is_release_only(tmp_path: Path):
         )
         assert result.returncode == 2
         assert "--identity-base-ref requires --intent release" in result.stderr
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/".join(["src", "home", "alice", "page.py"]),
+        "/".join(["src", "Users", "alice", "page.py"]),
+        "/".join([".", "home", "alice", "page.py"]),
+        "/".join(["..", "Users", "alice", "page.py"]),
+    ],
+)
+def test_relative_path_components_are_not_personal_paths(path: str):
+    data = path.encode("utf-8")
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+    assert not MODULE.personal_path_matches(data)
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "-I",
+        "-L",
+        "-F",
+        "-o",
+        "-isystem",
+        "-iquote",
+        "-iframework",
+        "-include",
+        "-imacros",
+        "-idirafter",
+        "-customoption",
+        "--custom-option_42",
+    ],
+)
+@pytest.mark.parametrize("root", ["/ho" + "me", "/Us" + "ers"])
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_cli_option_absolute_path_keeps_match_hash(
+    option: str, root: str, encoding: str
+):
+    absolute = f"{root}/alice/include"
+    data = f"gcc {option}{absolute}".encode(encoding)
+    relative = f"src/{option}{absolute}".encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    if encoding == "utf-8":
+        assert MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, data)
+        assert not MODULE._bytes_pattern_hit(MODULE.PATH_PATTERNS, relative)
+    assert MODULE.personal_path_matches(data) == MODULE.personal_path_matches(
+        absolute.encode(encoding)
+    )
+    assert not MODULE.text_has(MODULE.PATH_PATTERNS, relative)
+    assert not MODULE.personal_path_matches(relative)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/ho" + "me/alice/page.py",
+        "/Us" + "ers/alice/page.py",
+        "C:/Us" + "ers/alice/page.py",
+        "C:\\Us" + "ers\\alice\\page.py",
+        "'/ho" + "me/alice/page.py'",
+        '"/Us' + 'ers/alice/page.py"',
+        "path=/ho" + "me/alice/page.py",
+        "file:///ho" + "me/alice/page.py",
+        "file:///Us" + "ers/alice/page.py",
+        "%2Fho" + "me%2Falice%2Fpage.py",
+        "file%3A%2F%2F%2Fho" + "me%2Falice%2Fpage.py",
+    ],
+)
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_absolute_personal_paths_remain_detected(path: str, encoding: str):
+    data = path.encode(encoding)
+    assert MODULE.text_has(MODULE.PATH_PATTERNS, data)
+    assert MODULE.personal_path_matches(data)
+
+
+def test_relative_fixture_path_passes_worktree_and_deleted_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    fixture = repo / "fixture.txt"
+    fixture.write_text(
+        "/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8"
+    )
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "add relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
+    fixture.unlink()
+    git(repo, "add", "fixture.txt")
+    git(repo, "commit", "-m", "remove relative fixture")
+    assert MODULE.scan(repo)["checks"]["personal_path_scan"]["status"] == "pass"
 
 
 def test_output_is_json_without_any_output_flag(tmp_path: Path):
@@ -578,6 +671,116 @@ def test_target_diff_merge_compares_base_containing_parent(tmp_path: Path):
     report = MODULE.scan(repo, base_ref=base)
 
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+def historical_base_merge(repo: Path, feature_body: str = "safe\n") -> tuple[str, str]:
+    """古いmainをmergeした後、進んだmainを再びmergeする履歴を作る。"""
+    git(repo, "branch", "feature")
+    (repo / "baseline.txt").write_text(
+        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+    )
+    git(repo, "add", "baseline.txt")
+    git(repo, "commit", "-m", "advance original base")
+    old_base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    (repo / "feature.txt").write_text(feature_body, encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-m", "feature change")
+    # 削除済みのbranch導入内容も履歴上の検査対象に残す。
+    (repo / "feature.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "--allow-empty", "-m", "clean feature tip")
+    git(repo, "merge", "--no-ff", old_base, "-m", "merge original base")
+    historical_merge = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    git(repo, "checkout", "main")
+    (repo / "base-progress.txt").write_text("safe\n", encoding="utf-8")
+    git(repo, "add", "base-progress.txt")
+    git(repo, "commit", "-m", "advance current base")
+    base = set_remote_base(repo)
+    git(repo, "checkout", "feature")
+    git(repo, "merge", "--no-ff", base, "-m", "merge current base")
+    return base, historical_merge
+
+
+def test_target_diff_historical_merge_uses_unique_base_ancestor(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base, historical_merge = historical_base_merge(repo)
+    expected = subprocess.check_output(
+        ["git", "rev-parse", f"{historical_merge}^2"], cwd=repo, text=True
+    ).strip()
+
+    assert MODULE.comparison_parent(repo, base, historical_merge) == expected
+    report = MODULE.scan(repo, base_ref=base)
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    ("feature_body", "check"),
+    [
+        ("C:/Us" + "ers/feature-user/project\n", "personal_path_scan"),
+        ("github_pat_" + "B" * 30 + "\n", "secret_scan"),
+    ],
+)
+def test_target_diff_historical_merge_retains_transient_branch_findings(
+    tmp_path: Path, feature_body: str, check: str
+):
+    repo = make_repo(tmp_path)
+    base, _historical_merge = historical_base_merge(repo, feature_body)
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"][check]["status"] == "fail"
+    assert report["status"] == "blocked"
+
+
+def test_comparison_parent_keeps_first_parent_for_ambiguous_base_ancestors(
+    tmp_path: Path,
+):
+    repo = make_repo(tmp_path)
+    _base, historical_merge = historical_base_merge(repo)
+    expected = subprocess.check_output(
+        ["git", "rev-parse", f"{historical_merge}^1"], cwd=repo, text=True
+    ).strip()
+    # このbaseは両親の子孫。候補を一意に決められない場合はfirst parentを保つ。
+    assert MODULE.comparison_parent(repo, "HEAD", historical_merge) == expected
+
+
+@pytest.mark.parametrize(
+    ("parents", "relations", "expected"),
+    [
+        ("first", {}, "first"),
+        ("first second", {}, "first"),
+        # ancestor候補が先にあっても、baseを含む親を優先する。
+        ("first second", {("first", "base"): 0, ("base", "second"): 0}, "second"),
+    ],
+)
+def test_comparison_parent_preserves_existing_priority_and_fallback(
+    tmp_path: Path, monkeypatch, parents: str, relations: dict, expected: str
+):
+    def run(command, **_kwargs):
+        if command[1] == "show":
+            return CompletedProcess(command, 0, stdout=parents)
+        return CompletedProcess(command, relations.get(tuple(command[-2:]), 1))
+
+    monkeypatch.setattr(MODULE, "run_subprocess", run)
+
+    assert MODULE.comparison_parent(tmp_path, "base", "merge") == expected
+
+
+def test_comparison_parent_ancestor_query_error_fails_closed(
+    tmp_path: Path, monkeypatch
+):
+    def run(command, **_kwargs):
+        if command[1] == "show":
+            return CompletedProcess(command, 0, stdout="first second")
+        return CompletedProcess(command, 128 if command[-1] == "base" else 1)
+
+    monkeypatch.setattr(MODULE, "run_subprocess", run)
+
+    with pytest.raises(RuntimeError, match="git_target_diff_inventory_failed"):
+        MODULE.comparison_parent(tmp_path, "base", "merge")
 
 
 def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):
@@ -882,6 +1085,179 @@ def test_ignored_virtual_environment_is_not_scanned(tmp_path: Path):
     assert report["checks"]["personal_path_scan"]["status"] == "pass"
 
 
+def make_cmo3(xml: bytes) -> bytes:
+    """Live2D Cubism の .cmo3 と同じ包み方をした最小のfileを作る。
+
+    実物は ``CAFF`` 先頭で、全byteを 0xE3 で XOR すると途中に zip の
+    ローカルファイルヘッダ (名前 ``contents``、method 8、flag 0x0808 のため
+    ヘッダ上のサイズは0) が現れ、その直後が raw deflate の XML になる。
+    ヘッダ位置は固定ではないので、前に余分なbyteを置いて位置決め打ちを落とす。
+    """
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
+    deflated = compressor.compress(xml) + compressor.flush()
+    name = b"contents"
+    local_header = struct.pack(
+        "<IHHHHHIIIHH", 0x04034B50, 20, 0x0808, 8, 0, 0, 0, 0, 0, len(name), 0
+    )
+    descriptor = struct.pack(
+        "<IIII", 0x08074B50, zlib.crc32(xml), len(deflated), len(xml)
+    )
+    body = b"\x00" * 37 + local_header + name + deflated + descriptor
+    return b"CAFF" + bytes(byte ^ 0xE3 for byte in body)
+
+
+def cmo3_xml(psd_path: str) -> bytes:
+    rows = "".join(f'<i xs.n="n{i}">{i * 7919}</i>\r\n' for i in range(300))
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\r\n<root>\r\n'
+        f'{rows}<file xs.n="psdFile">{psd_path}</file>\r\n</root>\r\n'
+    ).encode("utf-8")
+
+
+def add_model(repo: Path, data: bytes, name: str = "avatar.cmo3") -> str:
+    model = repo / "model" / name
+    model.parent.mkdir(exist_ok=True)
+    model.write_bytes(data)
+    rel = f"model/{name}"
+    git(repo, "add", rel)
+    git(repo, "commit", "-m", f"add {name}")
+    return rel
+
+
+@pytest.mark.parametrize(
+    "psd_path",
+    [
+        "/Us" + "ers/cmo3-owner/art/avatar.psd",
+        "C:\\Us" + "ers\\cmo3-owner\\art\\avatar.psd",
+    ],
+)
+def test_personal_path_inside_cmo3_is_detected_without_echoing_it(
+    tmp_path: Path, psd_path: str
+):
+    """Cubism の .cmo3 内部の個人pathを検出し、利用者名は出力しない。
+
+    .cmo3 は XOR + raw deflate で包まれているため、生byteにも UTF-8/UTF-16 の
+    全体decodeにも個人pathが現れない。以前は ``psdFile`` 要素に Mac の絶対path
+    が入った .cmo3 を pass させていた。
+    """
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, make_cmo3(cmo3_xml(psd_path)))
+
+    result = subprocess.run(
+        ["python", str(SCRIPT), "--repo", str(repo)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    report = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["files"] == [rel]
+    assert "cmo3-owner" not in result.stdout
+    assert "cmo3-owner" not in result.stderr
+
+
+def test_cmo3_without_personal_path_passes(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    add_model(repo, make_cmo3(cmo3_xml("art/avatar.psd")))
+
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "pass"
+    assert report["checks"]["personal_path_scan"]["status"] == "pass"
+    assert report["checks"]["personal_path_scan"]["unscanned_files"] == []
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["no_zip_entry", "truncated_deflate", "corrupted_deflate"],
+)
+def test_unreadable_cmo3_is_unknown_instead_of_pass(tmp_path: Path, damage: str):
+    """展開できない .cmo3 を「個人pathなし」と扱わず、検査できなかったと出す。"""
+    repo = make_repo(tmp_path)
+    intact = make_cmo3(cmo3_xml("art/avatar.psd"))
+    if damage == "no_zip_entry":
+        data = b"CAFF" + b"\x00" * 64
+    elif damage == "truncated_deflate":
+        data = intact[:-40]
+    else:
+        middle = len(intact) // 2
+        data = intact[:middle] + b"\xff" * 16 + intact[middle + 16 :]
+    rel = add_model(repo, data, "broken.cmo3")
+
+    report = MODULE.scan(repo)
+
+    check = report["checks"]["personal_path_scan"]
+    assert check["status"] == "unknown"
+    assert check["files"] == []
+    assert check["unscanned_files"] == [rel]
+    assert report["status"] == "blocked"
+
+
+def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(tmp_path: Path):
+    """公開直前の対話packetでも、検査できなかった .cmo3 を pass に丸めない。"""
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, b"CAFF" + b"\x00" * 64, "broken.cmo3")
+
+    dialogue = MODULE.build_intent_dialogue(
+        MODULE.ScanOptions(repo=repo, audience="public", intent="publish")
+    )
+
+    assert dialogue["scan"]["status"] == "blocked"
+    assert dialogue["scan"]["checks"]["personal_path_scan"]["unscanned_files"] == [rel]
+    assert dialogue["status"] != "ready_after_confirmation"
+
+
+def test_cmo3_expanding_past_the_size_cap_is_unknown(tmp_path: Path, monkeypatch):
+    """展開量の上限を超えたら途中までの結果で pass にしない。"""
+    monkeypatch.setattr(MODULE, "CMO3_MAX_XML_BYTES", 64)
+    repo = make_repo(tmp_path)
+    rel = add_model(repo, make_cmo3(cmo3_xml("art/avatar.psd")))
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "unknown"
+    assert check["unscanned_files"] == [rel]
+
+
+def test_cmo3_checks_every_contents_entry(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    clean = make_cmo3(cmo3_xml("art/avatar.psd"))
+    leaking = make_cmo3(cmo3_xml("/Us" + "ers/cmo3-owner/art/avatar.psd"))
+    rel = add_model(repo, clean + leaking[len(b"CAFF") :])
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "fail"
+    assert check["files"] == [rel]
+
+
+def test_cmo3_size_cap_covers_all_entries_together(tmp_path: Path, monkeypatch):
+    """entry を並べて上限を entry 数倍に膨らませられないようにする。"""
+    xml = cmo3_xml("art/avatar.psd")
+    monkeypatch.setattr(MODULE, "CMO3_MAX_XML_BYTES", len(xml) + len(xml) // 2)
+    repo = make_repo(tmp_path)
+    entry = make_cmo3(xml)
+    rel = add_model(repo, entry + entry[len(b"CAFF") :])
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "unknown"
+    assert check["unscanned_files"] == [rel]
+
+
+def test_human_report_counts_unscanned_files():
+    line = MODULE.format_check_line(
+        "personal_path_scan",
+        {"status": "unknown", "files": [], "unscanned_files": ["model/a.cmo3"]},
+    )
+
+    assert line == "- personal_path_scan: unknown (unscanned=1)"
+
+
 def test_sparse_checkout_skips_non_materialized_tracked_files(tmp_path: Path):
     repo = make_repo(tmp_path)
     excluded = repo / "excluded" / "historical.txt"
@@ -928,6 +1304,96 @@ def test_percent_encoded_secret_is_scanned(tmp_path: Path):
     report = MODULE.scan(repo)
 
     assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
+# 合成値。実在の鍵ではない。旧形式 (sk- + 英数字48) と project 形式 (sk-proj-...)。
+OPENAI_LEGACY_SHAPE = "sk-" + "Xy9" * 16
+OPENAI_PROJECT_SHAPE = "sk-" + "proj-" + "Ab3_" * 10
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "task-" + "orchestra-2026-09-05",
+        '{"id": "task-' + 'orchestra-2026-09-05", "status": "resolved"}',
+        "references/task-" + "orchestra-theme-sweep.md",
+        "elon-musk-" + "predicts-ai-will-surpass-humans",
+    ],
+)
+def test_openai_rule_ignores_sk_inside_a_word(text: str):
+    """英単語の途中の "sk-" ("task-" / "musk-") を OpenAI 形式の鍵と取り違えない。"""
+    data = text.encode("utf-8")
+
+    assert MODULE.secret_matches(data) == {}
+    assert MODULE.text_has(MODULE.SECRET_PATTERNS, data) is False
+
+
+@pytest.mark.parametrize("key", [OPENAI_LEGACY_SHAPE, OPENAI_PROJECT_SHAPE])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "",
+        "note\n",
+        "    ",
+        "token ",
+        '"',
+        "'",
+        "`",
+        "(",
+        "/",
+        "key=",
+        "OPENAI_API_KEY=",
+        "api_key: ",
+        "Authorization: Bearer ",
+        # JSON や文字列 literal の空白 escape の直後 (例: "line1\nsk-...")
+        "line1\\n",
+        "line1\\r",
+        "col1\\t",
+    ],
+)
+def test_openai_rule_still_detects_key_after_a_boundary(prefix: str, key: str):
+    data = (prefix + key + "\n").encode("utf-8")
+
+    matches = MODULE.secret_matches(data)
+
+    assert list(matches.elements()) == [
+        ("openai_key", hashlib.sha256(key.encode("utf-8")).hexdigest())
+    ]
+
+
+@pytest.mark.parametrize("glue", ["x", "9", "_", "-"])
+def test_openai_rule_does_not_match_sk_glued_to_a_word_character(glue: str):
+    """意図した取りこぼし: 直前が英数字・"_"・"-" の "sk-" は検出しない。
+
+    単語の途中の "sk-" を拾わないための代償で、この形に貼り付いた鍵は見逃す。
+    他の規則 (gh*_ / github_pat_ / AKIA / xox*-) はこの制限を持たない。
+    """
+    assert MODULE.secret_matches((glue + OPENAI_LEGACY_SHAPE).encode("utf-8")) == {}
+
+
+def test_task_slug_ledger_passes_secret_scan_in_tree_and_history(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    ledger = repo / "ledger.json"
+    slug = "task-" + "orchestra-2026-09-05"
+    ledger.write_text(json.dumps({"id": slug, "status": "open"}), encoding="utf-8")
+    git(repo, "add", ledger.name)
+    git(repo, "commit", "-m", "add ledger")
+    ledger.write_text(json.dumps({"id": slug, "status": "done"}), encoding="utf-8")
+    git(repo, "add", ledger.name)
+    git(repo, "commit", "-m", "resolve ledger entry")
+
+    for report in (MODULE.scan(repo), MODULE.scan(repo, base_ref=base)):
+        assert report["checks"]["secret_scan"]["status"] == "pass"
+
+    (repo / "settings.txt").write_text(
+        "OPENAI_API_KEY=" + OPENAI_LEGACY_SHAPE + "\n", encoding="utf-8"
+    )
+    git(repo, "add", "settings.txt")
+    git(repo, "commit", "-m", "add key")
+
+    for report in (MODULE.scan(repo), MODULE.scan(repo, base_ref=base)):
+        assert report["checks"]["secret_scan"]["status"] == "fail"
 
 
 def test_secret_bearing_filename_is_redacted_from_evidence(tmp_path: Path):
