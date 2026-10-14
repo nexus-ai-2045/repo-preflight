@@ -126,6 +126,11 @@ def secret_matches(data: bytes) -> Counter:
                 for match in pattern.finditer(candidate)
             )
             matches |= counts
+    matches |= Counter(
+        (rule, hashlib.sha256(match.group()).hexdigest())
+        for rule, pattern in zip(SECRET_RULE_IDS, SECRET_PATTERNS, strict=True)
+        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+    )
     return matches
 
 
@@ -471,7 +476,7 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
             for pattern in patterns
         ):
             return True
-    return False
+    return _bytes_pattern_hit(patterns, data)
 
 
 def sanitized_evidence_label(label: str) -> str:
@@ -1306,9 +1311,17 @@ def scan(
     if not base_ref:
         shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
         if shallow_code or shallow not in {"true", "false"}:
-            return {"status": "tool_error", "issues": ["git_history_inventory_failed"]}
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["git_history_inventory_failed"],
+            }
         if shallow == "true":
-            return {"status": "tool_error", "issues": ["shallow_history_unavailable"]}
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["shallow_history_unavailable"],
+            }
     if identity_base_ref:
         if not release or base_ref or not expected_identity:
             return {"status": "tool_error", "issues": ["invalid_identity_base_ref"]}
