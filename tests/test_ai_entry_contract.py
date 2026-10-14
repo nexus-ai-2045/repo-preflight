@@ -954,7 +954,7 @@ def test_b9_stdlib_value_error_is_rounded_to_type_name() -> None:
     # 自前 code かどうかはメッセージの形ではなく例外の型 (ContractError) で決める。
     own = gate._safe_error_code(gate.ContractError("manifest_path_missing:grok"), "x")
     stdlib = gate._safe_error_code(ValueError("bad value C:\\Users\\me\\a"), "x")
-    path_suffix = gate._safe_error_code(ValueError("code:/home/me/secret"), "x")
+    path_suffix = gate._safe_error_code(ValueError("code:/fixture-home/me/secret"), "x")
     look_alike = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
 
     assert own == "manifest_path_missing:grok"
@@ -1212,7 +1212,7 @@ def test_m1_overall_status_priority(statuses: list[str], expected: str) -> None:
 
 
 def spaced_pointer_report(tmp_path: Path, template: str) -> dict:
-    # 空白を含む home (例: C:/Users/My Name) を作る。
+    # 空白を含むホーム名を持つ仮領域を作る。
     home = tmp_path / "My Name" / "home"
     home.mkdir(parents=True)
     source = home / "AI-CONSTITUTION.md"

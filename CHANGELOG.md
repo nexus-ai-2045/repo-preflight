@@ -2,15 +2,13 @@
 
 ## Unreleased
 
+- 公開説明のパス例を仮のホーム表記へ変更し、合成エラー値とテストのコメントから実ユーザーホーム形式を除いた。空白入りパスの処理と例外型による秘匿の検証は維持する。過去のコミットは変更しない。
+
 ### 修正
 
 - UTF-8 / UTF-16 として全体を復号できないファイル（Shift_JIS・Latin-1・binary）の中の secret と個人pathを
   検出していなかった。復号できない場合も生byteで照合する。作業tree・削除済み履歴・`--base-ref` の差分の
   全経路が対象。検出は増える方向だけで、正規表現の処理時間は増える。
-- shallow clone を repo全体modeで検査すると、取得境界より前の履歴を見ないまま pass していた。
-  git が shallow repository と答えた場合は `shallow_history_unavailable` の tool_error にし、
-  判定できない場合は `git_history_inventory_failed` にする。`actions/checkout` の既定（`fetch-depth: 1`）で
-  scan している CI は `fetch-depth: 0` への変更が必要。`--base-ref` の target-diff mode は変えていない。
 - `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
   protection だけで保護された repository を「保護なし」の必須変更と誤判定していた。
   `branches/{default}/protection` も読み、ruleset と累積して評価する（GitHub は両方が掛かると全規則を
@@ -107,7 +105,15 @@
   `required_approving_review_count`、`can_approve_pull_request_reviews`。足りなくても
   `needs_human_input` で止まらなくなる。
 
-## 0.6.0 - 2026-10-06
+## 0.6.0 - 2026-10-14
+
+### リリース前の確認と履歴検査
+
+- release intentで、直近の到達可能なリリースtagからREADME本文が更新されているかを必須検査する。空白だけの変更は更新扱いにせず、履歴が不足して比較元を決められない場合は停止する。公開前に確認したtagを `--consistency-base-ref` へ明示し、候補tagの作成後も比較基準を保持できる。
+- releaseに限り `--identity-base-ref` を追加し、今回のコミット名義を明示したremote refから照合する。既存全履歴の名義不一致は別に報告し、secretと個人パスの全履歴検査を狭めない。省略時の従来の全履歴名義照合は維持する。
+- `--base-ref`を指定しない全履歴検査では、shallow cloneを検出して `shallow_history_unavailable` で停止する。取得済みの範囲だけを全履歴検査済みと扱わない。判定できない場合は `git_history_inventory_failed` にする。`actions/checkout` の既定（`fetch-depth: 1`）で全履歴検査をしているCIは `fetch-depth: 0` への変更が必要。
+- 引用符で終わるルートだけの合成パス例を誤検知しないようにした。相対パスとの境界、ユーザー名を含むWindows/macOS/Linux絶対パスの検出、限定例外のhash照合は維持する。
+- READMEへ現在のリリース確認と、必須レビュー記録の先頭markerの説明を追加した。GitHubへの書込み、公開、tag、releaseの操作は引き続き人間レビューと明示承認を要する。
 
 ### 追加
 
@@ -188,7 +194,7 @@
   - required entry が entry 単位で `tool_error` (`entry_unreadable` 等) のとき、全体が
     `blocked` (exit 1) になり exit code 表の 2=gate 自体の問題と矛盾していた。全体 status の
     優先順位を `tool_error` > `blocked` > `human_review` > `pass` に統一した。
-  - 未クォートの空白入りパスの import (`@C:/Users/My Name/AI-CONSTITUTION.md`) が、#40/#41 では
+  - 未クォートの空白入りパスの import (`@C:/<home with spaces>/AI-CONSTITUTION.md`) が、#40/#41 では
     pass だったのに stale になっていた。空白で切ったトークンが解決できないときは `@` から行末
     (末尾の空白・句読点を除く) も候補にする。コード・HTML コメントと `user@host` の除外は維持。
   - 深い入れ子の manifest で `json.loads` の `RecursionError` が `internal_error` に落ちていた。
