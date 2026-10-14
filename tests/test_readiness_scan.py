@@ -730,6 +730,82 @@ def test_deleted_history_secret_blocks_without_echoing_value(tmp_path: Path):
     assert token not in str(report)
 
 
+def shallow_clone_with_deleted_secret(tmp_path: Path) -> tuple[Path, Path, str]:
+    source = make_repo(tmp_path)
+    token = "github_pat_" + "A" * 30
+    (source / "old.txt").write_text(token, encoding="utf-8")
+    git(source, "add", "old.txt")
+    git(source, "commit", "-m", "add historical secret")
+    (source / "old.txt").unlink()
+    git(source, "add", "-u")
+    git(source, "commit", "-m", "remove historical secret")
+    shallow = tmp_path / "shallow"
+    git(tmp_path, "clone", "--depth", "1", source.as_uri(), str(shallow))
+    return source, shallow, token
+
+
+def test_shallow_clone_cannot_pass_full_history_scan(tmp_path: Path):
+    source, shallow, token = shallow_clone_with_deleted_secret(tmp_path)
+    shallow_probe = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=shallow,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert shallow_probe.stdout.strip() == "true"
+    assert MODULE.scan(source)["checks"]["secret_scan"]["status"] == "fail"
+
+    report = MODULE.scan(shallow)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["shallow_history_unavailable"]
+    assert report["repo"] == shallow.name
+    assert "checks" not in report
+    assert token not in json.dumps(report)
+
+
+def test_shallow_clone_blocks_publish_dialogue(tmp_path: Path, capsys):
+    _source, shallow, token = shallow_clone_with_deleted_secret(tmp_path)
+
+    exit_code = MODULE.main(
+        ["--repo", str(shallow), "--intent", "publish", "--audience", "public"],
+        stdin_is_tty=False,
+    )
+    output = capsys.readouterr().out
+    dialogue = json.loads(output)
+
+    assert exit_code == 1
+    assert dialogue["status"] == "blocked"
+    assert dialogue["scan"]["status"] == "tool_error"
+    assert dialogue["scan"]["issues"] == ["shallow_history_unavailable"]
+    assert "fix_tool_error" in {item["id"] for item in dialogue["proposals"]}
+    assert token not in output
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [(128, ""), (0, "--is-shallow-repository\n")],
+    ids=["probe_failed", "option_unrecognized"],
+)
+def test_unknown_shallow_state_returns_tool_error(
+    tmp_path: Path, monkeypatch, returncode: int, stdout: str
+):
+    repo = make_repo(tmp_path)
+    original = subprocess.run
+
+    def unknown_shallow_state(args, *pargs, **kwargs):
+        if "--is-shallow-repository" in args:
+            return CompletedProcess(args, returncode, stdout=stdout, stderr="")
+        return original(args, *pargs, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", unknown_shallow_state)
+    report = MODULE.scan(repo)
+
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["git_history_inventory_failed"]
+
+
 def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Path):
     """履歴pathのCR/LF断片をobject IDとして誤解しない。"""
     object_id = "a" * 40
@@ -1070,6 +1146,134 @@ def test_percent_encoded_secret_is_scanned(tmp_path: Path):
     report = MODULE.scan(repo)
 
     assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
+def non_utf8_text(value: str, encoding: str) -> bytes:
+    prefix = {"cp932": "メモ: ", "latin-1": "café: "}[encoding]
+    return (prefix + value + "\n").encode(encoding)
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "latin-1"])
+def test_non_utf8_worktree_secret_is_scanned(tmp_path: Path, encoding: str):
+    repo = make_repo(tmp_path)
+    token = "AKIA" + "G" * 16
+    (repo / "notes.txt").write_bytes(non_utf8_text(token, encoding))
+    git(repo, "add", "notes.txt")
+    git(repo, "commit", "-m", "add non-UTF-8 notes")
+
+    report = MODULE.scan(repo)
+
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+    assert report["checks"]["secret_scan"]["finding_count"] == 2
+    assert token not in json.dumps(report)
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "latin-1"])
+def test_non_utf8_worktree_personal_path_is_scanned(tmp_path: Path, encoding: str):
+    repo = make_repo(tmp_path)
+    (repo / "notes.txt").write_bytes(
+        non_utf8_text("C:\\Us" + "ers\\taro\\notes", encoding)
+    )
+    git(repo, "add", "notes.txt")
+    git(repo, "commit", "-m", "add non-UTF-8 notes")
+    blob = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:notes.txt"], cwd=repo, text=True
+    ).strip()
+
+    check = MODULE.scan(repo)["checks"]["personal_path_scan"]
+
+    assert check["status"] == "fail"
+    assert check["files"] == ["notes.txt", f"history:{blob[:12]}"]
+
+
+@pytest.mark.parametrize("encoding", ["cp932", "latin-1"])
+def test_non_utf8_findings_in_deleted_history_are_scanned(
+    tmp_path: Path, encoding: str
+):
+    repo = make_repo(tmp_path)
+    token = "AKIA" + "H" * 16
+    old = repo / "old.txt"
+    old.write_bytes(non_utf8_text(token + "\nC:\\Us" + "ers\\taro\\notes", encoding))
+    git(repo, "add", old.name)
+    git(repo, "commit", "-m", "add non-UTF-8 notes")
+    blob = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:old.txt"], cwd=repo, text=True
+    ).strip()
+    old.unlink()
+    git(repo, "add", "-u")
+    git(repo, "commit", "-m", "remove non-UTF-8 notes")
+
+    report = MODULE.scan(repo)
+
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+    assert report["checks"]["secret_scan"]["finding_count"] == 1
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["files"] == [f"history:{blob[:12]}"]
+    assert token not in json.dumps(report)
+
+
+def test_reviewed_exceptions_still_detect_uncovered_non_utf8_secret(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    reviewed = "sk-" + "a" * 24
+    token = "AKIA" + "J" * 16
+    data = non_utf8_text(token, "cp932")
+    (repo / "reviewed.txt").write_text(reviewed, encoding="utf-8")
+    (repo / "notes.txt").write_bytes(data)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add reviewed fixture and non-UTF-8 notes")
+    config = tmp_path / "exceptions.json"
+    entry = {
+        "id": "reviewed_fixture",
+        "repo": "example/repo",
+        "path": "reviewed.txt",
+        "content_sha256": hashlib.sha256(reviewed.encode()).hexdigest(),
+        "rule": "openai_key",
+        "match_sha256": hashlib.sha256(reviewed.encode()).hexdigest(),
+        "occurrence_count": 1,
+        "review_reason": "合成fixtureをレビュー済み",
+    }
+    config.write_text(json.dumps({"version": 1, "entries": [entry]}), encoding="utf-8")
+
+    check = MODULE.scan(repo, reviewed_secret_exceptions=config)["checks"][
+        "secret_scan"
+    ]
+
+    assert check["status"] == "fail"
+    assert check["finding_count"] == 2
+    assert check["reviewed_exceptions"] == [
+        {"id": "reviewed_fixture", "occurrence_count": 2}
+    ]
+    assert MODULE.secret_matches(data) == {
+        ("aws_access_key", hashlib.sha256(token.encode()).hexdigest()): 1
+    }
+
+
+@pytest.mark.parametrize("separate_file", [False, True])
+def test_target_diff_non_utf8_addition_does_not_hide_personal_paths(
+    tmp_path: Path, separate_file: bool
+):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    personal_path = "C:/Us" + "ers/new-user/project"
+    if separate_file:
+        (repo / "memo.txt").write_bytes(non_utf8_text("safe", "cp932"))
+        (repo / "checkout.txt").write_text(personal_path + "\n", encoding="utf-8")
+    else:
+        (repo / "memo.txt").write_bytes(non_utf8_text(personal_path, "cp932"))
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "add non-UTF-8 memo")
+
+    report = MODULE.scan(repo, base_ref=base)
+
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+def test_secret_in_non_utf8_filename_is_redacted_from_evidence():
+    token = "sk-" + "K" * 30
+    raw_name = "メモ".encode("cp932") + token.encode() + b".txt"
+    label = raw_name.decode("utf-8", errors="surrogateescape")
+
+    assert MODULE.sanitized_evidence_label(label) == "<redacted-path>"
 
 
 # 合成値。実在の鍵ではない。旧形式 (sk- + 英数字48) と project 形式 (sk-proj-...)。

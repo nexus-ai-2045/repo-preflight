@@ -8,6 +8,13 @@
   `git status` などがそのコマンドを実行していた。git 呼び出しへ `-c core.fsmonitor=false` を渡す。filter driver など
   名前が任意の設定は一括で無効化できないため、受け取った repository は新しく clone した複製を検査する旨を
   `docs/threat-model.md` に明記した。
+- UTF-8 / UTF-16 として全体を復号できないファイル（Shift_JIS・Latin-1・binary）の中の secret と個人pathを
+  検出していなかった。復号できない場合も生byteで照合する。作業tree・削除済み履歴・`--base-ref` の差分の
+  全経路が対象。検出は増える方向だけで、正規表現の処理時間は増える。
+- shallow clone を repo全体modeで検査すると、取得境界より前の履歴を見ないまま pass していた。
+  git が shallow repository と答えた場合は `shallow_history_unavailable` の tool_error にし、
+  判定できない場合は `git_history_inventory_failed` にする。`actions/checkout` の既定（`fetch-depth: 1`）で
+  scan している CI は `fetch-depth: 0` への変更が必要。`--base-ref` の target-diff mode は変えていない。
 - `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
   protection だけで保護された repository を「保護なし」の必須変更と誤判定していた。
   `branches/{default}/protection` も読み、ruleset と累積して評価する（GitHub は両方が掛かると全規則を
