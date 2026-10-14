@@ -312,7 +312,7 @@ def _pointer_tokens(line: str) -> Iterator[str]:
 
     まず空白で切れるトークンを返し、続けて ``@`` から行末まで (末尾の空白と
     句読点は ``_candidate_paths`` で外す) を返す。未クォートの空白入りパス
-    (例: ``@C:/Users/USER Name/AI.md``) は後者でだけ解決できる。``@`` の位置の
+    (例: ``@C:/<home with spaces>/AI.md``) は後者でだけ解決できる。``@`` の位置の
     判定 (行頭または空白直後) は両者で同じなので ``user@host`` は拾わない。
     """
 

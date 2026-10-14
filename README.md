@@ -34,6 +34,14 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 **開発・テスト・CI**では `pip install -e ".[test]"` が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
+### v0.6.0で変わること
+
+全履歴検査では、shallow cloneの履歴不足を成功扱いにせず停止します。引用符で終わるルートだけの合成パス例は除外し、ユーザー名を含む絶対パスの検出を維持します。
+
+リリース準備ではREADMEの情報設計に加え、直近の到達可能なリリースtagから本文が更新されているかを確認します。tag作成後の再検査は、公開前に確認した比較元tagを `--consistency-base-ref` へ明示して基準を保持します。名義の照合だけを今回のコミットに分ける場合は `--expected-identity` と `--identity-base-ref origin/main` を併用します。secretと個人パスの全履歴検査は狭めません。
+
+GitHub Settingsのclassic branch protection、AI憲法の入口、限定例外、runtime skillのずれ検知の改善も含みます。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
+
 ### PRレビューの収束確認
 
 GitHub CLIで認証済みの環境では、CI、review、inline threadを同じPR HEADへ束縛して確認できます。
@@ -105,7 +113,7 @@ flowchart LR
 
 - **認証情報らしき文字列**（APIキー、トークン、秘密鍵の形）と**自分のPCのパス**。消したつもりでも履歴に残っていれば見つけます
 - Live2D Cubism の編集ファイル（`.cmo3`）は、今の作業ツリーにあるものを展開して**中のパス**まで調べます。展開できないときは合格にせず「検査できなかった」と止めます
-- **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）
+- **必須の文書**がそろっているか（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）。`PREFLIGHT.md`には先頭の `<!-- repo-preflight:review-record -->` も必要です。[テンプレート](assets/PREFLIGHT.template.md)を参照してください。
 - **コミットの名義**（作者・コミッターが意図した名前か）
 - **文書とコードの食い違い**（リンク切れ、READMEに書いたコマンドと実体のずれ、コードを変えたのに文書やテストが追随していない、生成物が古い）
 - **READMEが読める形か**（必須の節、長さ、日本語のときは表が横に伸びすぎていないか・図のラベルが本文と同じ言語か）。表の幅と図のラベルは初期は警告に留め、誤検知がないことを確認してからエラーへ上げます
@@ -205,6 +213,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 | `--base-ref <比較元>` | 今回の変更へ絞る（`push` / `open_pr` / `merge`） |
 | `--consistency-base-ref <比較元>` | 文書チェックだけ差分に絞る（未指定時は `origin/main` を試す） |
 | `--expected-identity "<名前> <メール>"` | 全コミットの名義を確認する |
+| `--identity-base-ref origin/main` | releaseに限り、明示したremote ref以降の今回コミット名義を照合し、既存全履歴の名義不一致件数を別に報告する |
 | `--audience <相手>` | 見せる相手を指定する |
 | `--github-settings-profile <profile>` | Settings比較profile |
 | `--human` | 質問は人向け、結果は機械向けに分ける |
