@@ -4,6 +4,10 @@
 
 ### 修正
 
+- 検査対象の `.git/config` に `core.fsmonitor` が設定されていると、`readiness_scan.py` と `consistency_gate.py` の
+  `git status` などがそのコマンドを実行していた。git 呼び出しへ `-c core.fsmonitor=false` を渡す。filter driver など
+  名前が任意の設定は一括で無効化できないため、受け取った repository は新しく clone した複製を検査する旨を
+  `docs/threat-model.md` に明記した。
 - `configure_settings` が default branch の保護を ruleset からしか読まず、classic branch
   protection だけで保護された repository を「保護なし」の必須変更と誤判定していた。
   `branches/{default}/protection` も読み、ruleset と累積して評価する（GitHub は両方が掛かると全規則を
