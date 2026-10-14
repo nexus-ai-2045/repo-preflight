@@ -28,10 +28,11 @@ def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
     for key in _GIT_REPO_OVERRIDE_VARS:
         env.pop(key, None)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     return env
 
 
-GIT_UNTRUSTED_CONFIG_OVERRIDES = ("-c", "core.fsmonitor=false")
+GIT_UNTRUSTED_CONFIG_OVERRIDES = ("-c", "core.fsmonitor=")
 
 
 def git_hardened_command(cmd):

@@ -5,7 +5,9 @@
 ### 修正
 
 - 検査対象の `.git/config` に `core.fsmonitor` が設定されていると、`readiness_scan.py` と `consistency_gate.py` の
-  `git status` などがそのコマンドを実行していた。git 呼び出しへ `-c core.fsmonitor=false` を渡す。filter driver など
+  `git status` などがそのコマンドを実行していた。git 呼び出しへ `-c core.fsmonitor=`（空の値。Git 2.36 以降は無効、
+  それより前は hook なしとして扱われる）を渡す。あわせて `GIT_OPTIONAL_LOCKS=0` にし、`git status` が検査対象の
+  `.git/index` を書き戻さないようにした。filter driver など
   名前が任意の設定は一括で無効化できないため、受け取った repository は新しく clone した複製を検査する旨を
   `docs/threat-model.md` に明記した。
 - UTF-8 / UTF-16 として全体を復号できないファイル（Shift_JIS・Latin-1・binary）の中の secret と個人pathを

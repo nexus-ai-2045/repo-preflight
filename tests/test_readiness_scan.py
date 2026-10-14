@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -2092,3 +2093,16 @@ def test_scan_cli_does_not_run_fsmonitor_command_from_target_config(tmp_path: Pa
     )
 
     assert not marker.exists()
+
+
+def test_scan_does_not_rewrite_target_index(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    tracked = repo / MODULE.REQUIRED[0]
+    later = tracked.stat().st_mtime + 120
+    os.utime(tracked, (later, later))
+    index = repo / ".git" / "index"
+    before = index.read_bytes()
+
+    MODULE.scan(repo)
+
+    assert index.read_bytes() == before

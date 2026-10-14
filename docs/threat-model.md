@@ -37,7 +37,7 @@
 | remote credential | report経由の漏えい | userinfoを除去してURLを返す |
 | 古いreview/CI | 別の差分を誤承認 | 対象HEAD、日時、CI runをreview記録へ固定 |
 | `GIT_DIR`等による対象差し替え | 別repositoryの判定を`--repo`の結果として返す | git呼び出しから repository 上書き環境を除く |
-| 対象repoの`.git/config`の`core.fsmonitor` | scan中に任意コマンドが走る | git呼び出しへ`-c core.fsmonitor=false`を渡す。clean/smudge filterなど名前が任意の設定は一括で無効化できないため、受け取ったrepositoryは新しくcloneした複製を検査する |
+| 対象repoの`.git/config`の`core.fsmonitor` | scan中に任意コマンドが走る | git呼び出しへ`-c core.fsmonitor=`（空の値。Git 2.36以降は無効、それより前はhookなしとして扱われる）を渡し、`GIT_OPTIONAL_LOCKS=0`で索引の書き戻しも止める。clean/smudge filterなど名前が任意の設定は一括で無効化できないため、受け取ったrepositoryは新しくcloneした複製を検査する |
 | dependency/action改ざん | CI上のcode execution | 最小権限、credential非保持、Actions full SHA固定、dependency audit |
 | 誤ったGitHub account | owner境界違反 | 操作前にactive accountと`owner/name`を再測定 |
 
