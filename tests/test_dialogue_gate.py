@@ -476,3 +476,100 @@ def test_configure_settings_does_not_mix_in_unrelated_local_scan():
     ids = {item["id"] for item in dialogue["proposals"]}
     assert "fix_repo_path_not_repository_root" not in ids
     assert "fix_tool_error" not in ids
+
+
+def make_readable_release_repo(tmp_path: Path) -> Path:
+    repo = make_repo(tmp_path)
+    (repo / "README.md").write_text(
+        "# Demo\n\nA tool for checking releases.\n\n"
+        "## Overview\nCheck releases.\n\n## Features\nInspect files.\n\n"
+        "## Quickstart\nAsk your assistant to inspect this repository.\n\n"
+        "## Limits\nHuman review remains required.\n",
+        encoding="utf-8",
+    )
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "document release")
+    git(repo, "tag", "v1.0.0")
+    return repo
+
+
+def test_human_release_dialogue_explains_stale_readme_even_when_design_passes(
+    tmp_path: Path,
+):
+    repo = make_readable_release_repo(tmp_path)
+    (repo / "CHANGELOG.md").write_text("New release feature.\n", encoding="utf-8")
+    git(repo, "add", "CHANGELOG.md")
+    git(repo, "commit", "-m", "release change without README update")
+    console, stdout = StringIO(), StringIO()
+    code = SCAN.main(
+        [
+            "--repo",
+            str(repo),
+            "--intent",
+            "release",
+            "--human",
+            "--consistency-base-ref",
+            "v1.0.0",
+        ],
+        stdin_is_tty=False,
+        console=console,
+        stdout=stdout,
+    )
+    dialogue = json.loads(stdout.getvalue())
+    assert code == 1
+    assert dialogue["scan"]["checks"]["readme_release_design"]["status"] == "pass"
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "fix_readme_release_freshness"
+    )
+    assert proposal["severity"] == "required"
+    assert proposal["blocks_intent"] is True
+    assert proposal["current"]["reason"] == "release_readme_update_missing"
+    assert proposal["current"]["baseline"]["resolved_base_ref"] == "refs/tags/v1.0.0"
+    assert proposal["current"]["baseline"]["base_oid"]
+    human = console.getvalue()
+    assert "今回の機能・制限・使い方" in human
+    assert "release_readme_update_missing" in human
+    assert "refs/tags/v1.0.0" in human
+    assert "--consistency-base-ref" in human
+    assert "再検査" in human
+
+
+def test_human_release_dialogue_explains_freshness_inventory_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    repo = make_readable_release_repo(tmp_path)
+    original_run = SCAN.run
+
+    def fail_tag_inventory(repo_path, *args):
+        if args[:2] == ("git", "for-each-ref"):
+            return 1, ""
+        return original_run(repo_path, *args)
+
+    monkeypatch.setattr(SCAN, "run", fail_tag_inventory)
+    console, stdout = StringIO(), StringIO()
+    code = SCAN.main(
+        ["--repo", str(repo), "--intent", "release", "--human"],
+        stdin_is_tty=False,
+        console=console,
+        stdout=stdout,
+    )
+    dialogue = json.loads(stdout.getvalue())
+    assert code == 1
+    assert dialogue["scan"]["status"] == "tool_error"
+    assert dialogue["scan"]["checks"]["readme_release_design"]["status"] == "pass"
+    proposal = next(
+        item
+        for item in dialogue["proposals"]
+        if item["id"] == "fix_readme_release_freshness"
+    )
+    assert proposal["severity"] == "required"
+    assert proposal["blocks_intent"] is True
+    assert proposal["current"]["reason"] == "release_readme_baseline_unavailable"
+    human = console.getvalue()
+    assert "完全な履歴と前回release tag" in human
+    assert "release_readme_baseline_unavailable" in human
+    assert "readme_release_freshness" in human
+    assert "再検査" in human

@@ -138,6 +138,42 @@ def build_proposals_from_scan(
     checks = scan.get("checks") or {}
     status = scan.get("status")
 
+    freshness = checks.get("readme_release_freshness") or {}
+    if freshness.get("status") in {"fail", "tool_error"}:
+        unavailable = freshness.get("status") == "tool_error"
+        proposals.append(
+            _proposal(
+                id="fix_readme_release_freshness",
+                kind="tool_error" if unavailable else "readme_freshness",
+                severity="required",
+                question=(
+                    "READMEの更新基準となるrelease tagと履歴を確認できません。"
+                    "完全な履歴と前回release tagを取得して再検査しますか?"
+                    if unavailable
+                    else "READMEが前回releaseから実内容更新されていません。"
+                    "今回の機能・制限・使い方をREADMEへ反映して再検査しますか?"
+                ),
+                current={
+                    "status": freshness.get("status"),
+                    "reason": freshness.get("reason"),
+                    "baseline": freshness.get("baseline"),
+                },
+                proposed={
+                    "action": (
+                        "restore_release_history_then_rerun"
+                        if unavailable
+                        else "update_release_readme_then_rerun"
+                    ),
+                    "recheck": "readme_release_freshness",
+                    "command": "python scripts/readiness_scan.py --repo PATH --intent release",
+                    "baseline_policy": "前回release tagを--consistency-base-refで明示して再検査する",
+                },
+                options=_yes_no_options("直して再検査", "中止する"),
+                default="yes",
+                why="READMEの設計がpassでも更新確認の必須判定を省略しない",
+            )
+        )
+
     if status == "tool_error":
         root_proposal = repo_root_error_proposal(intent=intent, scan=scan)
         if root_proposal is not None:
@@ -331,6 +367,29 @@ def build_proposals_from_scan(
                     "今は照合せず続ける",
                 ),
                 default="yes" if intent in {"publish", "release"} else "no",
+                blocks_intent=False,
+            )
+        )
+
+    historical_identity = checks.get("historical_identity_audit") or {}
+    if (
+        intent == "release"
+        and identity.get("scope") == "pending_commits"
+        and historical_identity.get("mismatch_count", 0) > 0
+    ):
+        proposals.append(
+            _proposal(
+                id="review_existing_history_identity",
+                kind="historical_identity_review",
+                severity="recommended",
+                question=(
+                    "既存refの履歴には期待名義と異なるauthor/committerがあります。"
+                    "今回releaseとは分けて露出状況を確認しますか?"
+                ),
+                current={"mismatch_count": historical_identity["mismatch_count"]},
+                proposed={"action": "review_existing_history_without_rewrite"},
+                options=_yes_no_options("既存履歴を確認する", "残務として記録する"),
+                default="yes",
                 blocks_intent=False,
             )
         )

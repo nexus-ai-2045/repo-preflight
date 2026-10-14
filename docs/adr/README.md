@@ -22,3 +22,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0005](0005-reviewed-secret-exceptions.md) | Proposed | 完全束縛した明示指定の例外で既知secret誤検知だけを除外する |
 
 | [0006](0006-private-evidence-path-exceptions.md) | Accepted | private原資料の個人pathを可視性・期限・完全hash束縛付きの人間レビューで扱う |
+
+| [0007](0007-release-identity-scope.md) | Proposed | releaseの今回名義判定と既存公開履歴の監査を分けて報告する |

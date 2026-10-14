@@ -332,10 +332,28 @@ class ReviewedSecretExceptions:
 _UNIX_PATH_START = (
     r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
 )
+# 引用したusernameは非emptyかつ閉じquote直後のseparatorまで検査する。
+# rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
+_QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
+_QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
 PATH_PATTERNS = (
-    re.compile(r"[A-Za-z]:[/\\]Us" + r"ers[/\\][^/\\\s]+"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/Us" + r"ers/[^/\s]+)"),
-    re.compile(_UNIX_PATH_START + r"(?P<personal_path>/ho" + r"me/[^/\s]+)"),
+    re.compile(
+        r"[A-Za-z]:[/\\]Us" + r"ers[/\\](?:[^/\\\s'\"]+|" + _QUOTED_WINDOWS_USER + r")"
+    ),
+    re.compile(
+        _UNIX_PATH_START
+        + r"(?P<personal_path>/Us"
+        + r"ers/(?:[^/\s'\"]+|"
+        + _QUOTED_UNIX_USER
+        + r"))"
+    ),
+    re.compile(
+        _UNIX_PATH_START
+        + r"(?P<personal_path>/ho"
+        + r"me/(?:[^/\s'\"]+|"
+        + _QUOTED_UNIX_USER
+        + r"))"
+    ),
 )
 PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
 
@@ -1164,12 +1182,12 @@ def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
 
 
 def probe_consistency_base_ref(
-    repo: Path, consistency_base_ref: str
+    repo: Path, consistency_base_ref: str, *, release: bool = False
 ) -> tuple[str, str] | None:
-    """usable な remote consistency base なら (symbolic, oid)、不可なら None。
+    """使用可能なconsistency baseなら(symbolic, oid)、不可ならNone。
 
     条件は明示指定時と同じ: commit として解決でき、symbolic-full-name が
-    refs/remotes/origin/ 配下で、HEAD の祖先であること。
+    refs/remotes/origin/配下、release時だけrefs/tags/も許可し、HEADの祖先であること。
     """
     consistency_probe = run(
         repo, "git", "rev-parse", "--verify", f"{consistency_base_ref}^{{commit}}"
@@ -1183,11 +1201,86 @@ def probe_consistency_base_ref(
     if (
         consistency_probe[0]
         or consistency_symbolic[0]
-        or not consistency_symbolic[1].startswith("refs/remotes/origin/")
+        or not (
+            consistency_symbolic[1].startswith("refs/remotes/origin/")
+            or (release and consistency_symbolic[1].startswith("refs/tags/"))
+        )
         or consistency_ancestor[0]
     ):
         return None
     return consistency_symbolic[1], consistency_probe[1]
+
+
+def check_release_readme_freshness(
+    repo: Path, *, baseline: tuple[str, str] | None = None
+) -> dict:
+    """直近の到達可能なsemver tagからREADMEの実内容更新を検査する。"""
+    error = {"status": "tool_error", "reason": "release_readme_baseline_unavailable"}
+    code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+    if code or shallow != "false":
+        return error
+    if baseline is not None:
+        ref, oid = baseline
+        if not ref.startswith("refs/tags/"):
+            return error
+        code, current_oid = run(
+            repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}"
+        )
+        ancestor_code, _ = run(repo, "git", "merge-base", "--is-ancestor", oid, "HEAD")
+        if code or current_oid != oid or ancestor_code:
+            return error
+    else:
+        code, tags = run(
+            repo, "git", "for-each-ref", "--format=%(refname)", "refs/tags/"
+        )
+        if code:
+            return error
+        reachable: list[str] = []
+        for ref in tags.splitlines():
+            if not re.fullmatch(
+                r"refs/tags/v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+                r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?",
+                ref,
+            ):
+                continue
+            code, _ = run(repo, "git", "merge-base", "--is-ancestor", ref, "HEAD")
+            if code not in (0, 1):
+                return error
+            if code == 0:
+                reachable.append(ref)
+        if not reachable:
+            return {"status": "pass", "reason": "first_release", "baseline": None}
+        # git describeは履歴上で最も近いtagを選び、古い系列の高い番号と混同しない。
+        args = ["git", "describe", "--tags", "--abbrev=0"]
+        for ref in reachable:
+            args.extend(("--match", ref.removeprefix("refs/tags/")))
+        code, tag = run(repo, *args, "HEAD")
+        if code:
+            return error
+        ref = f"refs/tags/{tag}"
+        if ref not in reachable:
+            return error
+        code, oid = run(repo, "git", "rev-parse", "--verify", f"{ref}^{{commit}}")
+        if code:
+            return error
+    before = run_subprocess(
+        ["git", "show", f"{oid}:README.md"], cwd=repo, capture_output=True
+    )
+    path = repo / "README.md"
+    try:
+        if before.returncode or path.is_symlink():
+            return error
+        previous_text = before.stdout.decode("utf-8")
+        current_text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return error
+    changed = "".join(previous_text.split()) != "".join(current_text.split())
+    return {
+        "status": "pass" if changed else "fail",
+        "reason": "readme_updated" if changed else "release_readme_update_missing",
+        "baseline": {"resolved_base_ref": ref, "base_oid": oid},
+        "content_changed": changed,
+    }
 
 
 def repository_root_error(repo: Path) -> dict | None:
@@ -1220,6 +1313,7 @@ def scan(
     release: bool = False,
     base_ref: str | None = None,
     consistency_base_ref: str | None = None,
+    identity_base_ref: str | None = None,
     reviewed_secret_exceptions: Path | None = None,
 ) -> dict:
     repo = repo.resolve()
@@ -1241,6 +1335,14 @@ def scan(
                 "repo": repository_evidence_label(repo),
                 "issues": ["shallow_history_unavailable"],
             }
+    if identity_base_ref:
+        if not release or base_ref or not expected_identity:
+            return {"status": "tool_error", "issues": ["invalid_identity_base_ref"]}
+        identity_base = probe_consistency_base_ref(repo, identity_base_ref)
+        if identity_base is None:
+            return {"status": "tool_error", "issues": ["invalid_identity_base_ref"]}
+    else:
+        identity_base = None
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
@@ -1258,7 +1360,7 @@ def scan(
             resolved_consistency_base_ref, consistency_base_oid = defaulted
             consistency_base_was_defaulted = True
     if consistency_base_ref and not base_ref and not consistency_base_was_defaulted:
-        probed = probe_consistency_base_ref(repo, consistency_base_ref)
+        probed = probe_consistency_base_ref(repo, consistency_base_ref, release=release)
         if probed is None:
             return {"status": "tool_error", "issues": ["invalid_consistency_base_ref"]}
         resolved_consistency_base_ref, consistency_base_oid = probed
@@ -1282,6 +1384,17 @@ def scan(
         identity_range = f"{base_ref}..HEAD"
         probes["identities"] = run(
             repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", identity_range
+        )
+    elif identity_base is not None:
+        probes["identities"] = run(
+            repo,
+            "git",
+            "log",
+            "--format=%an <%ae>|%cn <%ce>",
+            f"{identity_base[1]}..HEAD",
+        )
+        probes["historical_identities"] = run(
+            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"
         )
     else:
         probes["identities"] = run(
@@ -1422,6 +1535,22 @@ def scan(
             or line.split("|")[-1] != expected_identity
         )
     }
+    historical_identity_lines = {
+        line
+        for line in probes.get("historical_identities", probes["identities"])[
+            1
+        ].splitlines()
+        if line
+    }
+    historical_identity_mismatches = {
+        line
+        for line in historical_identity_lines
+        if expected_identity
+        and (
+            line.split("|")[0] != expected_identity
+            or line.split("|")[-1] != expected_identity
+        )
+    }
     # 現在設定の名義はexpected_identity指定時だけ測る。identity未設定環境
     # (CI containerなど) をtool_errorにせず、判定はunknownでfail-closedに保つ
     effective_status = "not_evaluated"
@@ -1505,6 +1634,13 @@ def scan(
             "mismatch_count": len(identity_mismatches),
             "effective_identity": effective_status,
             "effective_mismatch_count": len(effective_mismatches),
+            "scope": (
+                "pending_commits"
+                if identity_base
+                else "target_diff" if base_ref else "repository_history"
+            ),
+            "base_ref": identity_base[0] if identity_base else None,
+            "base_oid": identity_base[1] if identity_base else None,
         },
         "dependency_configuration": {
             "status": "pass" if dependency_files else "not_applicable",
@@ -1534,10 +1670,27 @@ def scan(
             "url": redact_remote(remote),
         },
     }
+    if identity_base:
+        checks["historical_identity_audit"] = {
+            "status": "observed",
+            "identity_count": len(historical_identity_lines),
+            "mismatch_count": len(historical_identity_mismatches),
+            "scope": "all_refs",
+        }
     checks["repository_consistency"] = run_consistency_gate(
         repo, consistency_base_ref or base_ref
     )
     if release:
+        release_baseline = (
+            (resolved_consistency_base_ref, consistency_base_oid)
+            if resolved_consistency_base_ref
+            and resolved_consistency_base_ref.startswith("refs/tags/")
+            and consistency_base_oid
+            else None
+        )
+        checks["readme_release_freshness"] = check_release_readme_freshness(
+            repo, baseline=release_baseline
+        )
         if (repo / "README.md").is_file():
             readme_report = run_readme_release_gate(repo)
             checks["readme_release_design"] = {
@@ -1577,6 +1730,7 @@ def scan(
         )
     if release:
         automated_check_names.add("readme_release_design")
+        automated_check_names.add("readme_release_freshness")
     automated_check_names.add("repository_consistency")
     tool_error = any(
         checks[name]["status"] == "tool_error" for name in automated_check_names
@@ -1630,6 +1784,7 @@ class ScanOptions:
         intent: str | None = None,
         base_ref: str | None = None,
         consistency_base_ref: str | None = None,
+        identity_base_ref: str | None = None,
         github_settings_profile: str = "solo_public",
         reviewed_secret_exceptions: Path | None = None,
     ) -> None:
@@ -1642,6 +1797,7 @@ class ScanOptions:
         self.intent = intent
         self.base_ref = base_ref
         self.consistency_base_ref = consistency_base_ref
+        self.identity_base_ref = identity_base_ref
         self.github_settings_profile = github_settings_profile
         self.reviewed_secret_exceptions = reviewed_secret_exceptions
 
@@ -1686,6 +1842,11 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
             if options.consistency_base_ref
             else None
         ),
+        "identity_base_ref": (
+            sanitized_evidence_label(options.identity_base_ref)
+            if options.identity_base_ref
+            else None
+        ),
         "github_settings_profile": options.github_settings_profile,
         "reviewed_secret_exceptions_configured": options.reviewed_secret_exceptions
         is not None,
@@ -1712,6 +1873,8 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.identity_base_ref:
+            scan_kwargs["identity_base_ref"] = options.identity_base_ref
         if options.reviewed_secret_exceptions is not None:
             scan_kwargs["reviewed_secret_exceptions"] = (
                 options.reviewed_secret_exceptions
@@ -1729,6 +1892,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 intent=options.intent,
                 base_ref=options.base_ref,
                 consistency_base_ref=options.consistency_base_ref,
+                identity_base_ref=options.identity_base_ref,
                 github_settings_profile=options.github_settings_profile,
                 reviewed_secret_exceptions=options.reviewed_secret_exceptions,
             ),
@@ -2078,9 +2242,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--consistency-base-ref",
         help=(
-            "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うremote base ref。"
+            "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うbase ref。"
+            "releaseではHEADの祖先のtagも使用できる。"
             "plain scan と publish/release 向け。"
             f"未指定時は {DEFAULT_CONSISTENCY_BASE_REF} を試し、usable ならそれを使う"
+        ),
+    )
+    parser.add_argument(
+        "--identity-base-ref",
+        help=(
+            "release時の今回操作名義を比較するorigin remote ref。"
+            "全履歴の名義分布は別の監査結果に残す。"
+            "--expected-identityと併用し、HEADの祖先に限る"
         ),
     )
     parser.add_argument(
@@ -2150,6 +2323,7 @@ def resolve_options(
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
     consistency_base_ref = getattr(args, "consistency_base_ref", None)
+    identity_base_ref = getattr(args, "identity_base_ref", None)
     if base_ref and consistency_base_ref:
         raise SystemExit("error: --base-ref and --consistency-base-ref are exclusive")
     if base_ref and intent not in {"push", "open_pr", "merge"}:
@@ -2163,6 +2337,12 @@ def resolve_options(
     ):
         raise SystemExit(
             "error: --consistency-base-ref requires publish/release intent or a plain scan"
+        )
+    if identity_base_ref and (
+        intent != "release" or not args.expected_identity or base_ref
+    ):
+        raise SystemExit(
+            "error: --identity-base-ref requires --intent release and --expected-identity"
         )
     # intent モードはエージェント対話が本体。TTYメニューは使わない
     want_console = bool(
@@ -2180,6 +2360,7 @@ def resolve_options(
         options.intent = intent
         options.base_ref = base_ref
         options.consistency_base_ref = consistency_base_ref
+        options.identity_base_ref = identity_base_ref
         options.github_settings_profile = args.github_settings_profile
         return options
 
@@ -2197,6 +2378,7 @@ def resolve_options(
             intent=intent,
             base_ref=base_ref,
             consistency_base_ref=consistency_base_ref,
+            identity_base_ref=identity_base_ref,
             github_settings_profile=args.github_settings_profile,
             reviewed_secret_exceptions=reviewed_secret_exceptions,
         )
@@ -2215,6 +2397,7 @@ def resolve_options(
         intent=intent,
         base_ref=base_ref,
         consistency_base_ref=consistency_base_ref,
+        identity_base_ref=identity_base_ref,
         github_settings_profile=args.github_settings_profile,
         reviewed_secret_exceptions=reviewed_secret_exceptions,
     )
@@ -2338,6 +2521,8 @@ def main(
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
             scan_kwargs["consistency_base_ref"] = options.consistency_base_ref
+        if options.identity_base_ref:
+            scan_kwargs["identity_base_ref"] = options.identity_base_ref
         if options.reviewed_secret_exceptions is not None:
             scan_kwargs["reviewed_secret_exceptions"] = (
                 options.reviewed_secret_exceptions
