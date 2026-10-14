@@ -126,6 +126,11 @@ def secret_matches(data: bytes) -> Counter:
                 for match in pattern.finditer(candidate)
             )
             matches |= counts
+    matches |= Counter(
+        (rule, hashlib.sha256(match.group()).hexdigest())
+        for rule, pattern in zip(SECRET_RULE_IDS, SECRET_PATTERNS, strict=True)
+        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+    )
     return matches
 
 
@@ -453,7 +458,7 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
             for pattern in patterns
         ):
             return True
-    return False
+    return _bytes_pattern_hit(patterns, data)
 
 
 def sanitized_evidence_label(label: str) -> str:
@@ -1209,6 +1214,20 @@ def scan(
     if root_error is not None:
         return root_error
     repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
+    if not base_ref:
+        shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+        if shallow_code or shallow not in {"true", "false"}:
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["git_history_inventory_failed"],
+            }
+        if shallow == "true":
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["shallow_history_unavailable"],
+            }
     probes = {
         "head": run(repo, "git", "rev-parse", "HEAD"),
         "dirty": run(repo, "git", "status", "--porcelain"),
