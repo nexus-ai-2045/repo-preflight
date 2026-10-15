@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -19,6 +20,13 @@ SPEC.loader.exec_module(MODULE)
 
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+def git_argv(args) -> list:
+    argv = list(args)
+    while len(argv) >= 3 and argv[0] == "git" and argv[1] == "-c":
+        argv = [argv[0], *argv[3:]]
+    return argv
 
 
 def make_repo(tmp_path: Path) -> Path:
@@ -1077,16 +1085,16 @@ def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Pat
 
     def fake_run(args, **kwargs):
         commands.append(args)
-        if args[:3] == ["git", "rev-list", "--objects"]:
+        if git_argv(args)[:3] == ["git", "rev-list", "--objects"]:
             output = (
                 f"{object_id}\n".encode()
                 if "--no-object-names" in args
                 else f"{object_id} historical\r/path-fragment\n".encode()
             )
             return CompletedProcess(args, 0, stdout=output, stderr=b"")
-        if args[:3] == ["git", "cat-file", "--batch-check"]:
+        if git_argv(args)[:3] == ["git", "cat-file", "--batch-check"]:
             return CompletedProcess(args, 0, stdout=f"{object_id} blob 8\n", stderr="")
-        if args[:3] == ["git", "cat-file", "--batch"]:
+        if git_argv(args)[:3] == ["git", "cat-file", "--batch"]:
             return CompletedProcess(
                 args, 0, stdout=f"{object_id} blob 8\nordinary\n".encode(), stderr=b""
             )
@@ -1859,7 +1867,7 @@ def test_malformed_history_batch_returns_tool_error(tmp_path: Path, monkeypatch)
     original = subprocess.run
 
     def malformed_batch(args, *pargs, **kwargs):
-        if list(args[:3]) == ["git", "cat-file", "--batch"]:
+        if git_argv(args)[:3] == ["git", "cat-file", "--batch"]:
             return CompletedProcess(args, 0, stdout=b"malformed\n", stderr=b"")
         return original(args, *pargs, **kwargs)
 
@@ -1875,7 +1883,7 @@ def test_missing_history_object_returns_tool_error(tmp_path: Path, monkeypatch):
     original = subprocess.run
 
     def missing_object(args, *pargs, **kwargs):
-        if list(args[:3]) == ["git", "cat-file", "--batch-check"]:
+        if git_argv(args)[:3] == ["git", "cat-file", "--batch-check"]:
             request = kwargs["input"].splitlines()[0]
             return CompletedProcess(args, 0, stdout=f"{request} missing\n", stderr="")
         return original(args, *pargs, **kwargs)
@@ -2326,6 +2334,49 @@ def test_plain_scan_without_usable_default_still_reports_scope_unavailable(
         "change_sensitive_scope_unavailable"
     ]
     assert report["consistency_scope"] == {"mode": "same_as_scan"}
+
+
+def test_scan_does_not_run_fsmonitor_command_from_target_config(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git(repo, "config", "core.fsmonitor", str(hook))
+
+    MODULE.scan(repo)
+
+    assert not marker.exists()
+
+
+def test_scan_cli_does_not_run_fsmonitor_command_from_target_config(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git(repo, "config", "core.fsmonitor", str(hook))
+
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(repo), "--intent", "publish"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert not marker.exists()
+
+
+def test_scan_does_not_rewrite_target_index(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    tracked = repo / MODULE.REQUIRED[0]
+    later = tracked.stat().st_mtime + 120
+    os.utime(tracked, (later, later))
+    index = repo / ".git" / "index"
+    before = index.read_bytes()
+
+    MODULE.scan(repo)
+
+    assert index.read_bytes() == before
 
 
 @pytest.mark.parametrize(

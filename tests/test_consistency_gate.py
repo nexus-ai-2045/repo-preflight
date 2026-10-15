@@ -975,3 +975,17 @@ def test_fence_reader_loader_raises_runtime_error_when_the_file_is_gone(tmp_path
 
     with pytest.raises(RuntimeError, match="fence_reader_unavailable"):
         module._load_fence_reader()
+
+
+def test_check_does_not_run_fsmonitor_command_from_target_config(tmp_path: Path):
+    repo, base = make_repo(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    hook = tmp_path / "fsmonitor-hook.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    git(repo, "config", "core.fsmonitor", str(hook))
+    (repo / "docs" / "guide.md").write_text("guide changed\n", encoding="utf-8")
+
+    MODULE.check(repo, base_ref=base)
+
+    assert not marker.exists()

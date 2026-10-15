@@ -28,14 +28,27 @@ def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ if base is None else base)
     for key in _GIT_REPO_OVERRIDE_VARS:
         env.pop(key, None)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
     return env
 
 
+GIT_UNTRUSTED_CONFIG_OVERRIDES = ("-c", "core.fsmonitor=")
+
+
+def git_hardened_command(cmd):
+    return [cmd[0], *GIT_UNTRUSTED_CONFIG_OVERRIDES, *cmd[1:]]
+
+
 def run_subprocess(*args, **kwargs):
-    cmd = args[0] if args else kwargs.get("args")
+    call_args = list(args)
+    cmd = call_args[0] if call_args else kwargs.get("args")
     if isinstance(cmd, (list, tuple)) and cmd and cmd[0] == "git":
         kwargs["env"] = git_isolation_env(kwargs.get("env"))
-    return subprocess.run(*args, **kwargs)
+        if call_args:
+            call_args[0] = git_hardened_command(cmd)
+        else:
+            kwargs["args"] = git_hardened_command(cmd)
+    return subprocess.run(*call_args, **kwargs)
 
 
 CONFIG_NAME = ".repo-preflight-consistency.json"
