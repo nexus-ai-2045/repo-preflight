@@ -115,7 +115,7 @@
   `required_approving_review_count`、`can_approve_pull_request_reviews`。足りなくても
   `needs_human_input` で止まらなくなる。
 
-## 0.6.0 - 2026-10-14
+### 先行して準備したv0.6.0の変更
 
 ### リリース前の確認と履歴検査
 
