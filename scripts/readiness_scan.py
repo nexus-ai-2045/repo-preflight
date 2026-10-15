@@ -38,7 +38,7 @@ NON_GUARANTEES = (
     "個人pathが存在しないことの完全保証 (.cmo3 の展開はrepo全体modeの作業treeだけ。履歴・--base-ref差分内の .cmo3、他の独自形式・圧縮・バイナリ内は見逃し得る)",
     "依存ライブラリの既知脆弱性",
     "第三者素材を公開する権利・ライセンス判断",
-    "通常scanにおけるGitHub remote設定全体の現在状態 (configure_settings intentで別途取得。レビュー済み個人path例外はprivate確認のみ)",
+    "通常scanにおけるGitHub remote設定全体の現在状態 (configure_settings intentで別途取得。個人path例外のv2はprivate・v3はpublic合成fixture限定をlive確認)",
     "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
@@ -157,7 +157,7 @@ class ReviewedSecretExceptions:
                 not isinstance(policy, dict)
                 or set(policy) != {"version", "entries"}
                 or type(policy["version"]) is not int
-                or policy["version"] not in {1, 2}
+                or policy["version"] not in {1, 2, 3}
                 or not isinstance(policy["entries"], list)
             ):
                 raise ValueError("schema")
@@ -184,7 +184,7 @@ class ReviewedSecretExceptions:
                 "occurrence_count",
                 "review_reason",
             }
-            if policy["version"] == 2:
+            if policy["version"] in {2, 3}:
                 keys |= {"expires_at", "review_reference"}
             for entry in policy["entries"]:
                 if not isinstance(entry, dict) or set(entry) != keys:
@@ -216,7 +216,12 @@ class ReviewedSecretExceptions:
                 ):
                     raise ValueError("path")
                 if entry["repo"] != identity or entry["rule"] not in (
-                    SECRET_RULE_IDS + (PATH_RULE_IDS if policy["version"] == 2 else ())
+                    (
+                        PATH_RULE_IDS
+                        if policy["version"] == 3
+                        else SECRET_RULE_IDS
+                        + (PATH_RULE_IDS if policy["version"] == 2 else ())
+                    )
                 ):
                     raise ValueError("identity_or_rule")
                 if any(
@@ -224,6 +229,12 @@ class ReviewedSecretExceptions:
                     for key in ("content_sha256", "match_sha256")
                 ):
                     raise ValueError("digest")
+                if (
+                    policy["version"] == 3
+                    and (entry["rule"], entry["match_sha256"])
+                    not in PUBLIC_SYNTHETIC_PATH_SIGNATURES
+                ):
+                    raise ValueError("public_synthetic_fixture_required")
                 if (
                     type(entry["occurrence_count"]) is not int
                     or entry["occurrence_count"] <= 0
@@ -233,7 +244,7 @@ class ReviewedSecretExceptions:
                 # 理由にもcredentialを保存しない。値や理由はreportへ出さない。
                 if text_has(SECRET_PATTERNS, entry["review_reason"].encode()):
                     raise ValueError("credential_in_reason")
-                if policy["version"] == 2:
+                if policy["version"] in {2, 3}:
                     if (
                         not re.fullmatch(
                             r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", entry["expires_at"]
@@ -271,17 +282,19 @@ class ReviewedSecretExceptions:
             entry["rule"] in PATH_RULE_IDS for entry in self.entries
         )
         if self.has_path_entries:
-            # REST originをlive取得。local設定、保存済みsnapshotやunknownは根拠にしない。
+            # REST originをlive取得。v2はprivate、v3はpublicの合成fixture限定。
+            # local設定、保存済みsnapshotやunknownは根拠にしない。
             try:
                 settings = load_github_settings_module()
                 live = settings.gh_api_get("https://api.github.com/repos/" + identity)
                 if (
                     not isinstance(live, dict)
                     or live.get("full_name") != identity
-                    or live.get("private") is not True
-                    or live.get("visibility") != "private"
+                    or live.get("private") is not (policy["version"] != 3)
+                    or live.get("visibility")
+                    != ("public" if policy["version"] == 3 else "private")
                 ):
-                    raise ValueError("private_origin_required")
+                    raise ValueError("reviewed_origin_visibility_required")
             except (OSError, RuntimeError, ValueError, TypeError) as exc:
                 raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
 
@@ -356,6 +369,17 @@ PATH_PATTERNS = (
     ),
 )
 PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
+
+# 公開fixtureの予約値。任意の個人pathをpolicyだけで登録する入口は設けない。
+# これらのhashでも、明示policyのrepo/path/blob/件数/期限/review束縛が必要。
+PUBLIC_SYNTHETIC_PATH_SIGNATURES = frozenset(
+    (rule, hashlib.sha256(value.encode("utf-8")).hexdigest())
+    for rule, value in (
+        ("windows_user_path", "C:/Us" + "ers/My"),
+        ("macos_user_path", "/Us" + "ers/My"),
+        ("linux_home_path", "/ho" + "me/me"),
+    )
+)
 
 
 def personal_path_matches(data: bytes) -> Counter:

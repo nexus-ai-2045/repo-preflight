@@ -213,7 +213,13 @@ def test_guide_names_exactly_the_settings_that_report_enforced_by():
 
 
 def test_changelog_records_the_packet_shape_changes():
-    section = re.search(r"## Unreleased\n(.*?)\n## ", CHANGELOG, re.S)[1]
+    # v0.6.0公開時にUnreleasedから移した後も、導入時の記録を検査する。
+    section = next(
+        section
+        for section in re.split(r"(?m)^## ", CHANGELOG)[1:]
+        if section.startswith(("Unreleased\n", "0.6.0 - "))
+        and "### packet の形の変化" in section
+    )
 
     assert "### packet の形の変化" in section
     shape = section.split("### packet の形の変化", 1)[1]
