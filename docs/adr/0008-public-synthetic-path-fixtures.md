@@ -27,7 +27,7 @@ ADR-0005/0006の明示指定JSONと完全hash束縛を再利用し、`version: 3
 ## 利用と検証
 
 ```sh
-python scripts/readiness_scan.py --repo . --intent release --consistency-base-ref v0.5.1 --reviewed-secret-exceptions <reviewed-public-fixtures.json>
+python scripts/readiness_scan.py --repo . --intent release --consistency-base-ref v0.5.1 --reviewed-secret-exceptions "reviewed-public-fixtures.json"
 ```
 
 通常scanでは引き続き5候補を検出する。明示policy付きscanだけが、完全一致した合成検出をレビュー済みとして報告する。policyの期限切れ時は停止し、内容・予約値・レビュー参照を再確認する。passはreleaseの承認ではない。
