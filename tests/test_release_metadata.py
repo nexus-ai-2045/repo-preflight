@@ -38,4 +38,6 @@ def test_newer_changelog_entry_without_version_bump_is_detected():
 def test_changelog_release_versions_are_unique():
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     versions = [match.group("version") for match in RELEASE_HEADING.finditer(changelog)]
-    assert len(versions) == len(set(versions)), "同じversionのrelease見出しが重複している"
+    assert len(versions) == len(
+        set(versions)
+    ), "同じversionのrelease見出しが重複している"
