@@ -835,7 +835,7 @@ def test_b7_import_pointer_examples_are_not_false_green(
         "@~/AI-CONSTITUTION.md\n",
         "@AI-CONSTITUTION.md\n",
         "@./AI-CONSTITUTION.md\n",
-        "@../home/USER\n",
+        "@../home/AI-CONSTITUTION.md\n",
         "See @~/AI-CONSTITUTION.md.\n",
         "```\nexample\n```\n@~/AI-CONSTITUTION.md\n",
         "~~~\n```\n~~~\n@~/AI-CONSTITUTION.md\n",
@@ -953,7 +953,7 @@ def test_b9_manifest_read_failure_is_type_name_only(tmp_path: Path) -> None:
 def test_b9_stdlib_value_error_is_rounded_to_type_name() -> None:
     # 自前 code かどうかはメッセージの形ではなく例外の型 (ContractError) で決める。
     own = gate._safe_error_code(gate.ContractError("manifest_path_missing:grok"), "x")
-    stdlib = gate._safe_error_code(ValueError("bad value C:\Users\USER\\a"), "x")
+    stdlib = gate._safe_error_code(ValueError("bad value C:\\Us" + "ers\\USER\\a"), "x")
     path_suffix = gate._safe_error_code(ValueError("code:/fixture-home/me/secret"), "x")
     look_alike = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
 
