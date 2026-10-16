@@ -67,6 +67,11 @@ def parse_denylist_text(text: str) -> list[str]:
 
 
 USERNAME_FORM_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
+# 明示されたencoded Windows home prefixは、末尾delimiter以降もpathが続く。
+# 通常aliasとは型を分け、username例外spanでもそのliteralを免除しない。
+ENCODED_HOME_PREFIX_PATTERN = re.compile(
+    r"[A-Za-z]-Users-[A-Za-z0-9._-]+-", re.IGNORECASE
+)
 
 
 def hit_patterns(
@@ -96,7 +101,9 @@ def hit_patterns(
     hits = []
     for p in patterns:
         needle = p.lower()
-        if USERNAME_FORM_PATTERN.fullmatch(p):
+        if USERNAME_FORM_PATTERN.fullmatch(
+            p
+        ) and not ENCODED_HOME_PREFIX_PATTERN.fullmatch(p):
             matches = re.finditer(
                 r"(?<![a-z0-9._-])" + re.escape(needle) + r"(?![a-z0-9._-])", low
             )
@@ -113,6 +120,50 @@ def hit_patterns(
 def hit_local_absolute_path(text: str) -> bool:
 
     return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None
+
+
+# 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。
+_QUOTED_LITERAL = r'"(?:[^"\\\r\n]|\\[\s\S])*"|\'(?:[^\'\\\r\n]|\\[\s\S])*\''
+_STATIC_LITERAL = r"(?<![\w])(?:[rRuUbBfF]{1,2})?(?:" + _QUOTED_LITERAL + r")"
+_RECOVERY_TOKEN = re.compile(
+    r"(?P<literal>" + _STATIC_LITERAL + r")"
+    r"|(?P<comment>/\*[\s\S]*?\*/|//[^\r\n]*|\#[^\r\n]*)"
+    r"|(?P<unterminated_comment>/\*[\s\S]*\Z)"
+    r"|(?P<plus>\+)|(?P<space>\s+)|(?P<other>[\s\S])"
+)
+
+
+def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
+    """literalを先に字句化し、式間commentだけを評価用token列から外す。"""
+    chains = []
+    parts = []
+    first = last = 0
+
+    def finish():
+        complete = parts[:-1] if parts and parts[-1] == "+" else parts
+        if len(complete) >= 3:
+            chains.append((" ".join(complete), text[first:last]))
+
+    for token in _RECOVERY_TOKEN.finditer(text):
+        kind = token.lastgroup
+        if kind in {"comment", "space"}:
+            continue
+        if kind == "unterminated_comment" and len(parts) > 1:
+            raise ValueError("private_identity_normalization_incomplete")
+        if kind == "literal":
+            if not parts or parts[-1] != "+":
+                finish()
+                parts = []
+                first = token.start()
+            parts.append(token.group())
+            last = token.end()
+        elif kind == "plus" and parts and parts[-1] != "+":
+            parts.append("+")
+        else:
+            finish()
+            parts = []
+    finish()
+    return chains
 
 
 def static_string_views(text: str) -> list[tuple[str, str]]:
@@ -183,6 +234,18 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         try:
             tree = ast.parse(fragment)
         except (SyntaxError, ValueError):
+            # JS/TSや別行の構文エラーで全fileのliteral連結を捨てない。
+            # 最大の確定quoted + quoted式だけを既存AST評価へ渡す。
+            for expression_source, original in _literal_plus_chains(fragment):
+                try:
+                    expression = ast.parse("(" + expression_source + "\n)", mode="eval")
+                    value = static_string(expression.body)
+                except (SyntaxError, ValueError, RecursionError):
+                    raise ValueError(
+                        "private_identity_normalization_incomplete"
+                    ) from None
+                if value is not None:
+                    views.append((value, original))
             continue
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
@@ -224,7 +287,7 @@ def _reconstruct_literal_candidates(
     """静的string-arrayと一文字ずつ区切ったliteralの照合候補。実行結果とは断定しない。"""
     import ast
 
-    literal = r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\''
+    literal = _QUOTED_LITERAL
     arrays = re.compile(
         r"\[\s*(?:" + literal + r")(?:\s*,\s*(?:" + literal + r"))*\s*,?\s*\]"
     )
