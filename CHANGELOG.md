@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `scripts/identity_gate.py` を追加。作者・コミッター名義の許可リスト、Co-authored-by / Signed-off-by 行、コミット本文の個人の型を、基点から HEAD までの全コミットで検査する。個人の型はリポに書かず、非公開設定（`PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS`）から読む。設定が無ければ fail。見つけた値は出力せず件数だけ返す。
+- `readiness_scan.py` の結果に `identity_gate` 欄を追加。今は報告のみで、全体の判定（status）には入れない。必須化は別途決める。
+
 ## 0.6.0 - 2026-10-16
 
 - 公開の合成fixtureをversion 3の明示policyで扱う。予約済み合成値だけに限定し、repo・path・blob・検出hash・件数・UTC期限・レビュー参照を固定する。任意の個人pathとsecretは登録できず、v2のprivate限定条件と全履歴検査を維持する。
