@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+
+from path_input_fixture import fixture_path
 from test_readiness_scan import (
     MODULE,
     git,
@@ -22,7 +24,7 @@ def digest(data):
 
 
 def sample_path():
-    return "/Us" + "ers/synthetic-owner"
+    return fixture_path("macos", "synthetic-owner")
 
 
 def policy(tmp_path, data, path="reviewed.txt", *, scanned_data=None, **changes):
@@ -392,9 +394,9 @@ def test_target_diff_preserves_unchanged_baseline_path_with_policy(tmp_path):
 @pytest.mark.parametrize(
     "value,rule",
     [
-        ("C:\\Us" + "ers\\synthetic-owner", "windows_user_path"),
-        ("/Us" + "ers/synthetic-owner", "macos_user_path"),
-        ("/ho" + "me/synthetic-owner", "linux_home_path"),
+        ((fixture_path("windows", "synthetic-owner")), "windows_user_path"),
+        ((fixture_path("macos", "synthetic-owner")), "macos_user_path"),
+        ((fixture_path("linux", "synthetic-owner")), "linux_home_path"),
     ],
 )
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])

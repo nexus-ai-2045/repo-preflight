@@ -5,12 +5,14 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
+from path_input_fixture import fixture_path
 from test_readiness_scan import MODULE, git, make_repo, set_remote_base
 from test_reviewed_path_exceptions import policy as private_policy
 
 
 def sample():
-    return "C:/Us" + "ers/My Name/example"
+    return fixture_path("windows", "My Name", "example", forward=True)
 
 
 def policy(tmp_path, data, **changes):
@@ -84,7 +86,7 @@ def test_public_fixture_does_not_hide_unreviewed_content(tmp_path, change):
     if change == "count":
         data += b"\n" + original
     if change == "additional_path":
-        data += ("\n/ho" + "me/actual-owner/notes").encode()
+        data += (("\n" + fixture_path("linux", "actual-owner", "notes"))).encode()
     if change == "secret":
         data += ("\nAKIA" + "F" * 16).encode()
     (repo / path).write_bytes(data)
@@ -159,7 +161,7 @@ def test_target_diff_preserves_unreviewed_path_detection(tmp_path):
     base = set_remote_base(repo)
     data = sample().encode()
     (repo / "reviewed.txt").write_bytes(data)
-    (repo / "private.txt").write_text("/ho" + "me/actual-owner/notes")
+    (repo / "private.txt").write_text((fixture_path("linux", "actual-owner", "notes")))
     git(repo, "add", ".")
     git(repo, "commit", "-m", "add reviewed and unreviewed material")
     result = MODULE.scan(
@@ -173,7 +175,9 @@ def test_reviewed_new_blob_only_exempts_the_exact_fixture(tmp_path, extra_secret
     repo = make_repo(tmp_path)
     original = sample().encode()
     addition = (
-        ("\nAKIA" + "G" * 16) if extra_secret else ("\n/ho" + "me/real-owner/data")
+        ("\nAKIA" + "G" * 16)
+        if extra_secret
+        else (("\n" + fixture_path("linux", "real-owner", "data")))
     )
     data = original + addition.encode()
     (repo / "reviewed.txt").write_bytes(data)

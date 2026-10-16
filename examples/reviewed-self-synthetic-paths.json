@@ -36,6 +36,78 @@
       "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
       "expires_at": "2026-10-23T05:14:20Z",
       "review_reference": "AI点検: /root/nps_final_review、privacy-self-public-gate-intake-20261016、2026-10-16。予約署名・source hashを照合。人間による直接確認ではない。独立レビューと人間確認は別途行う。"
+    },
+    {
+      "id": "SelfCurrentCanonicalFixture1",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "86dd4473d61ad02016a90fe8f67483ba91942fd7695d88c40496c48b2c235fb4",
+      "rule": "linux_home_path",
+      "match_sha256": "1f19107742728ff867bbfbb138fdea3b7ab8ef4c487fa519ebc811980ff7b27d",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-full-worktree-private-scan-repair-20261016。新sourceの予約3署名と件数を照合。独立レビュー・人間による直接確認とは別。"
+    },
+    {
+      "id": "SelfCurrentCanonicalFixture2",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "86dd4473d61ad02016a90fe8f67483ba91942fd7695d88c40496c48b2c235fb4",
+      "rule": "macos_user_path",
+      "match_sha256": "f09ccda47dbbca1c88e23fa549e3946d8a89a04a53e3a319dee2f75c79807f35",
+      "occurrence_count": 2,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-full-worktree-private-scan-repair-20261016。新sourceの予約3署名と件数を照合。独立レビュー・人間による直接確認とは別。"
+    },
+    {
+      "id": "SelfCurrentCanonicalFixture3",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "86dd4473d61ad02016a90fe8f67483ba91942fd7695d88c40496c48b2c235fb4",
+      "rule": "windows_user_path",
+      "match_sha256": "60afd51801efe9f85c1ec2a5472804b6df905558e8112545ae6ba9ddc61e7eb8",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-full-worktree-private-scan-repair-20261016。新sourceの予約3署名と件数を照合。独立レビュー・人間による直接確認とは別。"
+    },
+    {
+      "id": "SelfParentGuardCanonicalFixture1",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "921207ee9a2df569eaf9650ab9bb525ffd169a4cf8cccc0c28e648a5ba6b5979",
+      "rule": "linux_home_path",
+      "match_sha256": "1f19107742728ff867bbfbb138fdea3b7ab8ef4c487fa519ebc811980ff7b27d",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-private-scan-parent-link-repair-20261016。親link保護追加後のsourceで予約3署名・件数を照合。独立レビュー・人間による直接確認とは別。"
+    },
+    {
+      "id": "SelfParentGuardCanonicalFixture2",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "921207ee9a2df569eaf9650ab9bb525ffd169a4cf8cccc0c28e648a5ba6b5979",
+      "rule": "macos_user_path",
+      "match_sha256": "f09ccda47dbbca1c88e23fa549e3946d8a89a04a53e3a319dee2f75c79807f35",
+      "occurrence_count": 2,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-private-scan-parent-link-repair-20261016。親link保護追加後のsourceで予約3署名・件数を照合。独立レビュー・人間による直接確認とは別。"
+    },
+    {
+      "id": "SelfParentGuardCanonicalFixture3",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "921207ee9a2df569eaf9650ab9bb525ffd169a4cf8cccc0c28e648a5ba6b5979",
+      "rule": "windows_user_path",
+      "match_sha256": "60afd51801efe9f85c1ec2a5472804b6df905558e8112545ae6ba9ddc61e7eb8",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-private-scan-parent-link-repair-20261016。親link保護追加後のsourceで予約3署名・件数を照合。独立レビュー・人間による直接確認とは別。"
     }
   ]
 }

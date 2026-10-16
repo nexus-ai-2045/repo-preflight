@@ -2897,3 +2897,198 @@ def test_shared_grammar_repeated_windows_separators_remain_detected(forward):
     value = root.replace(separator, separator * 2) + "fictional-user"
     assert MODULE.personal_path_matches(value.encode())
     assert MODULE._PATH_GRAMMAR.hit_local_absolute_path(value)
+
+
+@pytest.mark.parametrize("surface", ["untracked", "tracked_dirty", "staged"])
+def test_target_private_scan_checks_full_current_inventory(
+    tmp_path, monkeypatch, surface
+):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    tracked = repo / "existing-contact.txt"
+    tracked.write_text("public brand\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "existing clean contact")
+    base = set_remote_base(repo)
+    (repo / "feature.txt").write_text("clean feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature change")
+    target = repo / "untracked-contact.txt" if surface == "untracked" else tracked
+    target.write_text("fixture-private-identity@example.invalid\n")
+    if surface == "staged":
+        git(repo, "add", target.name)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "fail"
+    assert report["checks"]["private_identity_scan"]["finding_count"] >= 1
+    assert (
+        report["checks"]["private_identity_scan"]["worktree_scan_status"] == "complete"
+    )
+    assert report["checks"]["private_identity_scan"]["worktree_files_unscanned"] == 0
+
+
+def test_target_private_scan_ignores_private_gitignored_storage(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text("private-storage/\n")
+    git(repo, "add", ".gitignore")
+    git(repo, "commit", "-m", "exclude private storage")
+    base = set_remote_base(repo)
+    private = repo / "private-storage"
+    private.mkdir()
+    (private / "contact.txt").write_text("fixture-private-identity@example.invalid")
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "pass"
+
+
+def test_target_private_scan_clean_inventory_keeps_empty_git_range(
+    tmp_path, monkeypatch
+):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "pass"
+    assert report["checks"]["private_identity_scan"]["objects_scanned"] > 0
+
+
+def test_target_private_scan_does_not_follow_untracked_symlink(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    outside = tmp_path / "private-contact.txt"
+    outside.write_text("fixture-private-identity@example.invalid")
+    (repo / "contact-link").symlink_to(outside)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    private = report["checks"]["private_identity_scan"]
+    assert private["status"] == "pass"
+    assert private["worktree_symlinks_excluded"] == 1
+    assert private["worktree_files_unscanned"] == 0
+
+
+def test_target_private_scan_keeps_git_history_base_boundary(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    contact = repo / "contact.txt"
+    contact.write_text("fixture-private-identity@example.invalid")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "old identity fixture")
+    contact.write_text("public brand")
+    git(repo, "commit", "-am", "clean before base")
+    base = set_remote_base(repo)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    private = report["checks"]["private_identity_scan"]
+    assert private["status"] == "pass"
+    assert private["git_object_scope"] == base + "..HEAD"
+
+
+def test_target_private_scan_unreadable_full_inventory_is_tool_error(
+    tmp_path, monkeypatch
+):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    tracked = repo / "contact.txt"
+    tracked.write_text("clean contact")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "track contact")
+    base = set_remote_base(repo)
+    original = Path.read_bytes
+
+    def unreadable(path):
+        if path == tracked:
+            raise OSError("synthetic unreadable file")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["status"] == "tool_error"
+    assert "worktree_file_unreadable:contact.txt" in report["issues"]
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+@pytest.mark.parametrize("location", ["outside", "ignored_inside"])
+@pytest.mark.parametrize("range_mode", ["empty", "tracked_change", "untracked"])
+def test_private_parent_directory_link_never_reads_original(
+    tmp_path, monkeypatch, location, range_mode, link_kind
+):
+    import shutil
+
+    if link_kind == "junction" and os.name != "nt":
+        pytest.skip("Windows junctionの実検査はWindows環境で実施")
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    folder = repo / "folder"
+    folder.mkdir()
+    (folder / "document.txt").write_text("clean tracked content")
+    (repo / ".gitignore").write_text("private-storage/\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "track document")
+    base = set_remote_base(repo)
+    if range_mode == "tracked_change":
+        (folder / "document.txt").write_text("new clean content")
+        git(repo, "commit", "-am", "change document")
+    outside = (
+        tmp_path / "private-original"
+        if location == "outside"
+        else repo / "private-storage"
+    )
+    outside.mkdir()
+    (outside / "document.txt").write_text("fixture-private-identity@example.invalid")
+    if range_mode == "untracked":
+        (outside / "untracked.txt").write_text(
+            "fixture-private-identity@example.invalid"
+        )
+    shutil.rmtree(folder)
+    if link_kind == "junction":
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(folder), str(outside)],
+            capture_output=True,
+        )
+        if created.returncode:
+            pytest.skip("Windows junctionを作成できない実行環境")
+    else:
+        folder.symlink_to(outside, target_is_directory=True)
+    attempts = []
+    original = Path.read_bytes
+
+    def trap(path):
+        if path.resolve().is_relative_to(outside.resolve()):
+            attempts.append(True)
+            raise OSError("private original read trap")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", trap)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["status"] == "tool_error"
+    assert attempts == []
+
+
+def test_private_scan_accepts_repository_root_alias(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    alias = tmp_path / "repository-alias"
+    alias.symlink_to(repo, target_is_directory=True)
+    report = MODULE.scan(alias, base_ref=base, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "pass"
+
+
+def test_parent_guard_rejects_windows_reparse_attribute_without_following(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    import stat
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    folder = repo / "folder"
+    folder.mkdir()
+    original = Path.lstat
+
+    def reparse(path):
+        if path == folder:
+            return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", reparse)
+    with pytest.raises(RuntimeError, match="git_worktree_inventory_failed"):
+        MODULE._guard_worktree_parent_components(repo, folder / "document.txt")

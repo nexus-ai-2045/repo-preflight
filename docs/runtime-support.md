@@ -268,3 +268,9 @@ private policyの明示入力は通常どおり必要です。例のsource内容
 ### 個人path文法の正本
 
 `identity_normalization.py` の `PATH_PATTERNS` を文法の正本とし、readiness検査とgeneric照合が共用します。引用符付き・Unicodeのusername、URI・CLI optionの境界を共通に扱い、Windowsのhome rootだけでは個人pathと判定しません。既知identityのusername形式は、英数字・`.`・`_`・`-` の両側境界を要求します。静的literalの抽出範囲と、非公開policyの明示入力契約は維持します。
+
+### private監査の現在fileとGit履歴
+
+private identity監査は `--base-ref` 指定時も、既存のGit inventoryから現在のtracked・untracked通常fileを読みます。ignored保存物、tracked link/gitlink、未追跡symlinkの参照先を取得しません。`worktree_scan_status`・検査件数・未検査件数はこのinventoryに対する実結果です。報告するsymlink除外数はinventoryが返した未追跡link分です。Git object検査は従来どおり指定baseからHEADの範囲を保ち、`git_object_scope` で別に表示します。作業treeにはsizeによる省略を設けず、読取不能はtool errorで止めます。`oversize_objects_unscanned` は既存のGit object側の未検査数です。
+
+repo root自体はcanonicalな実体へ解決します。その下のinventory対象までの親componentは `lstat` で確認し、directory symlink・Windows junctionを含むreparse point経由なら参照先のfileを読む前にtool errorで停止します。repo内ignored保存物へのaliasも許可しません。未追跡leaf symlinkの既存除外は維持します。

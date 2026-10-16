@@ -951,9 +951,13 @@ def test_b9_manifest_read_failure_is_type_name_only(tmp_path: Path) -> None:
 
 
 def test_b9_stdlib_value_error_is_rounded_to_type_name() -> None:
+    from path_input_fixture import fixture_path
+
     # 自前 code かどうかはメッセージの形ではなく例外の型 (ContractError) で決める。
     own = gate._safe_error_code(gate.ContractError("manifest_path_missing:grok"), "x")
-    stdlib = gate._safe_error_code(ValueError("bad value C:\\Users\\me\\a"), "x")
+    stdlib = gate._safe_error_code(
+        ValueError(("bad value " + fixture_path("windows", "me", "a"))), "x"
+    )
     path_suffix = gate._safe_error_code(ValueError("code:/fixture-home/me/secret"), "x")
     look_alike = gate._safe_error_code(ValueError("manifest_path_missing:grok"), "x")
 

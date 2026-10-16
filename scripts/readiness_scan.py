@@ -13,6 +13,7 @@ import json
 import os
 import re
 import struct
+import stat
 import subprocess
 import sys
 import zlib
@@ -1321,6 +1322,7 @@ def target_diff_personal_path_hits(
         if not raw_name:
             continue
         path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        _guard_worktree_parent_components(repo, path)
         if path.is_symlink():
             continue
         try:
@@ -1339,6 +1341,29 @@ def target_diff_personal_path_hits(
             hits.add("target-diff:untracked-worktree")
             break
     return sorted(hits)
+
+
+def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
+    """正規化済みrepo rootより下の全親componentを、参照先を辿らず確認する。"""
+    try:
+        relative = path.relative_to(repo)
+        if ".." in relative.parts:
+            raise ValueError("outside_inventory")
+        parent = repo
+        for component in relative.parts[:-1]:
+            parent = parent / component
+            try:
+                info = parent.lstat()
+            except FileNotFoundError:
+                # 消えたtracked fileは既存のdeleted inventoryが扱う。
+                return
+            if stat.S_ISLNK(info.st_mode) or (
+                getattr(info, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            ):
+                raise ValueError("linked_parent")
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("git_worktree_inventory_failed") from exc
 
 
 def working_tree_files(repo: Path) -> list[Path]:
@@ -1371,12 +1396,15 @@ def working_tree_files(repo: Path) -> list[Path]:
         if not mode.startswith(b"100"):
             raise RuntimeError("git_worktree_inventory_failed")
         path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+        _guard_worktree_parent_components(repo, path)
         if tag.upper() == b"S" and not path.exists():
             continue
         paths.append(path)
     for raw_name in untracked.stdout.split(b"\0"):
         if raw_name:
-            paths.append(repo / raw_name.decode("utf-8", errors="surrogateescape"))
+            path = repo / raw_name.decode("utf-8", errors="surrogateescape")
+            _guard_worktree_parent_components(repo, path)
+            paths.append(path)
     return paths
 
 
@@ -1410,6 +1438,7 @@ def changed_working_tree_files(
             continue
         rel = raw_name.decode("utf-8", errors="surrogateescape")
         path = repo / rel
+        _guard_worktree_parent_components(repo, path)
         if path.exists():
             mode_probe = run_subprocess(
                 ["git", "ls-files", "--stage", "--", rel],
@@ -1778,6 +1807,61 @@ def scan(
             "repo": repository_evidence_label(repo),
             "issues": ["git_worktree_inventory_failed"],
         }
+    # private照合はcommit差分ではなく、現在のGit inventory全体を担当する。
+    # credential/pathの既存target scopeと履歴のbase_ref契約はそのまま保つ。
+    private_worktree_enabled = private_identity.checker is not None
+    private_worktree_inventory_count = 0
+    private_worktree_scanned_count = 0
+    private_worktree_symlinks_excluded = 0
+    if private_identity.checker is not None:
+        try:
+            private_paths = working_tree_files(repo) if base_ref else paths
+            private_deleted = (
+                deleted_working_tree_files(repo) if base_ref else deleted_paths
+            )
+        except RuntimeError:
+            return {
+                "status": "tool_error",
+                "repo": repository_evidence_label(repo),
+                "issues": ["git_worktree_inventory_failed"],
+            }
+        current_paths = []
+        for path in private_paths:
+            if path in private_deleted:
+                continue
+            # inventoryが返す未追跡symlinkの参照先をprivate原資料として読まない。
+            if path.is_symlink():
+                private_worktree_symlinks_excluded += 1
+                continue
+            current_paths.append(path)
+        private_worktree_inventory_count = len(current_paths)
+        for path in current_paths:
+            rel = path.relative_to(repo).as_posix()
+            try:
+                if not path.is_file():
+                    raise OSError("not_regular_file")
+                data = path.read_bytes()
+            except OSError:
+                return {
+                    "status": "tool_error",
+                    "repo": repository_evidence_label(repo),
+                    "issues": [f"worktree_file_unreadable:{rel}"],
+                }
+            reviewed_raw = (
+                private_identity.checker is not None
+                and reviewed_exceptions is not None
+                and reviewed_exceptions.all_paths_reviewed(
+                    rel,
+                    data,
+                    record=False,
+                    normalized=True,
+                    normalizer=private_identity.path_normalizer,
+                )
+            )
+            private_identity.check(data, reviewed_raw_paths=reviewed_raw)
+            if private_identity.checker is None:
+                break
+            private_worktree_scanned_count += 1
     for path in paths:
         if path in deleted_paths:
             continue
@@ -1796,18 +1880,6 @@ def scan(
                 "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
-        reviewed_raw = (
-            private_identity.checker is not None
-            and reviewed_exceptions is not None
-            and reviewed_exceptions.all_paths_reviewed(
-                rel,
-                data,
-                record=False,
-                normalized=True,
-                normalizer=private_identity.path_normalizer,
-            )
-        )
-        private_identity.check(data, reviewed_raw_paths=reviewed_raw)
         if (
             reviewed_exceptions.has_unreviewed(rel, data)
             if reviewed_exceptions is not None
@@ -1930,6 +2002,24 @@ def scan(
         name for name in DEPENDENCY_FILES if (repo / name).is_file()
     )
     private_identity_report = private_identity.result()
+    private_identity_report.update(
+        worktree_scope="git_inventory_regular_files_excluding_ignored_and_links",
+        worktree_scan_status=(
+            "not_scanned"
+            if not private_worktree_enabled
+            else (
+                "complete"
+                if private_worktree_scanned_count == private_worktree_inventory_count
+                else "incomplete"
+            )
+        ),
+        worktree_inventory_files=private_worktree_inventory_count,
+        worktree_files_scanned=private_worktree_scanned_count,
+        worktree_files_unscanned=private_worktree_inventory_count
+        - private_worktree_scanned_count,
+        worktree_symlinks_excluded=private_worktree_symlinks_excluded,
+        git_object_scope=f"{base_ref}..HEAD" if base_ref else "all_reachable_refs",
+    )
     if reviewed_exceptions is not None and private_identity.checker is not None:
         private_identity_report["reviewed_path_exceptions"] = [
             {"id": key, "occurrence_count": count}
