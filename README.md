@@ -278,7 +278,7 @@ flowchart TD
 | Codex | [runtime/agents/openai.yaml](runtime/agents/openai.yaml) |
 
 ```bash
-python scripts/runtime_smoke.py --repo .
+python scripts/runtime_smoke.py --repo . --synthetic-contract
 ```
 
 配り方と保証境界は [docs/runtime-support.md](docs/runtime-support.md) です。skillは**各自がcloneしてから配布**してください。他人のskillフォルダをコピーしないでください。

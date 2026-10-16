@@ -205,7 +205,7 @@ install 済みコピーに**後から追加された余分な file は検出し�
 ## 動作確認コマンド
 
 ```bash
-python scripts/runtime_smoke.py --repo .
+python scripts/runtime_smoke.py --repo . --synthetic-contract
 python -m pytest -q
 ```
 
