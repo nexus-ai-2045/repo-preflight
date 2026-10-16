@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -161,3 +162,20 @@ def test_exec_passes_values_by_env_and_redacts_output(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert "hit:" in err and GUARD.REDACTED in err
     assert "fake" not in err.lower()
+
+
+def test_repo_history_personal_identity_is_collected(tmp_path):
+    repo = make_repo(tmp_path)
+    env = dict(
+        os.environ,
+        GIT_AUTHOR_NAME="Oldo Namae",
+        GIT_AUTHOR_EMAIL="old.private@example.invalid",
+        GIT_COMMITTER_NAME="Claude",
+        GIT_COMMITTER_EMAIL="noreply@anthropic.com",
+    )
+    (repo / "a.txt").write_text("a\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "old", env=env)
+    values = GUARD._history_personal_values(repo, GUARD.DEFAULT_ALLOWED_EMAIL)
+    assert "old.private@example.invalid" in values and "Oldo Namae" in values
+    assert "Claude" not in values and "nexus_ai" not in values

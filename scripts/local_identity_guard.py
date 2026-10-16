@@ -190,12 +190,60 @@ def _is_allowed_public(
     return bool(allowed_email.fullmatch(value))
 
 
+# サービスやAIが付けるコミット名義。持ち主の個人名義ではない。
+SERVICE_EMAIL_DOMAINS = frozenset(
+    {"anthropic.com", "cursor.com", "openai.com", "github.com", "google.com"}
+)
+
+
+def _history_personal_values(repo: Path, allowed_email: re.Pattern[str]) -> list[str]:
+    """repo の履歴で、公開用でもサービスでもないメールを使ったコミットの名義を拾う。
+
+    以前に私用の名義で作ったコミットがあれば、その名前とメールも照合に加える。
+    """
+    try:
+        log = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=",
+                "-C",
+                str(repo),
+                "log",
+                "--all",
+                "--format=%an%x00%ae%x00%cn%x00%ce",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        ).stdout
+    except OSError:
+        return []
+    values: list[str] = []
+    for line in set(log.splitlines()):
+        fields = line.split("\x00")
+        for name, email in zip(fields[0::2], fields[1::2]):
+            email = email.strip()
+            domain = email.rsplit("@", 1)[-1].casefold()
+            if (
+                not email
+                or allowed_email.fullmatch(email)
+                or domain in SERVICE_EMAIL_DOMAINS
+            ):
+                continue
+            values += [name, *name.split(), *_email_parts(email)]
+    return values
+
+
 def collect_identities(
     *,
     allowed_email: re.Pattern[str] = DEFAULT_ALLOWED_EMAIL,
     public_names: set[str] | None = None,
     environ: dict[str, str] | None = None,
     sources: dict[str, list[str]] | None = None,
+    repo: Path | None = None,
 ) -> list[Identity]:
     """環境から個人名義の候補を集める。値は呼び出し元へ返すだけで外へ出さない。
 
@@ -240,6 +288,8 @@ def collect_identities(
                 ]
             except (OSError, UnicodeDecodeError):
                 pass
+        if repo is not None:
+            sources["repo_history"] = _history_personal_values(repo, allowed_email)
 
     seen: set[str] = set()
     identities: list[Identity] = []
@@ -425,7 +475,7 @@ def _report(violations: list[str]) -> int:
 def cmd_config(args: argparse.Namespace) -> int:
     allowed = _allowed_email(args)
     identities = collect_identities(
-        allowed_email=allowed, public_names=_public_names(args)
+        allowed_email=allowed, public_names=_public_names(args), repo=Path(args.repo)
     )
     return _report(effective_identity_problems(Path(args.repo), allowed, identities))
 
@@ -434,7 +484,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     repo = Path(args.repo)
     allowed = _allowed_email(args)
     identities = collect_identities(
-        allowed_email=allowed, public_names=_public_names(args)
+        allowed_email=allowed, public_names=_public_names(args), repo=Path(args.repo)
     )
     if args.pre_push:
         ranges = push_ranges_from_stdin(repo, args.remote, sys.stdin.read())
@@ -457,7 +507,9 @@ def cmd_exec(args: argparse.Namespace) -> int:
         )
         return 2
     identities = collect_identities(
-        allowed_email=_allowed_email(args), public_names=_public_names(args)
+        allowed_email=_allowed_email(args),
+        public_names=_public_names(args),
+        repo=Path(args.repo),
     )
     env = dict(os.environ)
     values = "\n".join(i.value for i in identities)

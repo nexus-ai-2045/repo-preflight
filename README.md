@@ -200,7 +200,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 ## 個人名義を公開側に出さない
 
-`scripts/local_identity_guard.py` は、持ち主の個人名義を人に書かせずに照合します。OSのアカウント名・ホーム名・氏名・gitのglobal名義・端末名を実行中の環境から毎回集め、値はメモリ上だけで使います。報告は種類とhashの先頭だけで、値そのものは表示しません。
+`scripts/local_identity_guard.py` は、持ち主の個人名義を人に書かせずに照合します。OSのアカウント名・ホーム名・氏名・gitのglobal名義・端末名と、そのrepoの履歴で私用メールを使ったコミットの名義を、実行中の環境から毎回集め、値はメモリ上だけで使います。報告は種類とhashの先頭だけで、値そのものは表示しません。
 
 ```sh
 # 今のrepoで使われるコミット名義が公開用（GitHubのnoreply）か
