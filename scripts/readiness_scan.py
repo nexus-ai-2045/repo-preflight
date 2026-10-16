@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import types
 import hashlib
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -40,6 +43,8 @@ NON_GUARANTEES = (
     "第三者素材を公開する権利・ライセンス判断",
     "通常scanにおけるGitHub remote設定全体の現在状態 (configure_settings intentで別途取得。個人path例外のv2はprivate・v3はpublic合成fixture限定をlive確認)",
     "GitHub製品変更・公式推奨のリアルタイム自動追従 (鮮度検知と更新確認までは行う)",
+    "private identity policy未設定の通常scanでは、既知個人名・別名・メールの照合は未実施（private_identity_scan=not_configured）",
+    "GitHub PR/body/comment等の送信面はGit scanに含まれず、送信wrapperの同一bytes検査が別途必要",
     "CIが remote で実際に成功したか",
     "障害通知先・復旧手順が実運用で機能すること",
     "README・個人情報・公開範囲の目視確認",
@@ -278,6 +283,7 @@ class ReviewedSecretExceptions:
             raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
         self.applied = Counter()
         self.path_applied = Counter()
+        self.normalized_path_applied = Counter()
         self.has_path_entries = any(
             entry["rule"] in PATH_RULE_IDS for entry in self.entries
         )
@@ -325,11 +331,28 @@ class ReviewedSecretExceptions:
             self.path_applied,
         )
 
-    def all_paths_reviewed(self, path: str, data: bytes) -> bool:
-        # diffは部分textのhashでは除外しない。新blob内の全検出が束縛された場合だけ。
-        return bool(personal_path_matches(data)) and not self.has_unreviewed_paths(
-            path, data
+    def all_paths_reviewed(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        record: bool = True,
+        normalized: bool = False,
+        normalizer=None,
+    ) -> bool:
+        # 正規化後もrepo/path/raw content hash/検出値hash/件数/期限の全束縛を維持する。
+        matches = (
+            normalized_personal_path_matches(data, normalizer)
+            if normalized
+            else personal_path_matches(data)
         )
+        if not matches:
+            return False
+        applied = self.path_applied if record and not normalized else Counter()
+        unreviewed = self._unreviewed(path, data, matches, applied)
+        if normalized and not unreviewed:
+            self.normalized_path_applied |= applied
+        return not unreviewed
 
     def report(self, *, personal_paths: bool = False):
         return [
@@ -340,35 +363,15 @@ class ReviewedSecretExceptions:
         ]
 
 
-# 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
-# CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
-_UNIX_PATH_START = (
-    r"(?:(?<![\w./\\-])(?:-{1,2}[A-Za-z][A-Za-z0-9_-]*)?" r"|(?<=(?i:file://)))"
+# path文法の正本を同梱generic moduleから読む。CLI直接/任意のimportlib名でも同じsourceを使う。
+_PATH_GRAMMAR_SPEC = importlib.util.spec_from_file_location(
+    "_repo_preflight_path_grammar",
+    Path(__file__).resolve().with_name("identity_normalization.py"),
 )
-# 引用したusernameは非emptyかつ閉じquote直後のseparatorまで検査する。
-# rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
-_QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
-_QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
-PATH_PATTERNS = (
-    re.compile(
-        r"[A-Za-z]:[/\\]Us" + r"ers[/\\](?:[^/\\\s'\"]+|" + _QUOTED_WINDOWS_USER + r")"
-    ),
-    re.compile(
-        _UNIX_PATH_START
-        + r"(?P<personal_path>/Us"
-        + r"ers/(?:[^/\s'\"]+|"
-        + _QUOTED_UNIX_USER
-        + r"))"
-    ),
-    re.compile(
-        _UNIX_PATH_START
-        + r"(?P<personal_path>/ho"
-        + r"me/(?:[^/\s'\"]+|"
-        + _QUOTED_UNIX_USER
-        + r"))"
-    ),
-)
-PATH_RULE_IDS = ("windows_user_path", "macos_user_path", "linux_home_path")
+_PATH_GRAMMAR = importlib.util.module_from_spec(_PATH_GRAMMAR_SPEC)
+_PATH_GRAMMAR_SPEC.loader.exec_module(_PATH_GRAMMAR)
+PATH_PATTERNS = _PATH_GRAMMAR.PATH_PATTERNS
+PATH_RULE_IDS = _PATH_GRAMMAR.PATH_RULE_IDS
 
 # 公開fixtureの予約値。任意の個人pathをpolicyだけで登録する入口は設けない。
 # これらのhashでも、明示policyのrepo/path/blob/件数/期限/review束縛が必要。
@@ -416,6 +419,31 @@ def personal_path_matches(data: bytes) -> Counter:
     return matches
 
 
+def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
+    """公開正本の静的viewsを既存path規則へ渡し、追加検出だけを件数へ加える。"""
+    if normalizer is None:
+        source = Path(__file__).resolve().with_name("identity_normalization.py")
+        spec = importlib.util.spec_from_file_location(
+            "_canonical_path_normalization", source
+        )
+        normalizer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(normalizer)
+    raw = personal_path_matches(data)
+    matches = raw.copy()
+    for encoding in ("utf-8", "utf-16"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        extra = Counter()
+        for value, original in normalizer.static_string_views(text):
+            extra += personal_path_matches(
+                value.encode("utf-8")
+            ) - personal_path_matches(original.encode("utf-8"))
+        matches |= raw + extra
+    return matches
+
+
 # Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
 # 入れている。生byteには個人pathが現れないので、展開した XML を判定する。
 # 形式は実物からの実測で、公開仕様ではない。
@@ -435,6 +463,9 @@ _GIT_REPO_OVERRIDE_VARS = (
     "GIT_OBJECT_DIRECTORY",
     "GIT_INDEX_FILE",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_REPLACE_REF_BASE",
 )
 
 
@@ -444,10 +475,17 @@ def git_isolation_env(base: dict[str, str] | None = None) -> dict[str, str]:
     for key in _GIT_REPO_OVERRIDE_VARS:
         env.pop(key, None)
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     return env
 
 
-GIT_UNTRUSTED_CONFIG_OVERRIDES = ("-c", "core.fsmonitor=")
+GIT_UNTRUSTED_CONFIG_OVERRIDES = (
+    "-c",
+    "core.fsmonitor=",
+    "-c",
+    "core.commitGraph=false",
+)
 
 
 def git_hardened_command(cmd):
@@ -541,13 +579,224 @@ def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
 
+class PrivateIdentityScan:
+    """明示された既存private providerを同一bytesから読み、値なしの実検査証拠を返す。"""
+
+    def __init__(self, repo: Path, required: bool):
+        self.findings = 0
+        self.objects = 0
+        self.skipped = 0
+        self.report = {"status": "not_configured", "required": required}
+        self.checker = None
+        self.path_normalizer = None
+        source = os.environ.get("PUBLIC_IDENTITY_GUARD_SCRIPT")
+        bundled_source = Path(__file__).resolve().with_name("identity_normalization.py")
+        policy = os.environ.get("PUBLIC_IDENTITY_DENYLIST")
+        if not source and not policy and not required:
+            return
+        self.report["status"] = "tool_error"
+        try:
+            if not policy:
+                raise ValueError("missing_private_identity_input")
+            paths = [Path(source) if source else bundled_source, Path(policy)]
+            bundled = paths[0].resolve() == bundled_source
+            if bundled:
+                # candidate内のaliasを再度開かず、実行中scannerの固定同梱pathを読む。
+                paths[0] = bundled_source
+            for index, path in enumerate(paths):
+                if not path.is_absolute() or not path.is_file():
+                    raise ValueError("invalid_private_identity_input")
+                # 実行中scannerと同じ採用済み同梱moduleだけはself-scanでも直接使える。
+                # repo内の任意pluginやpolicyを実行・読込する許可には広げない。
+                if not (index == 0 and bundled) and (
+                    path.is_relative_to(repo)
+                    or path.parent.resolve().is_relative_to(repo)
+                    or path.resolve().is_relative_to(repo)
+                ):
+                    raise ValueError("invalid_private_identity_input")
+            provider_bytes, policy_bytes = (path.read_bytes() for path in paths)
+            provider = types.ModuleType("_explicit_private_identity_provider")
+            provider.__file__ = str(paths[0])
+            # Operatorが明示したproviderのみ実行。検査対象の本文はコードとして評価しない。
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                exec(compile(provider_bytes, str(paths[0]), "exec"), provider.__dict__)
+                patterns = provider.parse_denylist_text(policy_bytes.decode("utf-8"))
+            if (
+                not isinstance(patterns, list)
+                or not patterns
+                or not all(isinstance(v, str) and v.strip() for v in patterns)
+            ):
+                raise ValueError("invalid_private_identity_policy")
+            if not callable(provider.scan_private_text):
+                raise ValueError("invalid_private_identity_provider")
+            if bundled:
+                self.path_normalizer = provider
+                path_source_bytes = provider_bytes
+            else:
+                path_source_bytes = bundled_source.read_bytes()
+                self.path_normalizer = types.ModuleType("_canonical_path_normalizer")
+                self.path_normalizer.__file__ = str(bundled_source)
+                exec(
+                    compile(path_source_bytes, str(bundled_source), "exec"),
+                    self.path_normalizer.__dict__,
+                )
+            if not callable(self.path_normalizer.static_string_views):
+                raise ValueError("canonical_path_normalizer_unavailable")
+            self.path_normalizer_sha256 = hashlib.sha256(path_source_bytes).hexdigest()
+            self.patterns = patterns
+            self.checker = provider.scan_private_text
+            self.report.update(
+                status="pass",
+                provider_sha256=hashlib.sha256(provider_bytes).hexdigest(),
+                policy_sha256=hashlib.sha256(policy_bytes).hexdigest(),
+                provider_kind="bundled_canonical" if bundled else "explicit_external",
+                normalized_path_provider_sha256=self.path_normalizer_sha256,
+            )
+        except (Exception, SystemExit):
+            self.report["reason"] = "private_identity_input_unverified"
+
+    def check(
+        self,
+        data: bytes,
+        *,
+        literal_only: bool = False,
+        reviewed_raw_paths: bool = False,
+    ):
+        if self.checker is None:
+            return
+        texts = {data.decode("utf-8", errors="replace")}
+        try:
+            texts.add(data.decode("utf-16"))
+        except UnicodeDecodeError:
+            pass
+        found = False
+        try:
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                for text in texts:
+                    for candidate in {text, unquote(text)}:
+                        result = self.checker(candidate, self.patterns)
+                        if (
+                            not isinstance(result, dict)
+                            or result.get("status") not in {"pass", "fail"}
+                            or type(result.get("literal_match_count")) is not int
+                            or result["literal_match_count"] < 0
+                            or type(result.get("local_path_match")) is not bool
+                        ):
+                            raise ValueError("private_identity_provider_result_invalid")
+                        if (result["status"] == "pass") != (
+                            result["literal_match_count"] == 0
+                            and not result["local_path_match"]
+                        ):
+                            raise ValueError(
+                                "private_identity_provider_result_inconsistent"
+                            )
+                        reconstructed = result.get(
+                            "reconstructed_path_match", result["local_path_match"]
+                        )
+                        if type(reconstructed) is not bool or (
+                            reconstructed and not result["local_path_match"]
+                        ):
+                            raise ValueError(
+                                "private_identity_provider_result_inconsistent"
+                            )
+                        normalizer_digest = result.get("normalizer_sha256")
+                        if normalizer_digest is not None:
+                            if not isinstance(
+                                normalizer_digest, str
+                            ) or not re.fullmatch(r"[0-9a-f]{64}", normalizer_digest):
+                                raise ValueError(
+                                    "private_identity_normalizer_unverified"
+                                )
+                            if (
+                                self.report.get("normalizer_sha256", normalizer_digest)
+                                != normalizer_digest
+                            ):
+                                raise ValueError("private_identity_normalizer_changed")
+                            self.report["normalizer_sha256"] = normalizer_digest
+                        # literal_onlyは旧caller互換だけ。未承認pathの抑止には使わない。
+                        same_normalizer = (
+                            self.report["provider_kind"] == "bundled_canonical"
+                            or normalizer_digest == self.path_normalizer_sha256
+                        )
+                        found |= bool(
+                            result["literal_match_count"]
+                            or (
+                                result["local_path_match"]
+                                and (not reviewed_raw_paths or not same_normalizer)
+                            )
+                        )
+        except (Exception, SystemExit):
+            self.report.update(
+                status="tool_error", reason="private_identity_execution_unverified"
+            )
+            self.checker = None
+            return
+        self.objects += 1
+        self.findings += int(found)
+
+    def result(self):
+        report = {
+            **self.report,
+            "objects_scanned": self.objects,
+            "finding_count": self.findings,
+            "oversize_objects_unscanned": self.skipped,
+            "scope": "worktree_and_reachable_git_objects",
+        }
+        if self.report["status"] == "tool_error":
+            return report
+        if self.findings:
+            report["status"] = "fail"
+        elif self.skipped and self.checker is not None:
+            report["status"] = "unknown"
+        return report
+
+
+def fixed_history_revisions(repo: Path, rev_args: tuple[str, ...]) -> tuple[str, ...]:
+    """履歴の省略を拒否し、可変refをraw objectの固定OID閉包へ束縛する。"""
+    shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+    graft_code, graft_path = run(repo, "git", "rev-parse", "--git-path", "info/grafts")
+    if shallow_code or shallow != "false" or graft_code or not graft_path:
+        raise RuntimeError("git_raw_history_context_unverified")
+    path = Path(graft_path)
+    if not path.is_absolute():
+        path = repo / path
+    if path.exists():
+        raise RuntimeError("git_grafts_history_unverified")
+    args = (*rev_args, "HEAD") if "--all" in rev_args else rev_args
+    code, values = run(repo, "git", "rev-parse", "--revs-only", *args)
+    revisions = tuple(dict.fromkeys(values.splitlines()))
+    if (
+        code
+        or not revisions
+        or any(
+            not re.fullmatch(r"\^?(?:[0-9a-f]{40}|[0-9a-f]{64})", value)
+            for value in revisions
+        )
+    ):
+        raise RuntimeError("git_history_roots_unverified")
+    return revisions
+
+
 def history_hits(
     repo: Path,
     rev_args: tuple[str, ...] = ("--all",),
     reviewed_exceptions: ReviewedSecretExceptions | None = None,
+    private_identity: PrivateIdentityScan | None = None,
 ) -> tuple[list[str], list[str]]:
+    revisions = fixed_history_revisions(repo, rev_args)
+    if private_identity is not None:
+        private_identity.report["closure_revisions_sha256"] = hashlib.sha256(
+            "\n".join(revisions).encode("ascii")
+        ).hexdigest()
+        private_identity.report["replacement_objects_disabled"] = True
     objects = run_subprocess(
-        ["git", "rev-list", "--objects", "--no-object-names", *rev_args],
+        ["git", "rev-list", "--objects", "--no-object-names", *revisions],
         cwd=repo,
         capture_output=True,
     )
@@ -582,7 +831,7 @@ def history_hits(
     metadata_lines = check.stdout.splitlines()
     if len(metadata_lines) != len(inventory):
         raise RuntimeError("git_history_inventory_failed")
-    eligible: list[tuple[str, str, int]] = []
+    eligible: list[tuple[str, str, int, str]] = []
     for source, metadata in zip(inventory, metadata_lines, strict=True):
         object_id, name = source
         fields = metadata.split()
@@ -594,13 +843,18 @@ def history_hits(
             raise RuntimeError("git_history_inventory_failed") from exc
         if fields[1] not in {"blob", "commit", "tree", "tag"} or size < 0:
             raise RuntimeError("git_history_inventory_failed")
-        if fields[1] == "blob" and size <= 2_000_000:
-            eligible.append((object_id, name, size))
+        if fields[1] == "blob" or (
+            private_identity is not None and fields[1] in {"commit", "tag", "tree"}
+        ):
+            if size <= 2_000_000:
+                eligible.append((object_id, name, size, fields[1]))
+            elif private_identity is not None:
+                private_identity.skipped += 1
     aliases: dict[str, set[str]] = {}
     if reviewed_exceptions is not None:
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
         roots = run_subprocess(
-            ["git", "log", "--format=%T", *rev_args], cwd=repo, capture_output=True
+            ["git", "log", "--format=%T", *revisions], cwd=repo, capture_output=True
         )
         if roots.returncode:
             raise RuntimeError("git_history_inventory_failed")
@@ -627,7 +881,7 @@ def history_hits(
     path_hits: set[str] = set()
     eligible.reverse()
     while eligible:
-        chunk: list[tuple[str, str, int]] = []
+        chunk: list[tuple[str, str, int, str]] = []
         chunk_bytes = 0
         while eligible and (not chunk or chunk_bytes + eligible[-1][2] <= 16_000_000):
             item = eligible.pop()
@@ -636,7 +890,7 @@ def history_hits(
         batch = run_subprocess(
             ["git", "cat-file", "--batch"],
             cwd=repo,
-            input=("\n".join(object_id for object_id, _, _ in chunk) + "\n").encode(
+            input=("\n".join(object_id for object_id, _, _, _ in chunk) + "\n").encode(
                 "ascii"
             ),
             capture_output=True,
@@ -645,10 +899,14 @@ def history_hits(
             raise RuntimeError("git_history_inventory_failed")
         cursor = 0
         try:
-            for object_id, name, expected_size in chunk:
+            for object_id, name, expected_size, object_type in chunk:
                 line_end = batch.stdout.index(b"\n", cursor)
                 header = batch.stdout[cursor:line_end].decode("ascii").split()
-                if len(header) != 3 or header[0] != object_id or header[1] != "blob":
+                if (
+                    len(header) != 3
+                    or header[0] != object_id
+                    or header[1] != object_type
+                ):
                     raise RuntimeError("git_history_inventory_failed")
                 size = int(header[2])
                 if size != expected_size:
@@ -659,6 +917,33 @@ def history_hits(
                     raise RuntimeError("git_history_inventory_failed")
                 data = batch.stdout[start:end]
                 cursor = end + 1
+                # Gitのobject形式に対して、実際に読んだbytesと固定OIDの一致を確認。
+                digest = hashlib.new(
+                    "sha1" if len(object_id) == 40 else "sha256", usedforsecurity=False
+                )
+                digest.update(f"{object_type} {len(data)}\0".encode("ascii") + data)
+                if digest.hexdigest() != object_id:
+                    raise RuntimeError("git_raw_object_digest_mismatch")
+                if private_identity is not None:
+                    names = aliases.get(object_id)
+                    reviewed_raw = bool(
+                        object_type == "blob"
+                        and reviewed_exceptions is not None
+                        and names
+                        and all(
+                            reviewed_exceptions.all_paths_reviewed(
+                                alias,
+                                data,
+                                record=False,
+                                normalized=True,
+                                normalizer=private_identity.path_normalizer,
+                            )
+                            for alias in names
+                        )
+                    )
+                    private_identity.check(data, reviewed_raw_paths=reviewed_raw)
+                if object_type != "blob":
+                    continue
                 label = f"history:{sanitized_evidence_label(name or object_id[:12])}"
                 if reviewed_exceptions is None:
                     if text_has(SECRET_PATTERNS, data):
@@ -1339,6 +1624,7 @@ def scan(
     consistency_base_ref: str | None = None,
     identity_base_ref: str | None = None,
     reviewed_secret_exceptions: Path | None = None,
+    require_private_identity: bool = False,
 ) -> dict:
     repo = repo.resolve()
     root_error = repository_root_error(repo)
@@ -1407,22 +1693,34 @@ def scan(
             }
         identity_range = f"{base_ref}..HEAD"
         probes["identities"] = run(
-            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", identity_range
+            repo,
+            "git",
+            "log",
+            "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
+            identity_range,
         )
     elif identity_base is not None:
         probes["identities"] = run(
             repo,
             "git",
             "log",
-            "--format=%an <%ae>|%cn <%ce>",
+            "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
             f"{identity_base[1]}..HEAD",
         )
         probes["historical_identities"] = run(
-            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"
+            repo,
+            "git",
+            "log",
+            "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
+            "--all",
         )
     else:
         probes["identities"] = run(
-            repo, "git", "log", "--format=%an <%ae>|%cn <%ce>", "--all"
+            repo,
+            "git",
+            "log",
+            "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
+            "--all",
         )
     if any(code for code, _ in probes.values()):
         return {
@@ -1464,6 +1762,7 @@ def scan(
         else:
             if REVIEW_RECORD_MARKER not in record_text:
                 invalid_documents.append(REVIEW_RECORD)
+    private_identity = PrivateIdentityScan(repo, require_private_identity)
     credential_finding_count = 0
     path_hits: list[str] = []
     unscanned_path_files: list[str] = []
@@ -1497,6 +1796,18 @@ def scan(
                 "repo": repository_evidence_label(repo),
                 "issues": [f"worktree_file_unreadable:{rel}"],
             }
+        reviewed_raw = (
+            private_identity.checker is not None
+            and reviewed_exceptions is not None
+            and reviewed_exceptions.all_paths_reviewed(
+                rel,
+                data,
+                record=False,
+                normalized=True,
+                normalizer=private_identity.path_normalizer,
+            )
+        )
+        private_identity.check(data, reviewed_raw_paths=reviewed_raw)
         if (
             reviewed_exceptions.has_unreviewed(rel, data)
             if reviewed_exceptions is not None
@@ -1528,6 +1839,7 @@ def scan(
             repo,
             (f"{base_ref}..HEAD",) if base_ref else ("--all",),
             reviewed_exceptions,
+            private_identity if private_identity.checker is not None else None,
         )
         credential_finding_count += len(history_credential_findings)
     except RuntimeError:
@@ -1617,6 +1929,14 @@ def scan(
     dependency_files = sorted(
         name for name in DEPENDENCY_FILES if (repo / name).is_file()
     )
+    private_identity_report = private_identity.result()
+    if reviewed_exceptions is not None and private_identity.checker is not None:
+        private_identity_report["reviewed_path_exceptions"] = [
+            {"id": key, "occurrence_count": count}
+            for key, count in sorted(
+                reviewed_exceptions.normalized_path_applied.items()
+            )
+        ]
     checks = {
         "clean_worktree": {"status": "pass" if not dirty else "fail"},
         "required_documents": {
@@ -1647,6 +1967,7 @@ def scan(
                 else {}
             ),
         },
+        "private_identity_scan": private_identity_report,
         "commit_identity": {
             "status": (
                 "fail"
@@ -1748,6 +2069,11 @@ def scan(
         "commit_identity",
         "origin",
     }
+    if (
+        require_private_identity
+        or private_identity.report["status"] != "not_configured"
+    ):
+        automated_check_names.add("private_identity_scan")
     if not base_ref:
         automated_check_names.update(
             {"required_documents", "dependency_configuration", "ci_configuration"}
@@ -1903,6 +2229,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
             scan_kwargs["reviewed_secret_exceptions"] = (
                 options.reviewed_secret_exceptions
             )
+        scan_kwargs["require_private_identity"] = True
         scan_report = scan(options.repo, **scan_kwargs)
         scan_report = enrich_report(
             scan_report,
@@ -2292,6 +2619,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="release準備としてREADME情報設計ゲートも自動実行する",
     )
     parser.add_argument(
+        "--require-private-identity",
+        action="store_true",
+        help="明示private provider/policyを必須にする。未設定をtool_errorで拒否する（intent操作では常に必須）。",
+    )
+    parser.add_argument(
         "--expected-identity",
         help='Expected Git author and committer identity, for example "Example <dev@example.com>"',
     )
@@ -2551,6 +2883,7 @@ def main(
             scan_kwargs["reviewed_secret_exceptions"] = (
                 options.reviewed_secret_exceptions
             )
+        scan_kwargs["require_private_identity"] = args.require_private_identity
         report = scan(options.repo, **scan_kwargs)
     except Exception as exc:  # 予期しない例外もexit 2の検査失敗として扱う
         # 例外messageはpath/secretを含み得るため型名だけ返す

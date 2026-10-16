@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -16,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 REQUIRED_RELATIVE = (
@@ -36,7 +38,9 @@ TRIGGER_TOKENS = (
 )
 
 
-def run_scan(root: Path, *args: str) -> tuple[int, dict | None, str]:
+def run_scan(
+    root: Path, *args: str, environment: dict[str, str] | None = None
+) -> tuple[int, dict | None, str]:
     scan = root / "scripts" / "readiness_scan.py"
     if not scan.is_file():
         return 2, None, "readiness_scan_missing"
@@ -47,6 +51,7 @@ def run_scan(root: Path, *args: str) -> tuple[int, dict | None, str]:
         text=True,
         encoding="utf-8",
         errors="backslashreplace",
+        env=environment,
     )
     stdout = result.stdout.strip()
     report = None
@@ -223,6 +228,11 @@ def main() -> int:
         default=Path(os.path.expanduser("~")),
         help="home directory whose installed skill copies are checked (tests)",
     )
+    parser.add_argument(
+        "--synthetic-contract",
+        action="store_true",
+        help="一時生成の合成policyでCLI契約だけを検査する。実private情報の監査ではない。",
+    )
     args = parser.parse_args()
     root = args.repo.resolve()
     errors: list[str] = []
@@ -242,7 +252,25 @@ def main() -> int:
         elif not candidate.is_file():
             errors.append(f"missing:{rel}")
 
-    code, report, _ = run_scan(root, "--intent", "create_repo")
+    scan_environment = None
+    synthetic_phases = {}
+    synthetic_private_check = None
+    if args.synthetic_contract:
+        scan_environment = dict(os.environ)
+        for key in (
+            "PUBLIC_IDENTITY_GUARD_SCRIPT",
+            "PUBLIC_IDENTITY_DENYLIST",
+            "PUBLIC_IDENTITY_DENYLIST_EXTRA",
+        ):
+            scan_environment.pop(key, None)
+        notes.append("synthetic_contract=true; actual_private_identity_audit=false")
+
+    def scan_call(*scan_args):
+        if scan_environment is None:
+            return run_scan(root, *scan_args)
+        return run_scan(root, *scan_args, environment=scan_environment)
+
+    code, report, _ = scan_call("--intent", "create_repo")
     if report is None:
         errors.append("create_repo_not_json")
     else:
@@ -260,8 +288,48 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         sample = make_min_repo(Path(tmp))
-        code, report, _ = run_scan(
-            root, "--repo", str(sample), "--intent", "open_pr", "--human"
+        expected_policy_hash = None
+        expected_provider_hash = None
+        if args.synthetic_contract:
+            # 値はsourceに固定せず実行時に生成する。実operator policyはchildへ渡さない。
+            policy = Path(tmp) / "synthetic-identity-policy.txt"
+            policy.write_text(
+                "runtime-contract-" + uuid.uuid4().hex + "@example.invalid\n",
+                encoding="utf-8",
+            )
+            expected_policy_hash = hashlib.sha256(policy.read_bytes()).hexdigest()
+            scan_environment["PUBLIC_IDENTITY_DENYLIST"] = str(policy.resolve())
+            try:
+                expected_provider_hash = hashlib.sha256(
+                    (root / "scripts/identity_normalization.py").read_bytes()
+                ).hexdigest()
+            except OSError:
+                errors.append("synthetic_provider_missing")
+
+        def verify_synthetic_private(report, phase):
+            if not args.synthetic_contract:
+                return
+            source = report.get("scan", report) if isinstance(report, dict) else {}
+            checks = source.get("checks") if isinstance(source, dict) else None
+            check = (
+                checks.get("private_identity_scan", {})
+                if isinstance(checks, dict)
+                else {}
+            )
+            verified = (
+                isinstance(check, dict)
+                and check.get("status") == "pass"
+                and check.get("provider_kind") == "bundled_canonical"
+                and check.get("policy_sha256") == expected_policy_hash
+                and expected_provider_hash is not None
+                and check.get("provider_sha256") == expected_provider_hash
+            )
+            synthetic_phases[phase] = verified
+            if not verified:
+                errors.append("synthetic_private_identity_unverified")
+
+        code, report, _ = scan_call(
+            "--repo", str(sample), "--intent", "open_pr", "--human"
         )
         if report is None:
             errors.append("open_pr_not_json")
@@ -273,14 +341,27 @@ def main() -> int:
             notes.append(f"open_pr_status={report.get('status')} exit={code}")
         if tool_failed(code, report):
             errors.append("open_pr_tool_error")
+        verify_synthetic_private(report, "open_pr")
 
-        code, report, _ = run_scan(root, "--repo", str(sample))
+        code, report, _ = scan_call("--repo", str(sample))
         if report is None or report.get("schema") != "repo-preflight.scan/v3":
             errors.append("scan_schema")
         else:
             notes.append(f"scan_status={report.get('status')} exit={code}")
         if tool_failed(code, report):
             errors.append("scan_tool_error")
+        verify_synthetic_private(report, "scan")
+        if args.synthetic_contract:
+            verified = len(synthetic_phases) == 2 and all(synthetic_phases.values())
+            synthetic_private_check = {
+                "status": "pass" if verified else "fail",
+                "provider_kind": "bundled_canonical",
+                "provider_sha256": expected_provider_hash,
+                "policy_sha256": expected_policy_hash,
+                "policy_snapshot_verified": verified,
+                "phases": synthetic_phases,
+                "runtime_generated_reserved_policy": True,
+            }
 
     skill_errors, skill_results, skill_notes = check_runtime_skills(
         root, args.home.resolve()
@@ -292,6 +373,14 @@ def main() -> int:
 
     payload = {
         "schema": "repo-preflight.runtime-smoke/v1",
+        "mode": "synthetic_contract" if args.synthetic_contract else "operator_inputs",
+        "actual_private_identity_audit": False,
+        "synthetic_private_check": synthetic_private_check,
+        "privacy_assurance": (
+            "合成入力を使った契約smokeで、実private情報の監査ではありません"
+            if args.synthetic_contract
+            else "指定入力によるCLI契約の検査で、公開対象repoの実private監査ではありません"
+        ),
         "status": "pass" if not errors else "fail",
         "platform": platform.platform(),
         "python": sys.version.split()[0],

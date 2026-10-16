@@ -42,6 +42,9 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 公開の合成fixtureはversion 3の明示policyで、予約済み合成値とrepo・path・blob・検出hash・件数・期限を完全束縛して扱えます。任意の個人pathやsecretは登録できません。
 
+非公開入力と保証範囲は[実行環境の契約](docs/runtime-support.md#非公開の個人識別子ポリシーと公開前検査)、明示例外と負例データは[自己検査の手順](docs/runtime-support.md#正本自身の公開前検査)を参照してください。
+通常scanでも照合を必須にする場合は、非公開入力を用意して `--require-private-identity` を指定します。
+
 GitHub Settingsのclassic branch protection、AI憲法の入口、限定例外、runtime skillのずれ検知の改善も含みます。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
 
 ### PRレビューの収束確認
