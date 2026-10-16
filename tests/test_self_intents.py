@@ -83,8 +83,10 @@ def test_documented_intents_stay_usable_against_this_repository(
     assert consistency["status"] == "pass", consistency
 
 
-def test_shortest_plain_scan_does_not_tool_error_on_self():
+def test_shortest_plain_scan_does_not_tool_error_on_self(monkeypatch):
     """OPERATIONS / README の最短1本が自己リポで整合性 tool_error に落ちない。"""
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
     if not _origin_main_is_usable_base():
         if os.environ.get("GITHUB_ACTIONS") == "true":
             pytest.fail(
@@ -105,4 +107,5 @@ def test_shortest_plain_scan_does_not_tool_error_on_self():
     consistency = report["checks"]["repository_consistency"]
     assert consistency["status"] != "tool_error", consistency
     assert "change_sensitive_scope_unavailable" not in consistency.get("findings", [])
-    assert report["consistency_scope"]["base_ref"] == "origin/main"
+    assert report["consistency_scope"]["base_ref"] == "<redacted-path>"
+    assert report["ref_label_privacy"]["status"] == "unknown"

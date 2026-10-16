@@ -496,8 +496,10 @@ def make_readable_release_repo(tmp_path: Path) -> Path:
 
 
 def test_human_release_dialogue_explains_stale_readme_even_when_design_passes(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch
 ):
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
     repo = make_readable_release_repo(tmp_path)
     (repo / "CHANGELOG.md").write_text("New release feature.\n", encoding="utf-8")
     git(repo, "add", "CHANGELOG.md")
@@ -528,12 +530,15 @@ def test_human_release_dialogue_explains_stale_readme_even_when_design_passes(
     assert proposal["severity"] == "required"
     assert proposal["blocks_intent"] is True
     assert proposal["current"]["reason"] == "release_readme_update_missing"
-    assert proposal["current"]["baseline"]["resolved_base_ref"] == "refs/tags/v1.0.0"
+    # policy未設定のrefは、scan層と同じく人間向け提案でも伏せる。
+    assert proposal["current"]["baseline"]["resolved_base_ref"] == "<redacted-path>"
+    assert dialogue["scan"]["ref_label_privacy"]["status"] == "unknown"
     assert proposal["current"]["baseline"]["base_oid"]
     human = console.getvalue()
     assert "今回の機能・制限・使い方" in human
     assert "release_readme_update_missing" in human
-    assert "refs/tags/v1.0.0" in human
+    assert "refs/tags/v1.0.0" not in human
+    assert "<redacted-path>" in human
     assert "--consistency-base-ref" in human
     assert "再検査" in human
 
