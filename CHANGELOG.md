@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `scripts/local_identity_guard.py` を追加。持ち主の個人名義（OSのアカウント名、ホーム名、氏名、gitのglobal名義、端末名）を実行中の環境から自動で集め、コミット名義・メッセージ・追加行・ファイル名を照合する。人が名前を書く照合リストを前提にせず、値は表示も保存もしない（報告はhashの先頭だけ）。コミット名義はGitHubのnoreplyとbotだけを許す。`exec` は既存のidentity guardへ値を環境変数で渡し、出力に値が出たら伏せ字にする。
+- `AGENTS.md` に、個人名義をチャット・PR・コミット・ファイルに書かない、ユーザーに書かせる案を出さないルールを追加。
+
 ## 0.6.0 - 2026-10-16
 
 - 公開の合成fixtureをversion 3の明示policyで扱う。予約済み合成値だけに限定し、repo・path・blob・検出hash・件数・UTC期限・レビュー参照を固定する。任意の個人pathとsecretは登録できず、v2のprivate限定条件と全履歴検査を維持する。
