@@ -2771,7 +2771,8 @@ def test_private_path_exception_does_not_approve_hidden_normalized_path(
         content = split_path_source(fixture_path("macos", "My", "work"))
     elif mode == "duplicate":
         content += split_path_source(fixture_path("macos", "My", "work"))
-    (repo / "fixture.py").write_text(content)
+    # hash束縛するfixtureはWindowsでも同一bytesで保存する。
+    (repo / "fixture.py").write_bytes(content.encode("utf-8"))
     git(repo, "add", ".")
     git(repo, "commit", "-m", "path fixture")
     policy = tmp_path / "reviewed.json"

@@ -80,6 +80,8 @@ def hit_local_absolute_path(text: str) -> bool:
 def static_string_views(text: str) -> list[tuple[str, str]]:
     """静的に解釈できる最大のstring式と原文だけを返す。対象コードは実行しない。"""
     import ast
+    import copy
+    import io
     import textwrap
 
     fragments = [text]
@@ -147,10 +149,23 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
 
+        # 全sourceをliteralごとに再分割せず、標準APIへ対象の物理行だけ渡す。
+        # newline="" はCR/CRLFを保持し、form feed等を行区切りへ変えない。
+        source_lines = tuple(io.StringIO(fragment, newline=""))
+
         def visit(node):
             value = static_string(node)
             if value is not None:
-                original = ast.get_source_segment(fragment, node)
+                first = node.lineno - 1
+                last = node.end_lineno
+                if not 0 <= first < last <= len(source_lines):
+                    raise ValueError("private_identity_normalization_incomplete")
+                segment_node = copy.copy(node)
+                segment_node.lineno = 1
+                segment_node.end_lineno -= first
+                original = ast.get_source_segment(
+                    "".join(source_lines[first:last]), segment_node
+                )
                 if original is None:
                     raise ValueError("private_identity_normalization_incomplete")
                 views.append((value, original))

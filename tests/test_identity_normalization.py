@@ -86,3 +86,46 @@ def test_unrelated_arrays_and_spaced_brand_do_not_match_policy():
         ["fixture-private-operator"],
     )
     assert result["status"] == "pass"
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+@pytest.mark.parametrize(
+    "expression", ['("al" + "pha")', '("al" "pha")', '"".join(["al", "pha"])']
+)
+def test_source_segments_keep_stdlib_unicode_and_newline_semantics(newline, expression):
+    import ast
+
+    source = "π = 1" + newline + "\fTARGET = " + expression + newline
+    node = ast.parse(source).body[-1].value
+    expected = ast.get_source_segment(source, node)
+    assert ENGINE.static_string_views(source) == [("alpha", expected)]
+
+
+def test_multiline_segment_keeps_unicode_byte_columns_and_raw_newlines():
+    import ast
+
+    source = 'π = "π"; TARGET = ("al" +\r\n    "pha")\r\n'
+    node = ast.parse(source).body[-1].value
+    assert ENGINE.static_string_views(source)[-1] == (
+        "alpha",
+        ast.get_source_segment(source, node),
+    )
+
+
+def test_many_literals_do_not_resplit_the_whole_module(monkeypatch):
+    import ast
+
+    source = "\n".join(f'VALUE_{index} = "token_{index}"' for index in range(2000))
+    observed_lengths = []
+    original = ast.get_source_segment
+
+    def observe(fragment, node, **kwargs):
+        observed_lengths.append(len(fragment))
+        return original(fragment, node, **kwargs)
+
+    monkeypatch.setattr(ast, "get_source_segment", observe)
+    views = ENGINE.static_string_views(source)
+    assert len(views) == 2000
+    assert len(observed_lengths) == 2000
+    assert max(observed_lengths) < 100
+    assert sum(observed_lengths) <= len(source) + 2000
