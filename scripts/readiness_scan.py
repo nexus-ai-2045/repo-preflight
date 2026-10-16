@@ -2018,7 +2018,11 @@ def scan(
         worktree_files_unscanned=private_worktree_inventory_count
         - private_worktree_scanned_count,
         worktree_symlinks_excluded=private_worktree_symlinks_excluded,
-        git_object_scope=f"{base_ref}..HEAD" if base_ref else "all_reachable_refs",
+        git_object_scope=(
+            sanitized_evidence_label(f"{base_ref}..HEAD")
+            if base_ref
+            else "all_reachable_refs"
+        ),
     )
     if reviewed_exceptions is not None and private_identity.checker is not None:
         private_identity_report["reviewed_path_exceptions"] = [
