@@ -227,12 +227,13 @@ def test_foreign_recovery_does_not_invent_dynamic_or_prose_values(source):
     assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
 
 
-def test_foreign_recovery_never_executes_dynamic_expression(tmp_path):
+def test_foreign_recovery_never_executes_dynamic_expression(tmp_path, monkeypatch):
     marker = tmp_path / "not-executed"
+    monkeypatch.setenv("REPO_PREFLIGHT_DYNAMIC_EXEC_MARKER", str(marker))
     source = (
         'const VALUE = "safe" + __import__("pathlib").Path('
-        + repr(str(marker))
-        + ').write_text("bad");'
+        '__import__("os").environ["REPO_PREFLIGHT_DYNAMIC_EXEC_MARKER"]'
+        ').write_text("bad");'
     )
     assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
     assert not marker.exists()
