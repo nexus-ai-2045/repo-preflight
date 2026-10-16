@@ -6,6 +6,8 @@
 
 - `scripts/local_identity_guard.py` を追加。持ち主の個人名義（OSのアカウント名、ホーム名、氏名、gitのglobal名義、端末名、そのrepoの履歴で私用メールを使ったコミットの名義）を実行中の環境から自動で集め、コミット名義・メッセージ・追加行・ファイル名を照合する。人が名前を書く照合リストを前提にせず、値は表示も保存もしない（報告はhashの先頭だけ）。コミット名義はGitHubのnoreplyとbotだけを許す。`exec` は既存のidentity guardへ値を環境変数で渡し、出力に値が出たら伏せ字にする。
 - `AGENTS.md` に、個人名義をチャット・PR・コミット・ファイルに書かない、ユーザーに書かせる案を出さないルールを追加。
+- `scripts/identity_gate.py` を追加。作者・コミッター名義の許可リスト、Co-authored-by / Signed-off-by 行、コミット本文の個人の型を、基点から HEAD までの全コミットで検査する。個人の型はリポに書かず、非公開設定（`PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS`）から読む。設定が無ければ fail。見つけた値は出力せず件数だけ返す。
+- `readiness_scan.py` の結果に `identity_gate` 欄を追加。今は報告のみで、全体の判定（status）には入れない。必須化は別途決める。
 
 ## 0.6.0 - 2026-10-16
 
