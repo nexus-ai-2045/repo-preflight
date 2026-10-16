@@ -309,6 +309,75 @@ def test_comment_does_not_bridge_a_dynamic_operand():
     assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'const VALUE = ("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = "fixture-" + ("private-" + "identity@example.invalid");',
+        'const VALUE: string = (("fixture-" + "private-")) + ("identity@example.invalid");',
+        'const VALUE = ("fixture-" /* inner */ + "private-") /* outer */ + "identity@example.invalid";',
+        'const VALUE = ("fixture-" + // inner\r\n "private-") + /* outer */ ("identity@example.invalid");',
+        'function value() { return ("fixture-" + "private-") + "identity@example.invalid"; }',
+        'emit(("fixture-" + "private-") + "identity@example.invalid"); const END = true;',
+    ],
+)
+def test_foreign_grouped_static_concat_is_recovered(source):
+    result = ENGINE.scan_private_text(source, [DENIED])
+    assert result["status"] == "fail"
+    assert result["literal_match_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'const VALUE = fn("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = fn(("fixture-" + "private-")) + "identity@example.invalid";',
+        'const VALUE = !("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = +("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = ("fixture-" + dynamic) + "private-identity@example.invalid";',
+        'const VALUE = ("fixture-" + "private-").transform() + "identity@example.invalid";',
+        'const VALUE = ("fixture-" + "private-")[0] + "identity@example.invalid";',
+        'const VALUE = obj.return("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = yield ("fixture-" + "private-") + "identity@example.invalid";',
+        'const VALUE = dynamic * ("fixture-" + "private-") + "identity@example.invalid";',
+    ],
+)
+def test_foreign_grouping_does_not_join_across_dynamic_boundaries(source):
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
+
+
+def test_foreign_unclosed_static_group_is_incomplete_not_pass():
+    with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
+        ENGINE.scan_private_text('const VALUE = (("public" + "brand");', [DENIED])
+
+
+def test_foreign_deep_group_failure_is_incomplete_not_pass():
+    source = "const VALUE = " + "(" * 2000 + '"public" + "brand"' + ")" * 2000
+    with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
+        ENGINE.scan_private_text(source, [DENIED])
+
+
+def test_foreign_grouped_chains_keep_bounded_ast_work(monkeypatch):
+    import ast
+
+    source = "\n".join(
+        f'const V{index} = (("public" + "-")) + ("brand-{index}");'
+        for index in range(2000)
+    )
+    lengths = []
+    original = ast.parse
+
+    def observe(fragment, *args, **kwargs):
+        lengths.append(len(fragment))
+        return original(fragment, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", observe)
+    assert len(ENGINE.static_string_views(source)) == 2000
+    assert len(lengths) == 2001
+    assert max(lengths[1:]) < 100
+    assert sum(lengths[1:]) <= len(source)
+
+
 def test_unterminated_comment_in_selected_chain_is_incomplete_not_pass():
     with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
         ENGINE.scan_private_text('const VALUE = "public" + /* unfinished', [DENIED])

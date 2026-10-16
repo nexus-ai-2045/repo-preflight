@@ -129,41 +129,122 @@ _RECOVERY_TOKEN = re.compile(
     r"(?P<literal>" + _STATIC_LITERAL + r")"
     r"|(?P<comment>/\*[\s\S]*?\*/|//[^\r\n]*|\#[^\r\n]*)"
     r"|(?P<unterminated_comment>/\*[\s\S]*\Z)"
-    r"|(?P<plus>\+)|(?P<space>\s+)|(?P<other>[\s\S])"
+    r"|(?P<plus>\+)|(?P<open>\()|(?P<close>\))"
+    r"|(?P<identifier>[\w$]+)|(?P<space>\s+)|(?P<other>[\s\S])"
 )
 
 
 def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
-    """literalを先に字句化し、式間commentだけを評価用token列から外す。"""
-    chains = []
-    parts = []
-    first = last = 0
+    """完全staticな括弧だけを連結へ戻し、callや動的operandの境界を越えない。"""
+    tokens = [
+        token
+        for token in _RECOVERY_TOKEN.finditer(text)
+        if token.lastgroup not in {"comment", "space"}
+    ]
+    ranges = []
 
-    def finish():
-        complete = parts[:-1] if parts and parts[-1] == "+" else parts
-        if len(complete) >= 3:
-            chains.append((" ".join(complete), text[first:last]))
+    def frame(opening=None, bubble=True):
+        return {
+            "opening": opening,
+            "bubble": bubble,
+            "static": True,
+            "first": None,
+            "last": None,
+            "literals": 0,
+            "pluses": 0,
+            "expects_term": True,
+        }
 
-    for token in _RECOVERY_TOKEN.finditer(text):
+    def finish(current):
+        if current["literals"] >= 2 and current["pluses"]:
+            ranges.append((current["first"], current["last"]))
+        current.update(first=None, last=None, literals=0, pluses=0, expects_term=True)
+
+    def term(current, first, last, literals, pluses):
+        if not current["expects_term"]:
+            finish(current)
+            current["static"] = False
+        if current["first"] is None:
+            current["first"] = first
+        current["last"] = last
+        current["literals"] += literals
+        current["pluses"] += pluses
+        current["expects_term"] = False
+
+    stack = [frame()]
+    previous = None
+    for index, token in enumerate(tokens):
+        current = stack[-1]
         kind = token.lastgroup
-        if kind in {"comment", "space"}:
-            continue
-        if kind == "unterminated_comment" and len(parts) > 1:
+        if kind == "unterminated_comment" and any(item["pluses"] for item in stack):
             raise ValueError("private_identity_normalization_incomplete")
         if kind == "literal":
-            if not parts or parts[-1] != "+":
-                finish()
-                parts = []
-                first = token.start()
-            parts.append(token.group())
-            last = token.end()
-        elif kind == "plus" and parts and parts[-1] != "+":
-            parts.append("+")
+            term(current, index, index, 1, 0)
+        elif kind == "plus" and not current["expects_term"]:
+            current["pluses"] += 1
+            current["expects_term"] = True
+        elif kind == "open":
+            # f("a" + "b") + "c" や !("a" + "b") + "c" をabcにしない。
+            blocked_prefix = previous is not None and (
+                previous.lastgroup in {"literal", "close"}
+                or (
+                    previous.lastgroup == "identifier"
+                    and (
+                        previous.group() not in {"return", "throw", "case"}
+                        or (index > 1 and tokens[index - 2].group() == ".")
+                    )
+                )
+                or (
+                    previous.lastgroup == "other"
+                    and previous.group()
+                    in {".", "]", "}", "!", "~", "-", "*", "/", "%"}
+                )
+                or (previous.lastgroup == "plus" and current["first"] is None)
+            )
+            bubble = current["expects_term"] and not blocked_prefix
+            if not bubble:
+                finish(current)
+                current["static"] = False
+            stack.append(frame(index, bubble))
+        elif kind == "close" and len(stack) > 1:
+            group = stack.pop()
+            parent = stack[-1]
+            if group["bubble"] and group["static"] and not group["expects_term"]:
+                term(
+                    parent,
+                    group["opening"],
+                    index,
+                    group["literals"],
+                    group["pluses"],
+                )
+            else:
+                finish(group)
+                finish(parent)
+                parent["static"] = False
         else:
-            finish()
-            parts = []
-    finish()
-    return chains
+            if (
+                kind == "other"
+                and token.group() in {";", "}"}
+                and current["opening"] is not None
+                and current["bubble"]
+                and current["static"]
+                and current["pluses"]
+            ):
+                raise ValueError("private_identity_normalization_incomplete")
+            finish(current)
+            current["static"] = False
+        previous = token
+    if any(item["bubble"] and item["static"] and item["pluses"] for item in stack[1:]):
+        raise ValueError("private_identity_normalization_incomplete")
+    for current in reversed(stack):
+        finish(current)
+    return [
+        (
+            " ".join(token.group() for token in tokens[first : last + 1]),
+            text[tokens[first].start() : tokens[last].end()],
+        )
+        for first, last in ranges
+    ]
 
 
 def static_string_views(text: str) -> list[tuple[str, str]]:

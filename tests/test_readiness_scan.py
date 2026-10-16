@@ -112,7 +112,7 @@ def test_release_readme_update_includes_worktree_and_then_committed_content(
     report = MODULE.scan(repo, release=True, consistency_base_ref="v1.0.0")
     assert report["checks"]["readme_release_freshness"]["status"] == "pass"
     assert report["checks"]["clean_worktree"]["status"] == "fail"
-    assert report["consistency_scope"]["resolved_base_ref"] == "refs/tags/v1.0.0"
+    assert report["consistency_scope"]["resolved_base_ref"] == "<redacted-path>"
     assert (
         report["consistency_scope"]["base_oid"]
         == report["checks"]["readme_release_freshness"]["baseline"]["base_oid"]
@@ -153,7 +153,7 @@ def test_release_after_candidate_tag_uses_explicit_previous_tag(tmp_path: Path):
     report = MODULE.scan(repo, release=True, consistency_base_ref="v1.0.0")
     assert report["status"] == "pass"
     baseline = report["checks"]["readme_release_freshness"]["baseline"]
-    assert baseline["resolved_base_ref"] == "refs/tags/v1.0.0"
+    assert baseline["resolved_base_ref"] == "<redacted-path>"
     assert baseline["base_oid"] == report["consistency_scope"]["base_oid"]
     current = MODULE.scan(repo, release=True, consistency_base_ref="v1.1.0")
     assert current["status"] == "blocked"
@@ -586,8 +586,8 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
 
     assert report["status"] == "pass"
     assert report["scan_scope"]["mode"] == "target_diff"
-    assert report["scan_scope"]["base_ref"] == base
-    assert report["scan_scope"]["resolved_base_ref"] == "refs/remotes/origin/main"
+    assert report["scan_scope"]["base_ref"] == "<redacted-path>"
+    assert report["scan_scope"]["resolved_base_ref"] == "<redacted-path>"
     assert report["scan_scope"]["base_oid"]
     assert report["checks"]["required_documents"]["status"] == "not_evaluated"
     assert report["checks"]["secret_scan"]["status"] == "pass"
@@ -978,6 +978,141 @@ def test_target_diff_redacts_secret_shaped_base_ref_from_dialogue(tmp_path: Path
 
     assert token not in serialized
     assert "<redacted-path>" in serialized
+
+
+@pytest.mark.parametrize("scope", ["base", "consistency", "identity"])
+@pytest.mark.parametrize(
+    "name,hidden",
+    [("ann", True), ("annual", False), ("github_pat_" + "R" * 30, True)],
+)
+def test_private_ref_labels_are_redacted_without_counting_content(
+    tmp_path, monkeypatch, scope, name, hidden
+):
+    policy = tmp_path / "policy.txt"
+    policy.write_text("ann\n")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo, name)
+    (repo / "safe.txt").write_text("safe content\n")
+    git(repo, "add", "safe.txt")
+    git(repo, "commit", "-m", "safe target")
+    kwargs = (
+        {"intent": "open_pr", "base_ref": base}
+        if scope == "base"
+        else (
+            {"intent": "publish", "consistency_base_ref": base}
+            if scope == "consistency"
+            else {
+                "intent": "release",
+                "release": True,
+                "expected_identity": "Test Author <test-author@example.invalid>",
+                "identity_base_ref": base,
+            }
+        )
+    )
+    report = MODULE.build_intent_dialogue(MODULE.ScanOptions(repo=repo, **kwargs))
+    serialized = json.dumps(report)
+    assert (base not in serialized) is hidden
+    assert report["scan"]["checks"]["private_identity_scan"]["finding_count"] == 0
+    if hidden:
+        assert "<redacted-path>" in serialized
+
+
+@pytest.mark.parametrize("policy_state", ["missing", "unreadable", "broken_provider"])
+def test_unverified_private_ref_labels_never_fall_back_to_raw(
+    tmp_path, monkeypatch, policy_state
+):
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
+    if policy_state != "missing":
+        policy = tmp_path / "policy.txt"
+        if policy_state == "broken_provider":
+            policy.write_text("ann\n")
+            helper = tmp_path / "broken.py"
+            helper.write_text(
+                "def parse_denylist_text(text): return ['ann']\n"
+                "def scan_private_text(*args): raise ValueError('private-output')\n"
+            )
+            monkeypatch.setenv("PUBLIC_IDENTITY_GUARD_SCRIPT", str(helper))
+        monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo, "ann")
+    options = MODULE.ScanOptions(repo=repo, intent="open_pr", base_ref=base)
+    serialized = json.dumps(MODULE.build_intent_dialogue(options))
+    assert base not in serialized
+    assert "private-output" not in serialized
+    assert "<redacted-path>" in serialized
+
+
+def test_ref_options_do_not_reveal_a_label_after_policy_snapshot_changes(
+    tmp_path, monkeypatch
+):
+    policy = tmp_path / "policy.txt"
+    policy.write_text("ann\n")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo, "ann")
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    policy.write_text("different-policy\n")
+    enriched = MODULE.enrich_report(
+        report, MODULE.ScanOptions(repo=repo, intent="open_pr", base_ref=base)
+    )
+    assert base not in json.dumps(enriched)
+    assert enriched["options"]["base_ref"] == "<redacted-path>"
+
+
+def test_ref_label_privacy_keeps_content_counters_and_longer_ref_names(
+    tmp_path, monkeypatch
+):
+    policy = tmp_path / "policy.txt"
+    policy.write_text("ann\n")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    scanner = MODULE.PrivateIdentityScan(make_repo(tmp_path), True)
+    before = scanner.result()
+    labels = {
+        "base_ref": "origin/ann",
+        "resolved_base_ref": "refs/remotes/origin/ann",
+        "git_object_scope": "origin/ann..HEAD",
+        "other": "origin/annual",
+    }
+    sanitized = MODULE.sanitized_ref_report(
+        labels,
+        ("origin/ann", "refs/remotes/origin/ann", "origin/annual"),
+        scanner,
+    )
+    assert sanitized["base_ref"] == sanitized["resolved_base_ref"] == "<redacted-path>"
+    assert sanitized["git_object_scope"] == "<redacted-path>..HEAD"
+    assert sanitized["other"] == "origin/annual"
+    assert scanner.result() == before
+
+
+@pytest.mark.parametrize(
+    "ref", ["status", "pass", "blocked", "tool_error", "repo-preflight.scan/v3"]
+)
+def test_ref_label_redaction_preserves_fixed_report_schema_and_values(
+    tmp_path, monkeypatch, ref
+):
+    policy = tmp_path / "policy.txt"
+    policy.write_text(ref + "\n")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    scanner = MODULE.PrivateIdentityScan(make_repo(tmp_path), True)
+    report = {
+        "status": "pass",
+        "schema": "repo-preflight.scan/v3",
+        "nested": {"status": "blocked", "reason": "tool_error"},
+        "guarantees": [ref + " is explanatory text"],
+        "options": {"base_ref": ref},
+    }
+    sanitized = MODULE.sanitized_ref_report(report, (ref,), scanner)
+    assert sanitized["status"] == report["status"]
+    assert sanitized["schema"] == report["schema"]
+    assert sanitized["nested"] == report["nested"]
+    assert sanitized["guarantees"] == report["guarantees"]
+    assert sanitized["options"]["base_ref"] == "<redacted-path>"
 
 
 def test_target_diff_does_not_follow_changed_symlink(tmp_path: Path):
@@ -2079,7 +2214,7 @@ def test_merge_intent_accepts_remote_base_ref(tmp_path: Path):
     report = json.loads(result.stdout)
     assert report["intent"] == "merge"
     assert report["scan"]["options"]["mode"] == "target_diff"
-    assert report["scan"]["options"]["base_ref"] == "origin/main"
+    assert report["scan"]["options"]["base_ref"] == "<redacted-path>"
 
 
 def test_publish_keeps_repo_scan_with_separate_consistency_base(
@@ -2371,7 +2506,7 @@ def test_plain_scan_defaults_consistency_base_to_origin_main(tmp_path: Path):
     assert report["status"] != "tool_error"
     assert report["scan_scope"]["mode"] == "repository"
     assert report["consistency_scope"]["mode"] == "target_diff"
-    assert report["consistency_scope"]["base_ref"] == "origin/main"
+    assert report["consistency_scope"]["base_ref"] == "<redacted-path>"
     assert report["consistency_scope"]["base_oid"]
     assert report["checks"]["repository_consistency"]["status"] != "tool_error"
     assert "change_sensitive_scope_unavailable" not in report["checks"][

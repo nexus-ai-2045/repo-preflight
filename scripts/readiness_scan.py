@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import io
 import types
 import hashlib
@@ -741,6 +742,18 @@ class PrivateIdentityScan:
         self.objects += 1
         self.findings += int(found)
 
+    def label_status(self, label: str) -> str:
+        """同じ検査器で報告名だけを確認し、file/objectの検出件数へ混ぜない。"""
+        if self.checker is None or self.report.get("status") == "tool_error":
+            return "unknown"
+        probe = copy.copy(self)
+        probe.report = dict(self.report)
+        probe.objects = probe.findings = probe.skipped = 0
+        probe.check(label.encode("utf-8", errors="surrogatepass"))
+        if probe.checker is None or probe.report.get("status") == "tool_error":
+            return "unknown"
+        return "private" if probe.findings else "public"
+
     def result(self):
         report = {
             **self.report,
@@ -756,6 +769,62 @@ class PrivateIdentityScan:
         elif self.skipped and self.checker is not None:
             report["status"] = "unknown"
         return report
+
+
+def sanitized_ref_report(
+    report: dict,
+    refs: tuple[str | None, ...],
+    private_identity: PrivateIdentityScan | None,
+) -> dict:
+    """入力refの公開可否を確認し、派生ラベルも同じ判定で秘匿する。"""
+    labels = tuple(dict.fromkeys(ref for ref in refs if ref))
+    if not labels:
+        return report
+    replacements = []
+    unknown = 0
+    for label in labels:
+        status = (
+            private_identity.label_status(label)
+            if private_identity is not None
+            else "unknown"
+        )
+        unknown += status == "unknown"
+        safe = sanitized_evidence_label(label, private_name=status != "public")
+        if safe != label:
+            # 正確なrefだけを置換。annでannualを隠さず、Git rangeの..は境界とする。
+            pattern = re.compile(
+                r"(?<![\w./-])" + re.escape(label) + r"(?=\.\.|$|[^\w./-])"
+            )
+            replacements.append((len(label), pattern, safe))
+    replacements.sort(key=lambda item: item[0], reverse=True)
+
+    ref_label_fields = {
+        "base_ref",
+        "resolved_base_ref",
+        "consistency_base_ref",
+        "identity_base_ref",
+        "git_object_scope",
+    }
+
+    def scrub(value, field=None):
+        if isinstance(value, str) and field in ref_label_fields:
+            for _, pattern, safe in replacements:
+                value = pattern.sub(lambda match: safe, value)
+            return value
+        if isinstance(value, dict):
+            # schema/status/説明文はref値ではない。ref専用fieldだけを秘匿する。
+            return {key: scrub(item, key) for key, item in value.items()}
+        if isinstance(value, list):
+            return [scrub(item, field) for item in value]
+        return value
+
+    sanitized = scrub(report)
+    sanitized["ref_label_privacy"] = {
+        "status": "unknown" if unknown else "complete",
+        "checked_ref_count": len(labels),
+        "unverified_ref_count": unknown,
+    }
+    return sanitized
 
 
 def fixed_history_revisions(repo: Path, rev_args: tuple[str, ...]) -> tuple[str, ...]:
@@ -2230,7 +2299,7 @@ def scan(
     )
     blocking = any(checks[name]["status"] == "fail" for name in automated_check_names)
     unknown = any(checks[name]["status"] == "unknown" for name in automated_check_names)
-    return {
+    report = {
         "status": (
             "tool_error" if tool_error else "blocked" if blocking or unknown else "pass"
         ),
@@ -2261,6 +2330,18 @@ def scan(
         ),
         "checks": checks,
     }
+    return sanitized_ref_report(
+        report,
+        (
+            base_ref,
+            resolved_base_ref,
+            consistency_base_ref,
+            resolved_consistency_base_ref,
+            identity_base_ref,
+            identity_base[0] if identity_base else None,
+        ),
+        private_identity,
+    )
 
 
 class ScanOptions:
@@ -2345,7 +2426,30 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         is not None,
     }
     enriched.update(boundary_sections())
-    return enriched
+    label_checker = None
+    if options.repo is not None:
+        expected = report.get("checks", {}).get("private_identity_scan", {})
+        candidate = PrivateIdentityScan(options.repo.resolve(), False)
+        # optionsの再構成時に、scanと異なるpolicy/providerからraw名を戻さない。
+        if (
+            expected.get("status") != "tool_error"
+            and expected.get("provider_sha256")
+            and expected.get("policy_sha256")
+            and all(
+                expected.get(key) == candidate.report.get(key)
+                for key in (
+                    "provider_sha256",
+                    "policy_sha256",
+                    "normalized_path_provider_sha256",
+                )
+            )
+        ):
+            label_checker = candidate
+    return sanitized_ref_report(
+        enriched,
+        (options.base_ref, options.consistency_base_ref, options.identity_base_ref),
+        label_checker,
+    )
 
 
 def build_intent_dialogue(options: ScanOptions) -> dict:
