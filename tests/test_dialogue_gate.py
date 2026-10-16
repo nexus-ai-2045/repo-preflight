@@ -129,7 +129,7 @@ def test_cli_intent_create_repo_without_repo_path():
     )
 
 
-def test_cli_intent_open_pr_includes_scan(tmp_path: Path):
+def test_cli_intent_open_pr_includes_scan(tmp_path: Path, private_identity_inputs):
     repo = make_repo(tmp_path)
     console = StringIO()
     stdout = StringIO()
@@ -265,7 +265,9 @@ def test_configure_settings_unavailable_required_observation_blocks_without_oper
     assert dialogue["status"] == "needs_human_input"
 
 
-def test_cli_open_pr_target_diff_uses_explicit_base(tmp_path: Path):
+def test_cli_open_pr_target_diff_uses_explicit_base(
+    tmp_path: Path, private_identity_inputs
+):
     repo = make_repo(tmp_path)
     subprocess.run(
         ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],

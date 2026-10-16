@@ -224,3 +224,10 @@ python -m pytest -q
 5. secret に ignore を出さない
 
 この 5 点は Claude Code でも Grok でも同じ。
+
+
+## CIの合成入力による契約smoke
+
+CIの `python scripts/runtime_smoke.py --repo . --synthetic-contract` は、repo外の一時生成policyと採用済み同梱generic moduleを使い、CLI契約の正常経路だけを確認します。operatorのprivate provider/policy/追加語はchild環境から除外します。JSONとCI step名にsyntheticで実private監査ではないことを明示し、実行したprovider/policyのhashも照合します。既知identityを拒否する負例はunitと独立probeで別途検査します。
+
+flagの無い通常modeや外部intentのprivate入力不足拒否は変えません。実operator policyを使う公開前gateはtrusted-baseのscannerがcandidateをデータとして読む別の運用です。実private policyをcandidate自身のunit testやMVPコードへ注入しません。CIの契約smoke成功を実private監査の成功に読み替えません。

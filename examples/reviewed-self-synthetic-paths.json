@@ -1,0 +1,41 @@
+{
+  "version": 3,
+  "entries": [
+    {
+      "id": "SelfCanonicalFixture1",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "477e469d56781b6548e1171f5dd9c487c591436fc93d737047953b696159b305",
+      "rule": "linux_home_path",
+      "match_sha256": "1f19107742728ff867bbfbb138fdea3b7ab8ef4c487fa519ebc811980ff7b27d",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-self-public-gate-intake-20261016、2026-10-16。予約署名・source hashを照合。人間による直接確認ではない。独立レビューと人間確認は別途行う。"
+    },
+    {
+      "id": "SelfCanonicalFixture2",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "477e469d56781b6548e1171f5dd9c487c591436fc93d737047953b696159b305",
+      "rule": "macos_user_path",
+      "match_sha256": "f09ccda47dbbca1c88e23fa549e3946d8a89a04a53e3a319dee2f75c79807f35",
+      "occurrence_count": 2,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-self-public-gate-intake-20261016、2026-10-16。予約署名・source hashを照合。人間による直接確認ではない。独立レビューと人間確認は別途行う。"
+    },
+    {
+      "id": "SelfCanonicalFixture3",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "477e469d56781b6548e1171f5dd9c487c591436fc93d737047953b696159b305",
+      "rule": "windows_user_path",
+      "match_sha256": "60afd51801efe9f85c1ec2a5472804b6df905558e8112545ae6ba9ddc61e7eb8",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI点検: /root/nps_final_review、privacy-self-public-gate-intake-20261016、2026-10-16。予約署名・source hashを照合。人間による直接確認ではない。独立レビューと人間確認は別途行う。"
+    }
+  ]
+}

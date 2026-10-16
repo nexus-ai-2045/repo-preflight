@@ -56,7 +56,9 @@ def _run_scan(intent: str, extra: list[str]) -> dict:
 
 
 @pytest.mark.parametrize(("intent", "extra"), DOCUMENTED_INTENTS)
-def test_documented_intents_stay_usable_against_this_repository(intent, extra):
+def test_documented_intents_stay_usable_against_this_repository(
+    intent, extra, private_identity_inputs
+):
     if not _origin_main_is_usable_base():
         if os.environ.get("GITHUB_ACTIONS") == "true":
             pytest.fail(

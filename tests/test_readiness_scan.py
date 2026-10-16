@@ -8,8 +8,17 @@ import sys
 import zlib
 from pathlib import Path
 from subprocess import CompletedProcess
+from urllib.parse import quote
 
 import pytest
+
+from identity_provider_fixture import configure_private_provider
+from path_input_fixture import (
+    fixture_path,
+    fixture_root,
+    fixture_relative,
+    split_path_source,
+)
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "readiness_scan.py"
 SPEC = importlib.util.spec_from_file_location("readiness_scan", SCRIPT)
@@ -220,7 +229,10 @@ def test_release_tag_inventory_error_fails_closed(tmp_path: Path, monkeypatch):
     assert report["checks"]["readme_release_freshness"]["status"] == "tool_error"
 
 
-def test_release_identity_base_separates_pending_commits_from_history(tmp_path: Path):
+def test_release_identity_base_separates_pending_commits_from_history(
+    tmp_path: Path, monkeypatch
+):
+    configure_private_provider(tmp_path, monkeypatch)
     repo = make_release_repo(tmp_path)
     git(repo, "tag", "v1.0.0")
     (repo / "legacy.txt").write_text("historical commit\n", encoding="utf-8")
@@ -338,10 +350,10 @@ def test_identity_base_cli_is_release_only(tmp_path: Path):
 @pytest.mark.parametrize(
     "path",
     [
-        "/".join(["src", "home", "alice", "page.py"]),
-        "/".join(["src", "Users", "alice", "page.py"]),
-        "/".join([".", "home", "alice", "page.py"]),
-        "/".join(["..", "Users", "alice", "page.py"]),
+        fixture_relative("src", "home", "alice", "page.py"),
+        fixture_relative("src", "Users", "alice", "page.py"),
+        fixture_relative(".", "home", "alice", "page.py"),
+        fixture_relative("..", "Users", "alice", "page.py"),
     ],
 )
 def test_relative_path_components_are_not_personal_paths(path: str):
@@ -368,7 +380,9 @@ def test_relative_path_components_are_not_personal_paths(path: str):
         "--custom-option_42",
     ],
 )
-@pytest.mark.parametrize("root", ["/ho" + "me", "/Us" + "ers"])
+@pytest.mark.parametrize(
+    "root", [fixture_root("linux").rstrip("/"), fixture_root("macos").rstrip("/")]
+)
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 def test_cli_option_absolute_path_keeps_match_hash(
     option: str, root: str, encoding: str
@@ -390,17 +404,17 @@ def test_cli_option_absolute_path_keeps_match_hash(
 @pytest.mark.parametrize(
     "path",
     [
-        "/ho" + "me/alice/page.py",
-        "/Us" + "ers/alice/page.py",
-        "C:/Us" + "ers/alice/page.py",
-        "C:\\Us" + "ers\\alice\\page.py",
-        "'/ho" + "me/alice/page.py'",
-        '"/Us' + 'ers/alice/page.py"',
-        "path=/ho" + "me/alice/page.py",
-        "file:///ho" + "me/alice/page.py",
-        "file:///Us" + "ers/alice/page.py",
-        "%2Fho" + "me%2Falice%2Fpage.py",
-        "file%3A%2F%2F%2Fho" + "me%2Falice%2Fpage.py",
+        (fixture_path("linux", "alice", "page.py")),
+        (fixture_path("macos", "alice", "page.py")),
+        (fixture_path("windows", "alice", "page.py", forward=True)),
+        (fixture_path("windows", "alice", "page.py")),
+        ("'" + fixture_path("linux", "alice", "page.py") + "'"),
+        ('"' + fixture_path("macos", "alice", "page.py") + '"'),
+        ("path=" + fixture_path("linux", "alice", "page.py")),
+        ("file://" + fixture_path("linux", "alice", "page.py")),
+        ("file://" + fixture_path("macos", "alice", "page.py")),
+        quote((fixture_path("linux", "alice", "page.py")), safe=""),
+        quote(("file://" + fixture_path("linux", "alice", "page.py")), safe=""),
     ],
 )
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
@@ -414,7 +428,7 @@ def test_relative_fixture_path_passes_worktree_and_deleted_history(tmp_path: Pat
     repo = make_repo(tmp_path)
     fixture = repo / "fixture.txt"
     fixture.write_text(
-        "/".join(["src", "home", "alice", "page.py"]) + "\n", encoding="utf-8"
+        fixture_relative("src", "home", "alice", "page.py") + "\n", encoding="utf-8"
     )
     git(repo, "add", "fixture.txt")
     git(repo, "commit", "-m", "add relative fixture")
@@ -554,7 +568,11 @@ def test_target_diff_ignores_preexisting_repo_baseline_findings(tmp_path: Path):
     for name in MODULE.REQUIRED:
         (repo / name).unlink()
     (repo / "legacy.txt").write_text(
-        "sk-" + "A" * 30 + "\nC:/Us" + "ers/legacy-user/project\n",
+        "sk-"
+        + "A" * 30
+        + "\n"
+        + fixture_path("windows", "legacy-user", "project", forward=True)
+        + "\n",
         encoding="utf-8",
     )
     git(repo, "add", ".")
@@ -580,7 +598,11 @@ def test_target_diff_ignores_preexisting_path_in_changed_file(tmp_path: Path):
     repo = make_repo(tmp_path)
     registry = repo / "registry.yaml"
     registry.write_text(
-        "legacy: C:/Us" + "ers/legacy-user/project\n",
+        (
+            "legacy: "
+            + fixture_path("windows", "legacy-user", "project", forward=True)
+            + "\n"
+        ),
         encoding="utf-8",
     )
     git(repo, "add", registry.name)
@@ -604,7 +626,13 @@ def test_target_diff_blocks_new_personal_path_line(tmp_path: Path):
     git(repo, "commit", "-m", "add registry")
     base = set_remote_base(repo)
     with registry.open("a", encoding="utf-8") as stream:
-        stream.write("checkout: C:/Us" + "ers/new-user/project\n")
+        stream.write(
+            (
+                "checkout: "
+                + fixture_path("windows", "new-user", "project", forward=True)
+                + "\n"
+            )
+        )
     git(repo, "add", registry.name)
     git(repo, "commit", "-m", "add personal checkout")
 
@@ -629,7 +657,11 @@ def test_target_diff_detects_personal_path_embedded_in_binary_file(tmp_path: Pat
     # UTF-8/UTF-16 のどちらでも全体decodeが失敗する noise (孤立surrogate) と
     # 個人pathを混在させたバイナリ file。noiseが弱いとUTF-16へのfallbackが
     # 文字化けしつつdecode成功してしまい、本来のバグ経路を再現できない。
-    payload = b"\x00\x01\x00\xd8" + b"C:/Us" + b"ers/newuser/project" + b"\x00\x02noise"
+    payload = (
+        b"\x00\x01\x00\xd8"
+        + fixture_path("windows", "newuser", "project", forward=True).encode("ascii")
+        + b"\x00\x02noise"
+    )
     (repo / "blob.bin").write_bytes(payload)
     git(repo, "add", "blob.bin")
     git(repo, "commit", "-m", "add binary with embedded personal path")
@@ -645,7 +677,8 @@ def test_target_diff_blocks_added_line_that_looks_like_patch_header(tmp_path: Pa
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
     (repo / "header-like.txt").write_text(
-        "++ C:/Us" + "ers/new-user/project\n", encoding="utf-8"
+        ("++ " + fixture_path("windows", "new-user", "project", forward=True) + "\n"),
+        encoding="utf-8",
     )
     git(repo, "add", "header-like.txt")
     git(repo, "commit", "-m", "add header-like personal path")
@@ -659,7 +692,12 @@ def test_target_diff_blocks_personal_path_in_utf16_addition(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
     (repo / "utf16.txt").write_text(
-        "checkout: C:/Us" + "ers/new-user/project\n", encoding="utf-16"
+        (
+            "checkout: "
+            + fixture_path("windows", "new-user", "project", forward=True)
+            + "\n"
+        ),
+        encoding="utf-16",
     )
     git(repo, "add", "utf16.txt")
     git(repo, "commit", "-m", "add UTF-16 personal path")
@@ -695,7 +733,8 @@ def test_target_diff_merge_compares_base_containing_parent(tmp_path: Path):
     repo = make_repo(tmp_path)
     git(repo, "branch", "feature")
     (repo / "baseline.txt").write_text(
-        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+        (fixture_path("windows", "baseline-user", "project", forward=True) + "\n"),
+        encoding="utf-8",
     )
     git(repo, "add", "baseline.txt")
     git(repo, "commit", "-m", "advance remote base")
@@ -715,7 +754,8 @@ def historical_base_merge(repo: Path, feature_body: str = "safe\n") -> tuple[str
     """古いmainをmergeした後、進んだmainを再びmergeする履歴を作る。"""
     git(repo, "branch", "feature")
     (repo / "baseline.txt").write_text(
-        "C:/Us" + "ers/baseline-user/project\n", encoding="utf-8"
+        (fixture_path("windows", "baseline-user", "project", forward=True) + "\n"),
+        encoding="utf-8",
     )
     git(repo, "add", "baseline.txt")
     git(repo, "commit", "-m", "advance original base")
@@ -757,7 +797,10 @@ def test_target_diff_historical_merge_uses_unique_base_ancestor(tmp_path: Path):
 @pytest.mark.parametrize(
     ("feature_body", "check"),
     [
-        ("C:/Us" + "ers/feature-user/project\n", "personal_path_scan"),
+        (
+            (fixture_path("windows", "feature-user", "project", forward=True) + "\n"),
+            "personal_path_scan",
+        ),
         ("github_pat_" + "B" * 30 + "\n", "secret_scan"),
     ],
 )
@@ -827,7 +870,8 @@ def test_target_diff_scans_parentless_commit_against_empty_tree(tmp_path: Path):
     git(repo, "checkout", "--orphan", "imported")
     git(repo, "rm", "-rf", ".")
     (repo / "imported.txt").write_text(
-        "C:/Us" + "ers/imported-user/project\n", encoding="utf-8"
+        (fixture_path("windows", "imported-user", "project", forward=True) + "\n"),
+        encoding="utf-8",
     )
     git(repo, "add", "imported.txt")
     git(repo, "commit", "-m", "import root")
@@ -851,7 +895,10 @@ def test_target_diff_scans_transient_personal_path_in_commit_history(tmp_path: P
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
     path_file = repo / "temporary-path.txt"
-    path_file.write_text("C:/Us" + "ers/new-user/project\n", encoding="utf-8")
+    path_file.write_text(
+        (fixture_path("windows", "new-user", "project", forward=True) + "\n"),
+        encoding="utf-8",
+    )
     git(repo, "add", path_file.name)
     git(repo, "commit", "-m", "introduce transient personal path")
     path_file.unlink()
@@ -868,7 +915,7 @@ def test_target_diff_blocks_personal_path_in_untracked_file(tmp_path: Path):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
     (repo / "untracked.txt").write_text(
-        "C:/Us" + "ers/new-user/project\n",
+        (fixture_path("windows", "new-user", "project", forward=True) + "\n"),
         encoding="utf-8",
     )
 
@@ -1080,11 +1127,18 @@ def test_unknown_shallow_state_returns_tool_error(
 
 def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Path):
     """履歴pathのCR/LF断片をobject IDとして誤解しない。"""
-    object_id = "a" * 40
+    object_id = hashlib.sha1(b"blob 8\0ordinary", usedforsecurity=False).hexdigest()
     commands: list[list[str]] = []
 
     def fake_run(args, **kwargs):
         commands.append(args)
+        assert kwargs["env"]["GIT_NO_REPLACE_OBJECTS"] == "1"
+        if "--is-shallow-repository" in args:
+            return CompletedProcess(args, 0, stdout="false", stderr="")
+        if "--git-path" in args:
+            return CompletedProcess(args, 0, stdout=".git/info/grafts", stderr="")
+        if "--revs-only" in args:
+            return CompletedProcess(args, 0, stdout=object_id, stderr="")
         if git_argv(args)[:3] == ["git", "rev-list", "--objects"]:
             output = (
                 f"{object_id}\n".encode()
@@ -1103,7 +1157,11 @@ def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
 
     assert MODULE.history_hits(tmp_path) == ([], [])
-    assert "--no-object-names" in commands[0]
+    inventory = next(
+        cmd for cmd in commands if git_argv(cmd)[:3] == ["git", "rev-list", "--objects"]
+    )
+    assert "--no-object-names" in inventory
+    assert inventory[-1] == object_id
 
 
 def test_cli_json_never_echoes_matched_secret(tmp_path: Path):
@@ -1190,7 +1248,7 @@ def test_ignored_virtual_environment_is_not_scanned(tmp_path: Path):
     (repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
     dependency = repo / ".venv" / "Lib" / "site-packages" / "dependency.py"
     dependency.parent.mkdir(parents=True)
-    personal_path = "C:/Us" + "ers/example"
+    personal_path = fixture_path("windows", "example", forward=True)
     dependency.write_text("sk-" + "C" * 30 + f"\n{personal_path}\n", encoding="utf-8")
 
     report = MODULE.scan(repo)
@@ -1241,8 +1299,8 @@ def add_model(repo: Path, data: bytes, name: str = "avatar.cmo3") -> str:
 @pytest.mark.parametrize(
     "psd_path",
     [
-        "/Us" + "ers/cmo3-owner/art/avatar.psd",
-        "C:\\Us" + "ers\\cmo3-owner\\art\\avatar.psd",
+        (fixture_path("macos", "cmo3-owner", "art", "avatar.psd")),
+        (fixture_path("windows", "cmo3-owner", "art", "avatar.psd")),
     ],
 )
 def test_personal_path_inside_cmo3_is_detected_without_echoing_it(
@@ -1311,7 +1369,10 @@ def test_unreadable_cmo3_is_unknown_instead_of_pass(tmp_path: Path, damage: str)
     assert report["status"] == "blocked"
 
 
-def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(tmp_path: Path):
+def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(
+    tmp_path: Path, monkeypatch
+):
+    configure_private_provider(tmp_path, monkeypatch)
     """公開直前の対話packetでも、検査できなかった .cmo3 を pass に丸めない。"""
     repo = make_repo(tmp_path)
     rel = add_model(repo, b"CAFF" + b"\x00" * 64, "broken.cmo3")
@@ -1340,7 +1401,9 @@ def test_cmo3_expanding_past_the_size_cap_is_unknown(tmp_path: Path, monkeypatch
 def test_cmo3_checks_every_contents_entry(tmp_path: Path):
     repo = make_repo(tmp_path)
     clean = make_cmo3(cmo3_xml("art/avatar.psd"))
-    leaking = make_cmo3(cmo3_xml("/Us" + "ers/cmo3-owner/art/avatar.psd"))
+    leaking = make_cmo3(
+        cmo3_xml((fixture_path("macos", "cmo3-owner", "art", "avatar.psd")))
+    )
     rel = add_model(repo, clean + leaking[len(b"CAFF") :])
 
     check = MODULE.scan(repo)["checks"]["personal_path_scan"]
@@ -1444,7 +1507,7 @@ def test_non_utf8_worktree_secret_is_scanned(tmp_path: Path, encoding: str):
 def test_non_utf8_worktree_personal_path_is_scanned(tmp_path: Path, encoding: str):
     repo = make_repo(tmp_path)
     (repo / "notes.txt").write_bytes(
-        non_utf8_text("C:\\Us" + "ers\\taro\\notes", encoding)
+        non_utf8_text((fixture_path("windows", "taro", "notes")), encoding)
     )
     git(repo, "add", "notes.txt")
     git(repo, "commit", "-m", "add non-UTF-8 notes")
@@ -1465,7 +1528,9 @@ def test_non_utf8_findings_in_deleted_history_are_scanned(
     repo = make_repo(tmp_path)
     token = "AKIA" + "H" * 16
     old = repo / "old.txt"
-    old.write_bytes(non_utf8_text(token + "\nC:\\Us" + "ers\\taro\\notes", encoding))
+    old.write_bytes(
+        non_utf8_text(token + "\n" + fixture_path("windows", "taro", "notes"), encoding)
+    )
     git(repo, "add", old.name)
     git(repo, "commit", "-m", "add non-UTF-8 notes")
     blob = subprocess.check_output(
@@ -1526,7 +1591,7 @@ def test_target_diff_non_utf8_addition_does_not_hide_personal_paths(
 ):
     repo = make_repo(tmp_path)
     base = set_remote_base(repo)
-    personal_path = "C:/Us" + "ers/new-user/project"
+    personal_path = fixture_path("windows", "new-user", "project", forward=True)
     if separate_file:
         (repo / "memo.txt").write_bytes(non_utf8_text("safe", "cp932"))
         (repo / "checkout.txt").write_text(personal_path + "\n", encoding="utf-8")
@@ -1777,7 +1842,9 @@ def test_unexpected_exception_exits_with_tool_error_code(
 ):
     repo = make_repo(tmp_path)
 
-    def explode(repo_path, expected_identity=None, release=False):
+    def explode(
+        repo_path, expected_identity=None, release=False, require_private_identity=False
+    ):
         raise OSError("secret-bearing message")
 
     monkeypatch.setattr(MODULE, "scan", explode)
@@ -2015,7 +2082,10 @@ def test_merge_intent_accepts_remote_base_ref(tmp_path: Path):
     assert report["scan"]["options"]["base_ref"] == "origin/main"
 
 
-def test_publish_keeps_repo_scan_with_separate_consistency_base(tmp_path: Path):
+def test_publish_keeps_repo_scan_with_separate_consistency_base(
+    tmp_path: Path, monkeypatch
+):
+    configure_private_provider(tmp_path, monkeypatch)
     repo = make_repo(tmp_path)
     token = "github_pat_" + "Q" * 30
     (repo / "legacy-secret.txt").write_text(token, encoding="utf-8")
@@ -2382,9 +2452,9 @@ def test_scan_does_not_rewrite_target_index(tmp_path: Path):
 @pytest.mark.parametrize(
     "synthetic_root",
     (
-        b'assert "C:\\\\Us' + b'ers\\\\" not in text',
-        b'assert "/Us' + b'ers/" not in text',
-        b'assert "/ho' + b'me/" not in text',
+        ("assert " + json.dumps(fixture_root("windows")) + " not in text").encode(),
+        ("assert " + json.dumps(fixture_root("macos")) + " not in text").encode(),
+        ("assert " + json.dumps(fixture_root("linux")) + " not in text").encode(),
     ),
 )
 def test_personal_path_patterns_ignore_quoted_synthetic_roots(synthetic_root: bytes):
@@ -2395,9 +2465,9 @@ def test_personal_path_patterns_ignore_quoted_synthetic_roots(synthetic_root: by
 @pytest.mark.parametrize(
     "personal_path",
     (
-        b"C:\\Us" + b"ers\\example-user\\project",
-        b"/Us" + b"ers/example-user/project",
-        b"/ho" + b"me/example-user/project",
+        (fixture_path("windows", "example-user", "project")).encode("latin1"),
+        (fixture_path("macos", "example-user", "project")).encode("latin1"),
+        (fixture_path("linux", "example-user", "project")).encode("latin1"),
     ),
 )
 def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
@@ -2408,10 +2478,10 @@ def test_personal_path_patterns_detect_real_user_paths(personal_path: bytes):
 @pytest.mark.parametrize(
     "root, separator",
     [
-        ("/Us" + "ers/", "/"),
-        ("/ho" + "me/", "/"),
-        ("C:/Us" + "ers/", "/"),
-        ("C:\\Us" + "ers\\", "\\"),
+        (fixture_root("macos"), "/"),
+        (fixture_root("linux"), "/"),
+        (fixture_root("windows", forward=True), "/"),
+        (fixture_root("windows"), "\\"),
     ],
 )
 @pytest.mark.parametrize(
@@ -2438,7 +2508,14 @@ def test_quoted_username_personal_paths_remain_detected(
     )
 
 
-@pytest.mark.parametrize("root", ["/Us" + "ers/", "/ho" + "me/", "C:/Us" + "ers/"])
+@pytest.mark.parametrize(
+    "root",
+    [
+        fixture_root("macos"),
+        fixture_root("linux"),
+        fixture_root("windows", forward=True),
+    ],
+)
 @pytest.mark.parametrize("quote", ["'", '"'])
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 def test_empty_quoted_username_does_not_turn_root_into_personal_path(
@@ -2447,3 +2524,361 @@ def test_empty_quoted_username_does_not_turn_root_into_personal_path(
     data = f"{root}{quote}{quote}/project".encode(encoding)
     assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
     assert not MODULE.personal_path_matches(data)
+
+
+@pytest.mark.parametrize("surface", ["coauthor", "author", "message", "deleted_blob"])
+def test_private_identity_provider_checks_real_git_objects(
+    tmp_path, monkeypatch, surface
+):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    email = "fixture-private-identity@example.invalid"
+    if surface == "author":
+        git(
+            repo,
+            "-c",
+            "user.email=" + email,
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        )
+    elif surface == "deleted_blob":
+        (repo / "fixture.py").write_text(email, encoding="utf-8")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "fixture")
+        git(repo, "rm", "fixture.py")
+        git(repo, "commit", "-m", "remove fixture")
+    else:
+        message = (
+            "fixture\n\nCo-authored-by: Fixture <" + email + ">"
+            if surface == "coauthor"
+            else email
+        )
+        git(repo, "commit", "--allow-empty", "-m", message)
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["status"] == "blocked"
+    check = report["checks"]["private_identity_scan"]
+    assert check["status"] == "fail"
+    assert check["finding_count"] > 0
+    assert email not in json.dumps(report)
+
+
+def test_expected_identity_includes_coauthor_trailer(tmp_path):
+    repo = make_repo(tmp_path)
+    git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "fixture\n\nCo-authored-by: Fixture <other@example.invalid>",
+    )
+    report = MODULE.scan(
+        repo, expected_identity="Test Author <test-author@example.invalid>"
+    )
+    assert report["checks"]["commit_identity"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("failure", ["unset", "empty", "missing", "inside_repo"])
+def test_private_provider_missing_inputs_never_pass(tmp_path, monkeypatch, failure):
+    helper, policy = configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    if failure == "unset":
+        monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST")
+    elif failure == "empty":
+        policy.write_text("# empty\n")
+    elif failure == "missing":
+        policy.unlink()
+    else:
+        monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(repo / "README.md"))
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["status"] == "tool_error"
+    assert report["checks"]["private_identity_scan"]["status"] == "tool_error"
+
+
+def test_private_identity_clean_brand_binds_provider_and_policy_hash(
+    tmp_path, monkeypatch
+):
+    helper, policy = configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    report = MODULE.scan(repo, require_private_identity=True)
+    check = report["checks"]["private_identity_scan"]
+    assert check["status"] == "pass"
+    assert check["provider_sha256"] == hashlib.sha256(helper.read_bytes()).hexdigest()
+    assert check["policy_sha256"] == hashlib.sha256(policy.read_bytes()).hexdigest()
+    assert check["objects_scanned"] > 0
+
+
+def test_private_provider_runtime_error_is_unverified_not_pass(tmp_path, monkeypatch):
+    helper, policy = configure_private_provider(tmp_path, monkeypatch)
+    helper.write_text(
+        "def parse_denylist_text(text): return ['fixture']\ndef scan_private_text(text, patterns): raise ValueError('private value must not escape')\n"
+    )
+    report = MODULE.scan(make_repo(tmp_path), require_private_identity=True)
+    assert report["status"] == "tool_error"
+    assert (
+        report["checks"]["private_identity_scan"]["reason"]
+        == "private_identity_execution_unverified"
+    )
+    assert "private value must not escape" not in json.dumps(report)
+
+
+def test_private_provider_large_blob_is_unverified(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    (repo / "large.txt").write_bytes(b"x" * 2_000_001)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "large fixture")
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["status"] == "blocked"
+    assert report["checks"]["private_identity_scan"]["status"] == "unknown"
+    assert report["checks"]["private_identity_scan"]["oversize_objects_unscanned"] == 1
+
+
+def test_private_identity_required_cli_unconfigured_fails(tmp_path, monkeypatch):
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
+    repo = make_repo(tmp_path)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--require-private-identity",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode != 0
+    assert (
+        json.loads(completed.stdout)["checks"]["private_identity_scan"]["status"]
+        == "tool_error"
+    )
+
+
+@pytest.mark.parametrize("encoding", ["utf-16", "url"])
+def test_private_identity_reuses_supported_decodings(tmp_path, monkeypatch, encoding):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    value = "fixture-private-identity@example.invalid"
+    content = (
+        value.encode("utf-16")
+        if encoding == "utf-16"
+        else value.replace("@", "%40").encode()
+    )
+    (repo / "encoded.txt").write_bytes(content)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "encoded fixture")
+    assert (
+        MODULE.scan(repo, require_private_identity=True)["checks"][
+            "private_identity_scan"
+        ]["status"]
+        == "fail"
+    )
+
+
+def test_private_scan_replacement_cannot_hide_raw_private_object(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    (repo / "private.txt").write_text("fixture-private-identity@example.invalid")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "private fixture")
+    bad = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / "private.txt").write_text("clean fixture")
+    git(repo, "commit", "-am", "clean fixture")
+    tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    clean = subprocess.run(
+        ["git", "commit-tree", tree],
+        input="clean independent\n",
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    git(repo, "reset", "--hard", bad)
+    git(repo, "replace", bad, clean)
+    checker = MODULE.PrivateIdentityScan(repo, True)
+    MODULE.history_hits(repo, private_identity=checker)
+    assert checker.result()["status"] == "fail"
+    assert checker.result()["finding_count"] > 0
+
+
+def test_private_scan_rejects_grafts_context(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    (repo / ".git/info/grafts").write_text(oid + "\n")
+    checker = MODULE.PrivateIdentityScan(repo, True)
+    with pytest.raises(RuntimeError):
+        MODULE.history_hits(repo, private_identity=checker)
+
+
+def test_private_scan_rejects_shallow_context_even_target_range(tmp_path, monkeypatch):
+    configure_private_provider(tmp_path, monkeypatch)
+    _source, repo, _token = shallow_clone_with_deleted_secret(tmp_path)
+    checker = MODULE.PrivateIdentityScan(repo, True)
+    with pytest.raises(RuntimeError):
+        MODULE.history_hits(repo, ("HEAD",), private_identity=checker)
+
+
+def test_private_provider_reconstructed_path_is_not_suppressed(tmp_path, monkeypatch):
+    helper, _policy = configure_private_provider(tmp_path, monkeypatch)
+    helper.write_text(
+        "def parse_denylist_text(text): return ['unrelated-fixture']\n"
+        "def scan_private_text(text, patterns): return {'status':'fail','literal_match_count':0,'local_path_match':True,'reconstructed_path_match':True}\n"
+    )
+    checker = MODULE.PrivateIdentityScan(make_repo(tmp_path), True)
+    checker.check(
+        split_path_source(fixture_path("macos", "operator-fixture", "work"))
+        .rstrip("\n")
+        .encode(),
+        literal_only=True,
+    )
+    assert checker.result()["status"] == "fail"
+
+
+@pytest.mark.parametrize("mode", ["raw", "hidden", "normalized", "duplicate"])
+def test_private_path_exception_does_not_approve_hidden_normalized_path(
+    tmp_path, monkeypatch, mode
+):
+    import types
+
+    repo = make_repo(tmp_path)
+    raw_path = fixture_path("macos", "My", "work")
+    content = "SAFE = " + repr(raw_path) + "\n"
+    if mode == "hidden":
+        content += split_path_source(fixture_path("macos", "operator-fixture", "work"))
+    elif mode == "normalized":
+        content = split_path_source(fixture_path("macos", "My", "work"))
+    elif mode == "duplicate":
+        content += split_path_source(fixture_path("macos", "My", "work"))
+    (repo / "fixture.py").write_text(content)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "path fixture")
+    policy = tmp_path / "reviewed.json"
+    expires = (
+        MODULE.datetime.now(MODULE.timezone.utc) + MODULE.timedelta(days=1)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    policy.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "entries": [
+                    {
+                        "id": "SyntheticFixture",
+                        "repo": "example/repo",
+                        "path": "fixture.py",
+                        "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
+                        "rule": "macos_user_path",
+                        "match_sha256": hashlib.sha256(
+                            fixture_path("macos", "My").encode()
+                        ).hexdigest(),
+                        "occurrence_count": 1,
+                        "review_reason": "reviewed public synthetic fixture",
+                        "expires_at": expires,
+                        "review_reference": "local-independent-review",
+                    }
+                ],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "load_github_settings_module",
+        lambda: types.SimpleNamespace(
+            gh_api_get=lambda url: {
+                "full_name": "example/repo",
+                "private": False,
+                "visibility": "public",
+            }
+        ),
+    )
+    private_policy = tmp_path / "private-policy.txt"
+    private_policy.write_text("unrelated-fixture\n")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(private_policy))
+    report = MODULE.scan(
+        repo, require_private_identity=True, reviewed_secret_exceptions=policy
+    )
+    check = report["checks"]["private_identity_scan"]
+    assert check["status"] == ("fail" if mode in {"hidden", "duplicate"} else "pass")
+    if mode in {"raw", "normalized"}:
+        assert check["reviewed_path_exceptions"] == [
+            {"id": "SyntheticFixture", "occurrence_count": 1}
+        ]
+
+
+def test_bundled_provider_works_without_private_workspace_or_installed_skill(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    policy = tmp_path / "private-policy.txt"
+    policy.write_text("fixture-private-identity@example.invalid\n")
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("REPO_PREFLIGHT_ROOT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--repo",
+            str(repo),
+            "--require-private-identity",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    report = json.loads(completed.stdout)
+    check = report["checks"]["private_identity_scan"]
+    assert check["status"] == "pass"
+    assert check["provider_kind"] == "bundled_canonical"
+    assert (
+        check["provider_sha256"]
+        == hashlib.sha256(
+            SCRIPT.with_name("identity_normalization.py").read_bytes()
+        ).hexdigest()
+    )
+
+
+def test_bundled_self_scan_is_distinct_from_unreviewed_candidate_plugin(
+    tmp_path, monkeypatch
+):
+    policy = tmp_path / "private-policy.txt"
+    policy.write_text("unrelated-fixture\n")
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    checker = MODULE.PrivateIdentityScan(SCRIPT.parents[1].resolve(), True)
+    checker.check(b"clean brand")
+    assert checker.result()["provider_kind"] == "bundled_canonical"
+    assert checker.result()["status"] == "pass"
+    repo = make_repo(tmp_path)
+    marker = tmp_path / "must-not-execute"
+    plugin = repo / "plugin.py"
+    plugin.write_text(
+        "__import__('pathlib').Path(" + repr(str(marker)) + ").write_text('bad')"
+    )
+    monkeypatch.setenv("PUBLIC_IDENTITY_GUARD_SCRIPT", str(plugin))
+    assert MODULE.PrivateIdentityScan(repo, True).result()["status"] == "tool_error"
+    assert not marker.exists()

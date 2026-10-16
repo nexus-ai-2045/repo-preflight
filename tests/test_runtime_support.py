@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from path_input_fixture import fixture_root
+
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "runtime_smoke.py"
 INSTALL = ROOT / "scripts" / "install_runtime_skills.py"
@@ -37,10 +39,11 @@ def test_claude_and_grok_adapters_are_portable():
         assert "open_pr" in text
         assert "run_preflight.py" in text
         assert "REPO_PREFLIGHT_ROOT=" not in text or "REPO_PREFLIGHT_ROOT=\n" in text
-        # 絶対 path を skill に焼かない。検査文字列は連結で保持する
-        # (連続 literal だと自分自身の personal path scan に検出される)
-        assert "C:\\Us" + "ers\\" not in text
-        assert "/Us" + "ers/" not in text or "Use before" in text  # English prose ok
+        # 絶対pathをskillに焼かない。架空の検査入力は共通factoryから生成する。
+        assert fixture_root("windows") not in text
+        assert (
+            fixture_root("macos") not in text or "Use before" in text
+        )  # English prose ok
         assert "guarantees" in text.lower() or "保証" in text or "MUST" in text
 
 
@@ -91,7 +94,7 @@ def test_run_preflight_discovers_root_from_clone(tmp_path: Path):
     assert payload["intent"] == "create_repo"
 
 
-def test_runtime_smoke_passes(tmp_path: Path):
+def test_runtime_smoke_passes(tmp_path: Path, private_identity_inputs):
     # 実ユーザーの HOME に install 済みコピーがあると結果が変わるので切り離す
     result = subprocess.run(
         [sys.executable, str(SMOKE), "--repo", str(ROOT), "--home", str(tmp_path)],
@@ -694,7 +697,7 @@ def test_runtime_smoke_fails_when_installed_skill_drifted(
 
 
 def test_runtime_smoke_passes_when_installed_skills_in_sync(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, private_identity_inputs
 ):
     home = _fresh_home(tmp_path)
     _install(home)
@@ -708,7 +711,7 @@ def test_runtime_smoke_passes_when_installed_skills_in_sync(
 
 
 def test_runtime_smoke_passes_when_skills_not_installed(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, private_identity_inputs
 ):
     # CI には install 済みコピーが無い。not_installed で smoke を落とさない
     code, payload = _run_smoke(
@@ -784,3 +787,103 @@ def test_runtime_smoke_fails_when_skill_check_calls_sys_exit(
         "runtime_skills_tool_error:SystemExit:installer exited at import"
         in payload["errors"]
     )
+
+
+def test_normal_runtime_smoke_still_rejects_missing_operator_policy(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_smoke("runtime_smoke_normal_missing_policy")
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(tmp_path)]
+    )
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "open_pr_tool_error" in payload["errors"]
+
+
+def test_synthetic_contract_clears_operator_inputs_and_labels_result(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_smoke("runtime_smoke_synthetic_contract")
+    marker = tmp_path / "must-not-execute"
+    provider = tmp_path / "untrusted-operator-provider.py"
+    provider.write_text(
+        "__import__('pathlib').Path(" + repr(str(marker)) + ").write_text('bad')"
+    )
+    policy = tmp_path / "operator-policy.txt"
+    policy.write_text("operator-only-fixture")
+    values = {
+        "PUBLIC_IDENTITY_GUARD_SCRIPT": str(provider),
+        "PUBLIC_IDENTITY_DENYLIST": str(policy),
+        "PUBLIC_IDENTITY_DENYLIST_EXTRA": "operator-only-extra",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runtime_smoke.py",
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(tmp_path),
+            "--synthetic-contract",
+        ],
+    )
+    assert module.main() == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "synthetic_contract"
+    assert payload["actual_private_identity_audit"] is False
+    assert payload["synthetic_private_check"]["status"] == "pass"
+    assert payload["synthetic_private_check"]["provider_kind"] == "bundled_canonical"
+    assert payload["synthetic_private_check"]["policy_snapshot_verified"] is True
+    assert not marker.exists()
+    assert "operator-only-fixture" not in json.dumps(payload)
+    import os
+
+    assert all(os.environ[key] == value for key, value in values.items())
+
+
+def test_synthetic_contract_never_accepts_unverified_private_check(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_smoke("runtime_smoke_synthetic_unverified")
+    real = module.run_scan
+
+    def run_scan(root, *args, **kwargs):
+        code, report, stderr = real(root, *args, **kwargs)
+        if report and "open_pr" in args:
+            report["scan"]["checks"]["private_identity_scan"][
+                "status"
+            ] = "not_configured"
+        return code, report, stderr
+
+    monkeypatch.setattr(module, "run_scan", run_scan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runtime_smoke.py",
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(tmp_path),
+            "--synthetic-contract",
+        ],
+    )
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "synthetic_private_identity_unverified" in payload["errors"]
+    assert payload["actual_private_identity_audit"] is False
+
+
+def test_ci_runtime_steps_are_explicit_synthetic_contract_checks():
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert (
+        workflow.count("python scripts/runtime_smoke.py --repo . --synthetic-contract")
+        == 3
+    )
+    assert workflow.count("合成入力の契約smoke（実private監査ではない）") == 3
