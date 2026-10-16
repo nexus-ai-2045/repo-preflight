@@ -231,3 +231,36 @@ python -m pytest -q
 CIの `python scripts/runtime_smoke.py --repo . --synthetic-contract` は、repo外の一時生成policyと採用済み同梱generic moduleを使い、CLI契約の正常経路だけを確認します。operatorのprivate provider/policy/追加語はchild環境から除外します。JSONとCI step名にsyntheticで実private監査ではないことを明示し、実行したprovider/policyのhashも照合します。既知identityを拒否する負例はunitと独立probeで別途検査します。
 
 flagの無い通常modeや外部intentのprivate入力不足拒否は変えません。実operator policyを使う公開前gateはtrusted-baseのscannerがcandidateをデータとして読む別の運用です。実private policyをcandidate自身のunit testやMVPコードへ注入しません。CIの契約smoke成功を実private監査の成功に読み替えません。
+
+## 非公開の個人識別子ポリシーと公開前検査
+
+個人名・別名・メールは非公開policyだけに置き、汎用の正規化・照合は公開正本の `scripts/identity_normalization.py` に集約します。個人のworkspace、account、hook、認証、例外台帳を公開moduleへ入れません。
+
+```bash
+PUBLIC_IDENTITY_DENYLIST=/secure/private/identity-denylist.txt \
+python scripts/readiness_scan.py --repo . --require-private-identity
+```
+
+通常は実行中scannerと同じ採用済み同梱moduleを直接使い、private workspaceやskillのインストールは不要です。`provider_kind=bundled_canonical` と実module/policyのSHA-256を返します。同じrepoのself-scanでも、この固定moduleと任意の未確認pluginは区別します。policyは絶対パスの非空UTF-8ファイルで、対象repo外に置きます。明示的な外部providerを使う場合だけ `PUBLIC_IDENTITY_GUARD_SCRIPT` を指定し、repo外の信頼済み実行コードと `parse_denylist_text` / `scan_private_text` APIを要求します。未設定・空policy・不正API・検査不能は `tool_error` で止まります。
+
+外部操作の `--intent` はprivate検査が必須です。通常scanでpolicy未設定なら `private_identity_scan=not_configured` であり、既知identityを照合済みとはしません。CIでprivacy gateとして使う場合も `--require-private-identity` と明示入力が必要です。`consistency_gate` のshadow実行、workflow名、文書内のpass表記は実検査証拠の代わりになりません。
+
+Git履歴はreplace objectを無効化してrefを固定OIDへ解決し、原本bytesとOIDを照合します。graft・shallow・欠落object等で閉包を確認できなければ停止します。選択scopeのblob・commit・tree・tagに加え、作業treeを検査します。2 MBを超える未検査Git objectは `unknown` です。author/committer、Coauthorを含むcommit本文が対象です。metadataから文章を書いた人間やAIまで証明することはありません。
+
+正規化は静的string literal、隣接literal、escape、文字列加算、fenced code内の式を扱います。静的string-arrayの要素連結や一文字ずつ空白分割したliteralも、再構成できる既知identityの候補として照合します。任意コードは実行せず、実際の実行時に連結されるとの証明にはしません。正規化されたpathも既存例外のrepo/path/raw content hash/検出値hash/件数/期限/公開合成値の束縛を全部満たす場合だけ許可します。rawの1件の例外で別のhidden pathや増加件数を免除しません。例外の適用ID・件数はprivate検査結果へ記録します。
+
+privateの既存consumerは、既存portable launcherの `discover_root` と `REPO_PREFLIGHT_ROOT` またはインストール済みskillから同じ公開moduleを参照します。正規化engineをprivate側へ複製しません。公開正本の採用前にprivate consumerを配備すると依存module不足で止まるため、正本の採用・参照先照合を先に行います。
+
+公開CIではtrusted-baseに固定したscanner/moduleがcandidateをデータとして読みます。candidate自身のunit testやスクリプトへ実private policyを注入しません。公開moduleと合成policyだけで動くsmokeと、operatorの実private入力を用いた検査は別の証拠です。CI secret設定・常設参照の配備を本変更が自動実行することはありません。
+
+PR本文・comment・Release本文はGit objectに含まれないため、実送信wrapperが送信先・actor・承認済み本文の同一bytesを別途検査する必要があります。raw CLI/browser/connectorの全経路、任意の動的dataflow・圧縮・独自符号化の完全検出は保証しません。
+
+## 正本自身の公開前検査
+
+この正本自身のpublic intentでは、[予約定数3件だけの例](../examples/reviewed-self-synthetic-paths.json)を内容・期限まで確認して明示します。例の参照は実施済みのAI点検記録です。独立レビューと人間による直接確認は別途行います。テストの架空入力は `tests/path_input_fixture.py` で環境を読まずに生成し、元の負例bytesと拒否assertを維持します。例は自動読込されず、未知のpathや旧test履歴を免除しません。
+
+```sh
+python scripts/readiness_scan.py --repo . --intent push --base-ref origin/main --reviewed-secret-exceptions examples/reviewed-self-synthetic-paths.json
+```
+
+private policyの明示入力は通常どおり必要です。例のsource内容hashまたは期限が変わった場合は停止し、再点検してください。
