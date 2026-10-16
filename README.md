@@ -198,6 +198,8 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 加えて、trackedなのにignore対象でもあるpathの新規増加は、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
 
+持ち主の個人名義を人に書かせずに照合する `scripts/local_identity_guard.py` の使い方は [docs/local-identity-guard.md](docs/local-identity-guard.md) を参照してください。
+
 ## CIから使う
 
 `--repo` だけを渡すと、質問をせずに検査結果だけを返します。CIから使うときはこの形です。
