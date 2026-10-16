@@ -3092,3 +3092,115 @@ def test_parent_guard_rejects_windows_reparse_attribute_without_following(
     monkeypatch.setattr(Path, "lstat", reparse)
     with pytest.raises(RuntimeError, match="git_worktree_inventory_failed"):
         MODULE._guard_worktree_parent_components(repo, folder / "document.txt")
+
+
+def configure_filename_policy(tmp_path, monkeypatch):
+    policy = tmp_path / "filename-private-policy.txt"
+    policy.write_text(
+        "ann\nfixture-private-identity@example.invalid\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+
+
+@pytest.mark.parametrize("surface", ["untracked", "staged"])
+@pytest.mark.parametrize(
+    "filename", ["ann.txt", "fixture-private-identity@example.invalid.txt"]
+)
+def test_private_current_filename_without_private_content_is_checked(
+    tmp_path, monkeypatch, surface, filename
+):
+    configure_filename_policy(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / filename).write_text("public content\n")
+    if surface == "staged":
+        git(repo, "add", filename)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    private = report["checks"]["private_identity_scan"]
+    assert private["status"] == "fail" and private["finding_count"] > 0
+    assert private["worktree_scan_status"] == "complete"
+    assert private["worktree_files_unscanned"] == 0
+    assert filename not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "directory", ["ann", "fixture-private-identity@example.invalid"]
+)
+def test_private_current_directory_component_is_checked(
+    tmp_path, monkeypatch, directory
+):
+    configure_filename_policy(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    folder = repo / directory
+    folder.mkdir()
+    (folder / "public.txt").write_text("public content")
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "fail"
+    assert directory + "/public.txt" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("filename", ["annual.txt", "Annette.txt", "ann.name.txt"])
+def test_normal_filename_keeps_canonical_username_boundaries(
+    tmp_path, monkeypatch, filename
+):
+    configure_filename_policy(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    (repo / filename).write_text("public content")
+    assert (
+        MODULE.scan(repo, base_ref=base, require_private_identity=True)["checks"][
+            "private_identity_scan"
+        ]["status"]
+        == "pass"
+    )
+
+
+@pytest.mark.parametrize("name_kind", ["private_alias", "credential_like"])
+def test_sensitive_workflow_name_is_not_exposed_in_report(
+    tmp_path, monkeypatch, name_kind
+):
+    configure_filename_policy(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    name = "ann.yml" if name_kind == "private_alias" else "ghp_" + "A" * 24 + ".yml"
+    (repo / ".github/workflows" / name).write_text("invalid workflow")
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert name not in json.dumps(report)
+
+
+def test_unreadable_private_filename_is_redacted_without_reading_content(
+    tmp_path, monkeypatch
+):
+    configure_filename_policy(tmp_path, monkeypatch)
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    target = repo / "ann.txt"
+    target.write_text("public content")
+    original = Path.read_bytes
+
+    def unreadable(path):
+        if path == target:
+            raise OSError("synthetic unreadable file")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    report = MODULE.scan(repo, base_ref=base, require_private_identity=True)
+    assert report["status"] == "tool_error"
+    assert "ann.txt" not in json.dumps(report)
+
+
+def test_unverified_private_checker_does_not_expose_workflow_filename(
+    tmp_path, monkeypatch
+):
+    helper, _ = configure_private_provider(tmp_path, monkeypatch)
+    helper.write_text(
+        helper.read_text()
+        + '\ndef scan_private_text(text, patterns):\n    raise ValueError("synthetic provider error")\n'
+    )
+    repo = make_repo(tmp_path)
+    name = "fixture-private-identity@example.invalid.yml"
+    (repo / ".github/workflows" / name).write_text("invalid workflow")
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "tool_error"
+    assert name not in json.dumps(report)

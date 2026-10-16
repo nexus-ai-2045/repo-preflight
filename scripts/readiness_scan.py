@@ -555,9 +555,9 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     return _bytes_pattern_hit(patterns, data)
 
 
-def sanitized_evidence_label(label: str) -> str:
+def sanitized_evidence_label(label: str, *, private_name: bool = False) -> str:
     data = label.encode("utf-8", errors="surrogatepass")
-    if text_has(SECRET_PATTERNS + PATH_PATTERNS, data):
+    if private_name or text_has(SECRET_PATTERNS + PATH_PATTERNS, data):
         return "<redacted-path>"
     return label
 
@@ -1813,6 +1813,7 @@ def scan(
     private_worktree_inventory_count = 0
     private_worktree_scanned_count = 0
     private_worktree_symlinks_excluded = 0
+    private_worktree_sensitive_names: set[str] = set()
     if private_identity.checker is not None:
         try:
             private_paths = working_tree_files(repo) if base_ref else paths
@@ -1836,7 +1837,29 @@ def scan(
             current_paths.append(path)
         private_worktree_inventory_count = len(current_paths)
         for path in current_paths:
-            rel = path.relative_to(repo).as_posix()
+            relative = path.relative_to(repo)
+            rel = relative.as_posix()
+            name_views = [rel]
+            # filename metadataだけ最後のsuffixを外す。username文法は変更しない。
+            stem = relative.with_suffix("").as_posix()
+            if stem != rel:
+                name_views.append(stem)
+            before_name_findings = private_identity.findings
+            for name_view in name_views:
+                private_identity.check(name_view.encode("utf-8"))
+                if private_identity.checker is None:
+                    break
+            if private_identity.findings > before_name_findings:
+                private_worktree_sensitive_names.add(rel)
+            if private_identity.checker is None:
+                break
+            label = sanitized_evidence_label(
+                rel,
+                private_name=(
+                    rel in private_worktree_sensitive_names
+                    or private_identity.report.get("status") == "tool_error"
+                ),
+            )
             try:
                 if not path.is_file():
                     raise OSError("not_regular_file")
@@ -1845,7 +1868,7 @@ def scan(
                 return {
                     "status": "tool_error",
                     "repo": repository_evidence_label(repo),
-                    "issues": [f"worktree_file_unreadable:{rel}"],
+                    "issues": [f"worktree_file_unreadable:{label}"],
                 }
             reviewed_raw = (
                 private_identity.checker is not None
@@ -1866,11 +1889,18 @@ def scan(
         if path in deleted_paths:
             continue
         rel = path.relative_to(repo).as_posix()
+        label = sanitized_evidence_label(
+            rel,
+            private_name=(
+                rel in private_worktree_sensitive_names
+                or private_identity.report.get("status") == "tool_error"
+            ),
+        )
         if not path.is_file():
             return {
                 "status": "tool_error",
                 "repo": repository_evidence_label(repo),
-                "issues": [f"worktree_file_unreadable:{rel}"],
+                "issues": [f"worktree_file_unreadable:{label}"],
             }
         try:
             data = path.read_bytes()
@@ -1878,7 +1908,7 @@ def scan(
             return {
                 "status": "tool_error",
                 "repo": repository_evidence_label(repo),
-                "issues": [f"worktree_file_unreadable:{rel}"],
+                "issues": [f"worktree_file_unreadable:{label}"],
             }
         if (
             reviewed_exceptions.has_unreviewed(rel, data)
@@ -1893,19 +1923,19 @@ def scan(
             if reviewed_exceptions is not None
             else text_has(PATH_PATTERNS, data)
         ):
-            path_hits.append(sanitized_evidence_label(rel))
+            path_hits.append(label)
         elif path.suffix.lower() == CMO3_SUFFIX:
             # 展開できない .cmo3 を「個人pathなし」と数えない (unknown で止める)
             xml = cmo3_contents_xml(data)
             if xml is None:
-                unscanned_path_files.append(sanitized_evidence_label(rel))
+                unscanned_path_files.append(label)
             elif (
                 reviewed_exceptions.has_unreviewed_paths(rel, data, xml)
                 if reviewed_exceptions is not None
                 else text_has(PATH_PATTERNS, xml)
                 or _bytes_pattern_hit(PATH_PATTERNS, xml)
             ):
-                path_hits.append(sanitized_evidence_label(rel))
+                path_hits.append(label)
     try:
         history_credential_findings, history_path_hits = history_hits(
             repo,
@@ -1994,16 +2024,35 @@ def scan(
         try:
             workflow_text = workflow.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
-            invalid_workflows.append(workflow.relative_to(repo).as_posix())
+            invalid_workflows.append(
+                sanitized_evidence_label(
+                    workflow.relative_to(repo).as_posix(),
+                    private_name=(
+                        workflow.relative_to(repo).as_posix()
+                        in private_worktree_sensitive_names
+                        or private_identity.report.get("status") == "tool_error"
+                    ),
+                )
+            )
             continue
         if not re.search(r"(?m)^jobs\s*:", workflow_text):
-            invalid_workflows.append(workflow.relative_to(repo).as_posix())
+            invalid_workflows.append(
+                sanitized_evidence_label(
+                    workflow.relative_to(repo).as_posix(),
+                    private_name=(
+                        workflow.relative_to(repo).as_posix()
+                        in private_worktree_sensitive_names
+                        or private_identity.report.get("status") == "tool_error"
+                    ),
+                )
+            )
     dependency_files = sorted(
         name for name in DEPENDENCY_FILES if (repo / name).is_file()
     )
     private_identity_report = private_identity.result()
     private_identity_report.update(
         worktree_scope="git_inventory_regular_files_excluding_ignored_and_links",
+        worktree_name_scope="repo_relative_path_and_last_filename_suffix_stem",
         worktree_scan_status=(
             "not_scanned"
             if not private_worktree_enabled

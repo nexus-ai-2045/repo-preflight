@@ -144,6 +144,42 @@
       "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
       "expires_at": "2026-10-23T05:14:20Z",
       "review_reference": "AI点検: /root、CI既存testで報告scopeの秘密値非表示を復旧。予約3署名・件数・新sourceSHAに限定。独立レビュー別途。"
+    },
+    {
+      "id": "SelfFilenameCanonicalFixture1",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "ee3945eece471a7df0c3bc3819708a7b0141d5065db95a75117cd3cb746269f0",
+      "rule": "linux_home_path",
+      "match_sha256": "1f19107742728ff867bbfbb138fdea3b7ab8ef4c487fa519ebc811980ff7b27d",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI独立点検: rootがworker差分と68件の検査記録を確認、privacy-core-worktree-name-fix-20261016。予約3署名のみ同一のまま新sourceへ再束縛。本人値・任意pathの例外を追加しない。"
+    },
+    {
+      "id": "SelfFilenameCanonicalFixture2",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "ee3945eece471a7df0c3bc3819708a7b0141d5065db95a75117cd3cb746269f0",
+      "rule": "macos_user_path",
+      "match_sha256": "f09ccda47dbbca1c88e23fa549e3946d8a89a04a53e3a319dee2f75c79807f35",
+      "occurrence_count": 2,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI独立点検: rootがworker差分と68件の検査記録を確認、privacy-core-worktree-name-fix-20261016。予約3署名のみ同一のまま新sourceへ再束縛。本人値・任意pathの例外を追加しない。"
+    },
+    {
+      "id": "SelfFilenameCanonicalFixture3",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "scripts/readiness_scan.py",
+      "content_sha256": "ee3945eece471a7df0c3bc3819708a7b0141d5065db95a75117cd3cb746269f0",
+      "rule": "windows_user_path",
+      "match_sha256": "60afd51801efe9f85c1ec2a5472804b6df905558e8112545ae6ba9ddc61e7eb8",
+      "occurrence_count": 1,
+      "review_reason": "公開正本が予約合成値のsignatureを定義する箇所だけ。operator値を許可するものではない。HEADとraw content hash、normalized検出hashと件数に限定。",
+      "expires_at": "2026-10-23T05:14:20Z",
+      "review_reference": "AI独立点検: rootがworker差分と68件の検査記録を確認、privacy-core-worktree-name-fix-20261016。予約3署名のみ同一のまま新sourceへ再束縛。本人値・任意pathの例外を追加しない。"
     }
   ]
 }
