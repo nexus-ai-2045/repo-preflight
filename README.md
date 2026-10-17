@@ -13,7 +13,7 @@ APIキーらしき文字列や自分のPCのパスを、今あるファイルだ
 | GitHub を採用する | [AIエージェントから使う](#aiエージェントから使う) |
 | 結果の見方 | [結果の読み方](#結果の読み方) |
 | 何を調べるか / 調べないか | [できること](#できること) / [制約](#制約) |
-| AI から使う | [AIエージェントから使う](#aiエージェントから使う) |
+| 公開する・CIで必ず通す | [公開コマンドと共通CIゲート](docs/publish-and-ci-gate.md) |
 | GitHub Settings を確認 | [AIエージェントから使う](#aiエージェントから使う) |
 | AI憲法の入口を検査 | [AI憲法入口契約](docs/ai-constitution-entry-contract.md) |
 | 引数と終了コード | [CIから使う](#ciから使う) |
@@ -128,7 +128,7 @@ flowchart LR
 
 ここは**人が確かめるか、別の道具に任せる**部分です。
 
-- 公開、push、PR、マージ、公開範囲の変更**そのものの実行**（このツールは操作しません）
+- 公開、push、PR、マージ、公開範囲の変更**そのものの実行**（検査は操作しません。公開への切り替えだけは、全検査が通り人が `--apply --confirm` を打ったときに [公開コマンド](docs/publish-and-ci-gate.md) `scripts/publish_gate.py` が行います）
 - 公開してよい権利があるか、個人情報かどうかの**最終判断**
 - 使っているライブラリに既知の脆弱性がないか
 - GitHub Settings の**変更**。実測と差分previewは `configure_settings` まで
@@ -237,7 +237,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 | `1` | 検査 `blocked`、または対話の `needs_human_input` / `blocked` |
 | `2` | 検査そのものが失敗した（`tool_error`） |
 
-このツールは既定で読むだけです。リポジトリ作成、push、PR、マージ、公開範囲の変更、投稿は行いません。
+このツールは既定で読むだけです。リポジトリ作成、push、PR、マージ、投稿は行いません。公開範囲の変更は公開コマンド `scripts/publish_gate.py` の `--apply` だけです。各リポジトリの CI から1行で呼ぶ共通ゲートとラチェットは [公開コマンドと共通CIゲート](docs/publish-and-ci-gate.md) にあります。
 
 ## 見せる相手を広げるとき
 

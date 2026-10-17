@@ -26,3 +26,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0007](0007-release-identity-scope.md) | Proposed | releaseの今回名義判定と既存公開履歴の監査を分けて報告する |
 
 | [0008](0008-public-synthetic-path-fixtures.md) | Proposed | 公開の予約済み合成pathだけを期限・完全hash束縛付きの明示policyで扱う |
+
+| [0009](0009-publish-gate-and-ratchet.md) | Proposed | 公開を全検査passと人の確認付きの専用コマンドへ寄せ、CIはラチェットで止める |

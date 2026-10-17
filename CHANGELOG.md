@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 公開・CI・ラチェットの3点セットを追加（[docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md)、ADR-0009）。`scripts/publish_gate.py` は全体検査が `pass` で、手元と origin の全 ref が一致し、人が `--apply --confirm OWNER/NAME` を打ったときだけ公開へ切り替える（既定は dry-run）。`.github/workflows/preflight-gate.yml` は各リポジトリから `uses:` 1行で呼べる reusable workflow。`scripts/preflight_ratchet.py` は検査ごとの指摘件数を基準値ファイルと比べ、増加・基準値の緩和・締め忘れを失敗にする。公開の判定は基準値を使わない。
+
 - `scripts/identity_normalization.py`（汎用の個人名義照合エンジン）を `codex/privacy-preflight-final-20261016` から単独で取り込む。private側の identity guard がこのmoduleを読むため、無いと照合リストを読めずに止まっていた。readiness_scan への組み込みは含めない。
 
 - `scripts/local_identity_guard.py` を追加。持ち主の個人名義（OSのアカウント名、ホーム名、氏名、gitのglobal名義、端末名、そのrepoの履歴で私用メールを使ったコミットの名義）を実行中の環境から自動で集め、コミット名義・メッセージ・追加行・ファイル名を照合する。人が名前を書く照合リストを前提にせず、値は表示も保存もしない（報告はhashの先頭だけ）。コミット名義はGitHubのnoreplyとbotだけを許す。`exec` は既存のidentity guardへ値を環境変数で渡し、出力に値が出たら伏せ字にする。
