@@ -390,7 +390,14 @@ def push_ranges_from_stdin(repo: Path, remote: str, stdin_text: str) -> list[lis
         if remote_sha != ZERO_SHA:
             ranges.append([f"{remote_sha}..{local_sha}"])
         else:
-            ranges.append([local_sha, "--not", f"--remotes={remote}"])
+            names = _git(repo, "remote").splitlines()
+            matches = [remote] if remote in names else [
+                name for name in names
+                if _git(repo, "remote", "get-url", "--push", name).strip() == remote
+            ]
+            if len(matches) != 1:
+                raise RuntimeError("送信先に対応するリモート名を一意に確認できません")
+            ranges.append([local_sha, "--not", f"--remotes={matches[0]}"])
     return ranges
 
 
