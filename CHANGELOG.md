@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- AI エージェントが repository を直接公開するのを止める Claude Code の PreToolUse フック `scripts/publish_guard_hook.py` を追加。公開は公開コマンドへ案内する。設定は [docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md) の「4.」。
+
 ## 0.7.0 - 2026-10-17
 
 - `.github/workflows/release.yml` を追加。手動起動で、版の整合（pyproject・CHANGELOG・`docs/releases/vX.Y.Z.md`）を確かめてから tag と GitHub Release を作る。任意で、開いた PR の無い不要なリモートブランチを先に消す。手順は OPERATIONS.md。

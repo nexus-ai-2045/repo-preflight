@@ -7,6 +7,7 @@ repo-preflight を「必ず通る」形にするための3点セットです。G
 | private → public の切り替え | 公開コマンド | `scripts/publish_gate.py` |
 | push・PR・merge | 共通 CI ゲート | `.github/workflows/preflight-gate.yml` |
 | 既存 repo の指摘 | ラチェット | `scripts/preflight_ratchet.py` |
+| AI エージェントの直接公開 | 公開ガードのフック | `scripts/publish_guard_hook.py` |
 
 > [!IMPORTANT]
 > CI ゲートだけでは「CI は緑だけど公開ボタンは素通り」になります。公開は必ず公開コマンドから行うと運用で決めてください。GitHub の設定画面や `gh repo edit` を直接使えば、このコマンドを経ずに公開できてしまいます。
@@ -98,5 +99,39 @@ python /path/to/repo-preflight/scripts/preflight_ratchet.py --repo . --update-ba
 - 基準値ファイルを書いた直後は作業ツリーが汚れるため、commit してから再実行してください。
 
 数える検査は `clean_worktree`、`required_documents`、`secret_scan`、`personal_path_scan`、`commit_identity`、`dependency_configuration`、`ci_configuration`、`origin`、`repository_consistency` です。`identity_gate` は数えません。CI には非公開設定を置かないためで、名義は手元の検査と公開コマンドで押さえます。件数欄が無い検査は `fail` か `unknown` を1件と数えます。
+
+## 4. AI エージェントの直接公開を止めるフック
+
+公開コマンドを使う運用を、Claude Code が操作する手前で機械的に守らせます。`scripts/publish_guard_hook.py` は PreToolUse フックで、次の操作を止めて公開コマンドへ案内します。
+
+- `gh repo edit` での公開への切り替え、`gh repo create` での公開 repository の作成
+- `gh api` や `curl` から GitHub API へ非公開の解除を送る操作
+- GitHub MCP の `create_repository` で、非公開を明示していない作成（既定は公開）
+
+公開コマンドは内部で `gh` を呼ぶため、このフックからは見えずにそのまま通ります。標準ライブラリだけで書いてあり、入出力は UTF-8 で扱うので、macOS・Linux・Windows で同じように動きます（CI で3つの OS のテストを通しています）。
+
+ユーザー設定（`~/.claude/settings.json`、Windows は `%USERPROFILE%\.claude\settings.json`）の `hooks` に足します。すべての repository とセッションに効きます。
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|mcp__.*github.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /path/to/repo-preflight/scripts/publish_guard_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Windows では `command` を `py -3 C:\path\to\repo-preflight\scripts\publish_guard_hook.py` にします（JSON の中では `\` を `\\` と重ねて書きます）。設定後は、Claude Code に公開 repository の作成を頼むと止まることを確かめてください。
+
+止められないもの: 人が GitHub の画面や自分の端末で直接行う公開、Claude Code 以外のエージェント（同じ形のフックを持つものは同じスクリプトを使えます）。フックの入力を読めないときは止めずに通します。
 
 設計判断は [ADR-0009](adr/0009-publish-gate-and-ratchet.md) にあります。
