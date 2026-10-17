@@ -167,15 +167,26 @@ def test_new_branch_unknown_url_stops_without_guessing(tmp_path):
     head = git(repo, "rev-parse", "HEAD").strip()
     text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
     with pytest.raises(RuntimeError):
-        GUARD.push_ranges_from_stdin(repo, "https://github.com/example/unknown.git", text)
+        GUARD.push_ranges_from_stdin(
+            repo, "https://github.com/example/unknown.git", text
+        )
 
 
-@pytest.mark.parametrize("remote_arg", ["origin", "https://github.com/example/destination.git"])
+@pytest.mark.parametrize(
+    "remote_arg", ["origin", "https://github.com/example/destination.git"]
+)
 def test_new_branch_different_fetch_and_push_destinations_stop(tmp_path, remote_arg):
     repo = make_repo(tmp_path)
     head = git(repo, "rev-parse", "HEAD").strip()
     git(repo, "remote", "add", "origin", "https://github.com/example/source.git")
-    git(repo, "remote", "set-url", "--push", "origin", "https://github.com/example/destination.git")
+    git(
+        repo,
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://github.com/example/destination.git",
+    )
     git(repo, "update-ref", "refs/remotes/origin/main", head)
     text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
     with pytest.raises(RuntimeError):
@@ -188,7 +199,15 @@ def test_new_branch_multiple_push_destinations_stop(tmp_path):
     first = "https://github.com/example/first.git"
     git(repo, "remote", "add", "origin", first)
     git(repo, "remote", "set-url", "--push", "origin", first)
-    git(repo, "remote", "set-url", "--push", "--add", "origin", "https://github.com/example/second.git")
+    git(
+        repo,
+        "remote",
+        "set-url",
+        "--push",
+        "--add",
+        "origin",
+        "https://github.com/example/second.git",
+    )
     git(repo, "update-ref", "refs/remotes/origin/main", head)
     text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
     with pytest.raises(RuntimeError):
