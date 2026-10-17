@@ -989,3 +989,11 @@ def test_check_does_not_run_fsmonitor_command_from_target_config(tmp_path: Path)
     MODULE.check(repo, base_ref=base)
 
     assert not marker.exists()
+
+
+def test_cli_output_is_utf8_even_when_stdio_encoding_is_ascii():
+    # Windows の既定コードページでパイプへ日本語を出しても落ちない。
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_cli_utf8_stdio import assert_utf8_help
+
+    assert_utf8_help("consistency_gate.py")

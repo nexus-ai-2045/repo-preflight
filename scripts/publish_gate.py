@@ -35,7 +35,9 @@ Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
 
 def default_runner(cmd: Sequence[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(list(cmd), capture_output=True, text=True, encoding="utf-8")
+    return subprocess.run(
+        list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
 
 
 class GateStop(Exception):

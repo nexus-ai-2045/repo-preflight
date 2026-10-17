@@ -407,6 +407,7 @@ def test_cli_option_absolute_path_keeps_match_hash(
         "/Us" + "ers/alice/page.py",
         "C:/Us" + "ers/alice/page.py",
         "C:\\Us" + "ers\\alice\\page.py",
+        "C:\\\\Us" + "ers\\\\alice\\\\page.py",
         "'/ho" + "me/alice/page.py'",
         '"/Us' + 'ers/alice/page.py"',
         "path=/ho" + "me/alice/page.py",

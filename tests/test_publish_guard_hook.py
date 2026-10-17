@@ -123,3 +123,45 @@ def test_実プロセスとしてstdinから読む():
     )
     result = json.loads(proc.stdout.decode("utf-8"))
     assert denied(result)
+
+
+def test_installはユーザー設定へ一度だけ足し既存の設定を残す(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps({"model": "x", "hooks": {"PreToolUse": [{"matcher": "Edit"}]}}),
+        encoding="utf-8",
+    )
+    assert h.install(settings) == "installed"
+    assert h.install(settings) == "already_installed"
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["model"] == "x"
+    entries = data["hooks"]["PreToolUse"]
+    assert len(entries) == 2 and entries[0] == {"matcher": "Edit"}
+    assert "publish_guard_hook.py" in entries[1]["hooks"][0]["command"]
+    assert (tmp_path / "settings.json.bak").exists()
+
+
+def test_installは設定ファイルが無ければ作る(tmp_path):
+    settings = tmp_path / "nested" / "settings.json"
+    assert h.install(settings) == "installed"
+    assert json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PreToolUse"]
+
+
+def test_installしたコマンドで実際にフックが動く(tmp_path):
+    import shlex
+    import subprocess
+
+    settings = tmp_path / "settings.json"
+    h.install(settings)
+    command = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][
+        0
+    ]["hooks"][0]["command"]
+    args = shlex.split(command, posix=(sys.platform != "win32"))
+    args = [a.strip('"') for a in args]
+    proc = subprocess.run(
+        args,
+        input=json.dumps(bash("gh repo create o/n --public")).encode("utf-8"),
+        capture_output=True,
+        check=True,
+    )
+    assert denied(json.loads(proc.stdout.decode("utf-8")))
