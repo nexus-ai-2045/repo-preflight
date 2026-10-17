@@ -34,15 +34,13 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 **開発・テスト・CI**では `pip install -e ".[test]"` が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
 
-### v0.6.0で変わること
+### v0.7.0で変わること
 
-全履歴検査では、shallow cloneの履歴不足を成功扱いにせず停止します。引用符で終わるルートだけの合成パス例は除外し、ユーザー名を含む絶対パスの検出を維持します。
+公開を必ず検査経由にする3点セットを加えました。`scripts/publish_gate.py` は全履歴の検査が通り、人が `--apply --confirm OWNER/NAME` を打ったときだけ公開へ切り替えます。
 
-リリース準備ではREADMEの情報設計に加え、直近の到達可能なリリースtagから本文が更新されているかを確認します。tag作成後の再検査は、公開前に確認した比較元tagを `--consistency-base-ref` へ明示して基準を保持します。名義の照合だけを今回のコミットに分ける場合は `--expected-identity` と `--identity-base-ref origin/main` を併用します。secretと個人パスの全履歴検査は狭めません。
+各リポジトリは `uses:` の1行で共通の CI ゲートを呼べます。指摘の件数は基準値ファイルとのラチェットで比べ、増えたら止めます。手順は [公開コマンドと共通CIゲート](docs/publish-and-ci-gate.md) です。
 
-公開の合成fixtureはversion 3の明示policyで、予約済み合成値とrepo・path・blob・検出hash・件数・期限を完全束縛して扱えます。任意の個人pathやsecretは登録できません。
-
-GitHub Settingsのclassic branch protection、AI憲法の入口、限定例外、runtime skillのずれ検知の改善も含みます。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
+持ち主の個人名義を環境から集めて照合する `scripts/local_identity_guard.py` と、名義・共同作者行の検査も含みます。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
 
 ### PRレビューの収束確認
 
