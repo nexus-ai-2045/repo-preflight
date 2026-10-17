@@ -27,8 +27,9 @@ python scripts/publish_gate.py --repo /path/to/clone --apply --confirm OWNER/NAM
 1. origin が GitHub で、`--github OWNER/NAME` を付けたならそれと一致する
 2. 手元が origin の default branch と同じ commit で、origin の全 branch / tag を取得済み（検査した履歴＝公開される履歴）
 3. `readiness_scan.py` の全体検査（削除済みを含む全履歴）が `pass`
-4. `--apply` と、対象名を打ち直した `--confirm OWNER/NAME` がある
-5. 切り替えの直前に origin が動いていない
+4. HEAD に共通 CI ゲート（`preflight-gate.yml` を `uses:` で呼ぶ workflow、「2.」）と、その基準値ファイル（既定 `.repo-preflight/ratchet-baseline.json`、`baseline:` を渡していればその path）がある。無ければ `ci_gate_missing` / `ratchet_baseline_missing` で止まる。公開した後の push と PR でも検査を走らせ続けるため
+5. `--apply` と、対象名を打ち直した `--confirm OWNER/NAME` がある
+6. 切り替えの直前に origin が動いていない
 
 **ラチェットの基準値は使いません。** 基準値で CI を通している既存の指摘（履歴に残った個人の path など）があると、公開コマンドは止まります。CI が緑でも公開できるとは限らない、という点に注意してください。
 

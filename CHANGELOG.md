@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 公開コマンド `publish_gate.py` は、HEAD に共通 CI ゲート（`preflight-gate.yml` を呼ぶ workflow）とラチェットの基準値ファイルが無ければ公開しない（`ci_gate_missing` / `ratchet_baseline_missing`）。全項目 pass で公開しても、ゲートが無いと公開後の push と PR で検査が一度も走らなかったため。
 - `.github/workflows/preflight-gate.yml` が PR と merge queue で必ず `tool_error` になっていたのを直す。比較元を生の SHA で渡していたが、`readiness_scan.py` は `refs/remotes/origin/` 配下の名前しか受け付けないため。比較元は `origin/<比較先ブランチ>` で渡し、基準値の比較は従来どおり SHA で行う。
 - AI エージェントが repository を直接公開するのを止める Claude Code の PreToolUse フック `scripts/publish_guard_hook.py` を追加。公開は公開コマンドへ案内する。設定は [docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md) の「4.」。`--install` でユーザー設定へ1行で入れられる（macOS・Linux・Windows 共通）。
 
