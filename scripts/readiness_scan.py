@@ -537,8 +537,8 @@ def same_directory(left: Path, right: Path) -> bool:
         return os.path.normcase(str(left)) == os.path.normcase(str(right))
 
 
-def _identity_gate_result(repo, base_ref):
-    """追加: 名義の許可リスト・共同作者行・コミット本文を全コミット範囲で検査。
+def _identity_gate_result(repo, base_ref, identity_base_ref=None):
+    """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
     try:
         sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -549,8 +549,32 @@ def _identity_gate_result(repo, base_ref):
         return {"status": "tool_error", "reason": "identity_gate_unavailable"}
     except SystemExit:
         return {"status": "fail", "reason": "private_patterns_not_configured"}
-    rng = f"{base_ref}..HEAD" if base_ref else "HEAD"
-    issues = _ig.check_range(pol, str(repo), rng)
+    except (OSError, UnicodeError, ValueError, TypeError, re.error):
+        return {"status": "tool_error", "reason": "private_patterns_invalid"}
+
+    def identity_git(repo_path, *args):
+        code, output = run(Path(repo_path), "git", *args)
+        if code:
+            raise RuntimeError("identity_history_unavailable")
+        return output
+
+    rng = f"{base_ref}..HEAD" if base_ref else "--all"
+    try:
+        issues = _ig.check_range(
+            pol,
+            str(repo),
+            rng,
+            identity_rng=f"{identity_base_ref}..HEAD" if identity_base_ref else None,
+            git_fn=identity_git,
+        )
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ):
+        return {"status": "tool_error", "reason": "identity_history_unavailable"}
     return {"status": "fail" if issues else "pass", "issue_count": len(issues)}
 
 
@@ -1664,7 +1688,9 @@ def scan(
                 else {}
             ),
         },
-        "identity_gate": _identity_gate_result(repo, base_ref),
+        "identity_gate": _identity_gate_result(
+            repo, base_ref, identity_base[1] if identity_base is not None else None
+        ),
         "commit_identity": {
             "status": (
                 "fail"
@@ -1764,6 +1790,7 @@ def scan(
         "secret_scan",
         "personal_path_scan",
         "commit_identity",
+        "identity_gate",
         "origin",
     }
     if not base_ref:

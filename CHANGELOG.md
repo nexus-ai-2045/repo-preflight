@@ -4,6 +4,8 @@
 
 - `.github/workflows/release.yml` を追加。手動起動で、版の整合（pyproject・CHANGELOG・`docs/releases/vX.Y.Z.md`）を確かめてから tag と GitHub Release を作る。任意で、開いた PR の無い不要なリモートブランチを先に消す。手順は OPERATIONS.md。
 - 公開・CI・ラチェットの3点セットを追加（[docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md)、ADR-0009）。`scripts/publish_gate.py` は全体検査が `pass` で、手元と origin の全 ref が一致し、人が `--apply --confirm OWNER/NAME` を打ったときだけ公開へ切り替える（既定は dry-run）。`.github/workflows/preflight-gate.yml` は各リポジトリから `uses:` 1行で呼べる reusable workflow。`scripts/preflight_ratchet.py` は検査ごとの指摘件数を基準値ファイルと比べ、増加・基準値の緩和・締め忘れを失敗にする。公開の判定は基準値を使わない。
+- 名義検査（`identity_gate`）を全体の必須停止判定へ接続。設定の欠落・不正や履歴取得の失敗は値を出さずに止め、全参照の本文検査とリリース時の名義照合範囲を区別する。
+- `local_identity_guard.py exec` が親から継承して子へ渡す照合値も出力の伏せ字対象に含め、子の出力への素通りを防ぐ。
 
 - `scripts/identity_normalization.py`（汎用の個人名義照合エンジン）を `codex/privacy-preflight-final-20261016` から単独で取り込む。private側の identity guard がこのmoduleを読むため、無いと照合リストを読めずに止まっていた。readiness_scan への組み込みは含めない。
 

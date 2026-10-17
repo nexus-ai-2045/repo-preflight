@@ -615,6 +615,12 @@ def cmd_exec(args: argparse.Namespace) -> int:
     env[EXTRA_DENYLIST_ENV] = "\n".join(
         v for v in (env.get(EXTRA_DENYLIST_ENV, ""), values) if v
     )
+    # 親から継承した照合値も子へ渡すため、出力の伏せ字対象から落とさない。
+    redaction_identities = [
+        Identity(value=value, source="forwarded_denylist")
+        for value in dict.fromkeys(env[EXTRA_DENYLIST_ENV].splitlines())
+        if value.strip()
+    ]
     process = subprocess.Popen(
         command,
         env=env,
@@ -628,7 +634,7 @@ def cmd_exec(args: argparse.Namespace) -> int:
     assert process.stdout is not None
     # 起動した検査が違反箇所として値を表示しても、ここで伏せる。
     for line in process.stdout:
-        sys.stderr.write(redact(line, identities))
+        sys.stderr.write(redact(line, redaction_identities))
     return process.wait()
 
 

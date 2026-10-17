@@ -318,6 +318,28 @@ def build_proposals_from_scan(
             )
         )
 
+    private_identity = checks.get("identity_gate") or {}
+    if private_identity.get("status") in {"fail", "unknown", "tool_error"}:
+        proposals.append(
+            _proposal(
+                id="resolve_private_identity_gate",
+                kind="privacy_hold",
+                severity="required",
+                question=(
+                    "名義・共同作者行・コミット本文の検査に合格していません。"
+                    "値を本文へ書かず、既存の環境自動取得と非公開設定を確認して再検査しますか?"
+                    "（無視して進む選択肢はありません）"
+                ),
+                current={"status": private_identity.get("status")},
+                proposed={"action": "verify_private_policy_and_rerun"},
+                options=[
+                    {"id": "fix", "label": "設定と検出箇所を確認して再検査"},
+                    {"id": "stop", "label": "中止する"},
+                ],
+                default="fix",
+            )
+        )
+
     identity = checks.get("commit_identity") or {}
     if identity.get("status") == "fail":
         proposals.append(

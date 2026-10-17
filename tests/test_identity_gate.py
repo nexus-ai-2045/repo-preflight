@@ -1,4 +1,4 @@
-"""identity_gate の試験案。個人の型は試験用の架空の値だけを使う。"""
+"""identity_gate の回帰試験。個人の型は試験用の架空の値だけを使う。"""
 
 import json, os, subprocess, sys, tempfile, unittest
 
@@ -140,3 +140,20 @@ class PrEventTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_standalone_missing_input_does_not_echo_path(tmp_path, capsys):
+    result = g.main(
+        ["--message-file", str(tmp_path / "synthetic-private-identity-marker")]
+    )
+    output = capsys.readouterr()
+    assert result == 2
+    assert json.loads(output.out)["status"] == "tool_error"
+    assert "synthetic-private-identity-marker" not in output.out + output.err
+
+
+def test_standalone_invalid_event_is_safe_error(tmp_path, capsys):
+    event = tmp_path / "event.json"
+    event.write_text("[]", encoding="utf-8")
+    assert g.main(["--pr-event", str(event)]) == 2
+    assert json.loads(capsys.readouterr().out)["status"] == "tool_error"
