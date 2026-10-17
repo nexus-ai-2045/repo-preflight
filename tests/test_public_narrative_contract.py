@@ -47,6 +47,7 @@ SCRIPT_OWNERS = (
     "ai_entry_contract.py",
     "publish_gate.py",
     "preflight_ratchet.py",
+    "publish_guard_hook.py",
 )
 
 

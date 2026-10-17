@@ -12,13 +12,18 @@ GitHub には公開への切り替えそのものを条件付きで止める設�
 `publish_gate.py` は内部で gh を呼ぶため、このフックからは見えず、そのまま通る。
 入力を読めないときは止めない（フックの故障でエージェントの作業全体を止めない）。
 人が GitHub の画面や自分の端末で行う公開は止められない。
+
+`--install` を付けて実行すると、Claude Code のユーザー設定（`~/.claude/settings.json`）へ
+このフックを足す。macOS・Linux・Windows で同じコマンドが使える。
 """
 
 from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
+from pathlib import Path
 from typing import Any
 
 REASON = (
@@ -113,5 +118,69 @@ def main(stdin=None, stdout=None) -> int:
     return 0
 
 
+MATCHER = "Bash|PowerShell|mcp__.*github.*"
+
+
+def hook_command() -> str:
+    """この Python とこのスクリプトの絶対パスで組んだ hook のコマンド（OS を問わない）。"""
+    return f'"{sys.executable}" "{Path(__file__).resolve()}"'
+
+
+def install(settings_path: Path) -> str:
+    """ユーザー設定へフックを足す。既にあれば何もしない。元のファイルは .bak に残す。"""
+    settings: dict[str, Any] = {}
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(settings, dict):
+            raise ValueError("settings.json is not a JSON object")
+    hooks = settings.setdefault("hooks", {})
+    entries = hooks.setdefault("PreToolUse", [])
+    script = Path(__file__).name
+    for entry in entries:
+        for hook in entry.get("hooks", []):
+            if script in str(hook.get("command", "")):
+                return "already_installed"
+    entries.append(
+        {"matcher": MATCHER, "hooks": [{"type": "command", "command": hook_command()}]}
+    )
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    if settings_path.exists():
+        shutil.copy2(
+            settings_path, settings_path.with_name(settings_path.name + ".bak")
+        )
+    settings_path.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return "installed"
+
+
+def cli(argv: list[str]) -> int:
+    if not argv:
+        return main()
+    import argparse
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    parser = argparse.ArgumentParser(
+        description="引数なしで PreToolUse フックとして動く。--install でユーザー設定へ足す。"
+    )
+    parser.add_argument(
+        "--install", action="store_true", help="Claude Code のユーザー設定へ足す"
+    )
+    parser.add_argument(
+        "--settings",
+        type=Path,
+        default=Path.home() / ".claude" / "settings.json",
+        help="足す先の settings.json（既定はユーザー設定）",
+    )
+    args = parser.parse_args(argv)
+    if not args.install:
+        parser.error("--install を指定してください")
+    print(install(args.settings))
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(cli(sys.argv[1:]))

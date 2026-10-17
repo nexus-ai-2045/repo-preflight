@@ -19,6 +19,7 @@ CLIS = [
     "local_identity_guard.py",
     "preflight_ratchet.py",
     "publish_gate.py",
+    "publish_guard_hook.py",
     "readiness_scan.py",
     "runtime_smoke.py",
 ]

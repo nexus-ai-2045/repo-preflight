@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- AI エージェントが repository を直接公開するのを止める Claude Code の PreToolUse フック `scripts/publish_guard_hook.py` を追加。公開は公開コマンドへ案内する。設定は [docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md) の「4.」。
+- AI エージェントが repository を直接公開するのを止める Claude Code の PreToolUse フック `scripts/publish_guard_hook.py` を追加。公開は公開コマンドへ案内する。設定は [docs/publish-and-ci-gate.md](docs/publish-and-ci-gate.md) の「4.」。`--install` でユーザー設定へ1行で入れられる（macOS・Linux・Windows 共通）。
 
 - 全 CLI の標準出力・標準エラーを UTF-8 に固定。Windows の既定コードページ（cp1252 / cp932）でパイプへ日本語を出すと落ちていた（`local_identity_guard.py` の pre-push フックを含む）。出力の文字コードを ASCII に絞った回帰テストを追加。
 - 個人パス検査が、JSON やソース内でエスケープされた Windows のパス（区切りが `\\`）を見逃していたのを修正。照合エンジン側と同じ規則にそろえた。
