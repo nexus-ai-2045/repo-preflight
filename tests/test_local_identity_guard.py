@@ -182,6 +182,19 @@ def test_new_branch_different_fetch_and_push_destinations_stop(tmp_path, remote_
         GUARD.push_ranges_from_stdin(repo, remote_arg, text)
 
 
+def test_new_branch_multiple_push_destinations_stop(tmp_path):
+    repo = make_repo(tmp_path)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    first = "https://github.com/example/first.git"
+    git(repo, "remote", "add", "origin", first)
+    git(repo, "remote", "set-url", "--push", "origin", first)
+    git(repo, "remote", "set-url", "--push", "--add", "origin", "https://github.com/example/second.git")
+    git(repo, "update-ref", "refs/remotes/origin/main", head)
+    text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
+    with pytest.raises(RuntimeError):
+        GUARD.push_ranges_from_stdin(repo, "origin", text)
+
+
 def test_exec_passes_values_by_env_and_redacts_output(monkeypatch, capsys):
     fake = identities()
     monkeypatch.setattr(GUARD, "collect_identities", lambda **_: fake)
