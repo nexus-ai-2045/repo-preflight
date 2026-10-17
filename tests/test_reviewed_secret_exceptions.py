@@ -340,3 +340,30 @@ def test_credentials_in_path_and_repo_bindings_are_rejected(tmp_path, field, enc
     )
     with pytest.raises(RuntimeError, match="^reviewed_secret_exceptions_invalid$"):
         MODULE.ReviewedSecretExceptions(config, remote)
+
+
+def test_worktree_crlf_matches_lf_reviewed_digest(tmp_path):
+    # Windows の autocrlf で作業ツリーだけ CRLF になっても、LF で登録した例外を使う。
+    lf = ("a\n" + secret() + "\nb\n").encode()
+    config = policy(tmp_path, lf)
+    remote = "https://github.com/example/repo.git"
+    crlf = lf.replace(b"\n", b"\r\n")
+    assert (
+        MODULE.ReviewedSecretExceptions(config, remote).has_unreviewed(
+            "reviewed.txt", crlf
+        )
+        is False
+    )
+
+
+def test_crlf_normalization_does_not_hide_changed_content(tmp_path):
+    lf = ("a\n" + secret() + "\nb\n").encode()
+    config = policy(tmp_path, lf)
+    remote = "https://github.com/example/repo.git"
+    changed = ("a\r\n" + secret() + "\r\nc\r\n").encode()
+    assert (
+        MODULE.ReviewedSecretExceptions(config, remote).has_unreviewed(
+            "reviewed.txt", changed
+        )
+        is True
+    )

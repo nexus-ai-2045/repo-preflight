@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 from urllib.parse import unquote, urlsplit
 
@@ -762,6 +763,10 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(
         description="README・docs・実装・テストの宣言済み整合性を検査する"
     )

@@ -1379,3 +1379,11 @@ def test_m6_runtime_support_overall_status_matches_exit_codes() -> None:
         ("human_review", 3),
     ):
         assert f"`{status}` (exit {code})" in section, status
+
+
+def test_cli_output_is_utf8_even_when_stdio_encoding_is_ascii():
+    # Windows の既定コードページでパイプへ日本語を出しても落ちない。
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_cli_utf8_stdio import assert_utf8_help
+
+    assert_utf8_help("ai_entry_contract.py")

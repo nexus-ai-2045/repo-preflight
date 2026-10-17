@@ -210,6 +210,10 @@ def make_min_repo(base: Path) -> Path:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description="repo-preflight runtime smoke")
     parser.add_argument(
         "--repo",

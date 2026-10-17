@@ -185,6 +185,7 @@ def _gh_json(args: list[str]) -> Any:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=30,
         )
@@ -250,6 +251,10 @@ def collect(repo: str, number: int) -> tuple[dict[str, Any], list[dict[str, Any]
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(
         description="GitHub PRのreview surfaceをexact HEADへ束縛して確認する"
     )

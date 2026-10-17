@@ -301,12 +301,17 @@ class ReviewedSecretExceptions:
     def _unreviewed(
         self, path: str, data: bytes, matches: Counter, applied: Counter
     ) -> bool:
-        content_digest = hashlib.sha256(data).hexdigest()
+        # Windows の autocrlf で作業ツリーだけ CRLF になっても、LF で登録した digest と照合する。
+        content_digests = {hashlib.sha256(data).hexdigest()}
+        if b"\r\n" in data:
+            content_digests.add(
+                hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+            )
         for entry in self.entries:
             key = (entry["rule"], entry["match_sha256"])
             if (
                 entry["path"] == path
-                and entry["content_sha256"] == content_digest
+                and entry["content_sha256"] in content_digests
                 and matches.get(key) == entry["occurrence_count"]
             ):
                 applied[entry["id"]] += matches.pop(key)
@@ -351,7 +356,10 @@ _QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
 _QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
 PATH_PATTERNS = (
     re.compile(
-        r"[A-Za-z]:[/\\]Us" + r"ers[/\\](?:[^/\\\s'\"]+|" + _QUOTED_WINDOWS_USER + r")"
+        r"[A-Za-z]:[/\\]+Us"
+        + r"ers[/\\]+(?:[^/\\\s'\"]+|"
+        + _QUOTED_WINDOWS_USER
+        + r")"
     ),
     re.compile(
         _UNIX_PATH_START

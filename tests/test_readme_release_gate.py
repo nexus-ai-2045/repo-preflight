@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "readme_release_gate.py"
@@ -945,3 +946,11 @@ def test_hash_comment_inside_fence_is_not_a_heading(tmp_path: Path):
     # 同じ穴が装飾絵文字の検査にもある。`# .env` の先頭記号が絵文字扱いされる。
     assert "decorative_heading_emoji" not in _codes(report)
     assert report["metrics"]["heading_count"] == 3
+
+
+def test_cli_output_is_utf8_even_when_stdio_encoding_is_ascii():
+    # Windows の既定コードページでパイプへ日本語を出しても落ちない。
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from test_cli_utf8_stdio import assert_utf8_help
+
+    assert_utf8_help("readme_release_gate.py")
