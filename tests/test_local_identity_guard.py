@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "local_identity_guard.py"
 
@@ -143,6 +145,73 @@ def test_push_ranges_from_stdin(tmp_path):
     text = f"refs/heads/a {head} refs/heads/a {old}\nrefs/heads/b {GUARD.ZERO_SHA} refs/heads/b {old}\n"
     ranges = GUARD.push_ranges_from_stdin(repo, "origin", text)
     assert ranges == [[f"{old}..{head}"]]
+
+
+def test_new_branch_url_excludes_existing_origin_history(tmp_path):
+    repo = make_repo(tmp_path)
+    base = git(repo, "rev-parse", "HEAD").strip()
+    url = "https://github.com/example/example.git"
+    git(repo, "remote", "add", "origin", url)
+    git(repo, "update-ref", "refs/remotes/origin/main", base)
+    (repo / "new.md").write_text("新しい変更\n")
+    git(repo, "add", "new.md")
+    git(repo, "commit", "-qm", "Add a document")
+    head = git(repo, "rev-parse", "HEAD").strip()
+    text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
+    ranges = GUARD.push_ranges_from_stdin(repo, url, text)
+    assert GUARD._rev_list(repo, ranges[0]) == [head]
+
+
+def test_new_branch_unknown_url_stops_without_guessing(tmp_path):
+    repo = make_repo(tmp_path)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
+    with pytest.raises(RuntimeError):
+        GUARD.push_ranges_from_stdin(
+            repo, "https://github.com/example/unknown.git", text
+        )
+
+
+@pytest.mark.parametrize(
+    "remote_arg", ["origin", "https://github.com/example/destination.git"]
+)
+def test_new_branch_different_fetch_and_push_destinations_stop(tmp_path, remote_arg):
+    repo = make_repo(tmp_path)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "remote", "add", "origin", "https://github.com/example/source.git")
+    git(
+        repo,
+        "remote",
+        "set-url",
+        "--push",
+        "origin",
+        "https://github.com/example/destination.git",
+    )
+    git(repo, "update-ref", "refs/remotes/origin/main", head)
+    text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
+    with pytest.raises(RuntimeError):
+        GUARD.push_ranges_from_stdin(repo, remote_arg, text)
+
+
+def test_new_branch_multiple_push_destinations_stop(tmp_path):
+    repo = make_repo(tmp_path)
+    head = git(repo, "rev-parse", "HEAD").strip()
+    first = "https://github.com/example/first.git"
+    git(repo, "remote", "add", "origin", first)
+    git(repo, "remote", "set-url", "--push", "origin", first)
+    git(
+        repo,
+        "remote",
+        "set-url",
+        "--push",
+        "--add",
+        "origin",
+        "https://github.com/example/second.git",
+    )
+    git(repo, "update-ref", "refs/remotes/origin/main", head)
+    text = f"refs/heads/new {head} refs/heads/new {GUARD.ZERO_SHA}\n"
+    with pytest.raises(RuntimeError):
+        GUARD.push_ranges_from_stdin(repo, "origin", text)
 
 
 def test_exec_passes_values_by_env_and_redacts_output(monkeypatch, capsys):
