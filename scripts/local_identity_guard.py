@@ -397,6 +397,10 @@ def push_ranges_from_stdin(repo: Path, remote: str, stdin_text: str) -> list[lis
             ]
             if len(matches) != 1:
                 raise RuntimeError("送信先に対応するリモート名を一意に確認できません")
+            fetch_url = _git(repo, "remote", "get-url", matches[0]).strip()
+            push_url = _git(repo, "remote", "get-url", "--push", matches[0]).strip()
+            if fetch_url != push_url:
+                raise RuntimeError("取得先と送信先が異なるため追跡履歴を除外できません")
             ranges.append([local_sha, "--not", f"--remotes={matches[0]}"])
     return ranges
 
