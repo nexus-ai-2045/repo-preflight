@@ -51,10 +51,14 @@ jobs:
         env:
           BASELINE: ${{ inputs.baseline }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          BASE_BRANCH: ${{ github.base_ref || github.event.merge_group.base_ref || '' }}
         run: |
           set -euo pipefail
           args=(--repo target --baseline "$BASELINE")
           if [ -n "$BASE_SHA" ]; then
-            args+=(--baseline-base-ref "$BASE_SHA" --consistency-base-ref "$BASE_SHA")
+            # readiness_scan.py の比較元は refs/remotes/origin/ 配下の名前しか受け付けない。
+            # 生の SHA を渡すと invalid_consistency_base_ref で必ず tool_error になる。
+            # fetch-depth: 0 の checkout が取得した origin/<比較先ブランチ> を渡す。
+            args+=(--baseline-base-ref "$BASE_SHA" --consistency-base-ref "origin/${BASE_BRANCH#refs/heads/}")
           fi
           python tool/scripts/preflight_ratchet.py "${args[@]}"
