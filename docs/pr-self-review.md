@@ -21,7 +21,7 @@ generated_by: pr-review-rule-exporter scripts/export_pr_self_review.py
 
 | | |
 |---|---|
-| rules_version | `dfb366f323516772` |
+| rules_version | `67d2bebbd8102c98` |
 | 生成元 | `pr-review-rule-exporter` `references/pr-review-recurrence-rules.md` |
 
 更新は正本側で行い、`scripts/export_pr_self_review.py` で再生成して各リポジトリへ配る。
@@ -59,6 +59,9 @@ generated_by: pr-review-rule-exporter scripts/export_pr_self_review.py
 - 検査から実行 (merge / push / 公開) までの間に対象が変わり得るなら、実行直前に再検証する。
 - 記録する時刻は「実際に観測した時刻」。予定時刻や未来時刻を書かない。
 - 承認は操作単位で結び付ける。汎用の「レビュー済み」を別操作へ流用しない。
+- PR の merge 前には、既存の `github_pr_review_thread_audit.py` の結果を実際に読み、
+  最新の `(base SHA, head SHA)` と一致し、全ページ取得済み・未解決 thread 0・
+  `decision=pass` であることを確認する。CI 成功や merge guard の許可だけで代替しない。
 
 ## R4 宣言と実体を一致させる
 
@@ -163,6 +166,8 @@ generated_by: pr-review-rule-exporter scripts/export_pr_self_review.py
   承認後に base が進んだ場合に head が同じまま merge されるツリーだけが未検査の組み合わせへ
   変わり、ゲートを迂回できる。
 - merge は、検査したその組み合わせに固定して実行する。
+- review-thread 監査を merge の後に回さない。guard 呼出し前と実行直前の監査が
+  失敗・未読・古い組み合わせなら停止する。手順の採用だけで全実行経路の強制を保証しない。
 - ゲート自身の定義ファイルの変更を、免除対象にしない。
 
 ## R13 追跡の取捨は「作り直せるか」で決める
@@ -205,6 +210,8 @@ generated_by: pr-review-rule-exporter scripts/export_pr_self_review.py
 4. 既定値に個人パス・マシン固有パス・cwd 依存が残っていないか (R2, R6)。
 5. 「検査した」記録に、対象 ID と revision と実測時刻が入っているか (R3)。
 6. 検査から実行までの間に対象が変わり得るなら、直前に再検証しているか (R3)。
+   PR の merge では、同じ base/head の review-thread 監査を guard 前に実読し、
+   全ページ取得済み・未解決 0・pass を確認したか。実行直前にも有効か (R3, R12)。
 7. 文書・台帳・manifest が指す参照先を確認したか (R4, R13)。
    一次資料と再生成できない参照先は、この commit の tree に存在するか。
    再生成できる参照先は、ソース・依存・復元手順が追跡されているか。
