@@ -32,6 +32,7 @@ EXTRA_DENYLIST_ENV = "PUBLIC_IDENTITY_DENYLIST_EXTRA"
 # 任意。存在する時だけ追加で読む。無くても空でも検査は止めない。
 OPTIONAL_PRIVATE_FILE = Path("~/.config/repo-preflight/private-identities.txt")
 REDACTED = "[個人名義]"
+REMOTE_QUERY_TIMEOUT_SECONDS = 15
 
 # 公開してよいコミット名義のメール。GitHubのnoreplyとbotだけを許す。
 DEFAULT_ALLOWED_EMAIL = re.compile(
@@ -377,9 +378,103 @@ def _rev_list(repo: Path, ranges: list[str]) -> list[str]:
     return [line for line in out.splitlines() if line]
 
 
+def _advertised_remote_commits(repo: Path, remote: str) -> list[str]:
+    """実送信先が現在advertiseする、ローカルで読めるcommitだけを返す。"""
+    try:
+        if remote in _git(repo, "remote").splitlines():
+            destinations = _git(
+                repo, "remote", "get-url", "--push", "--all", "--", remote
+            ).splitlines()
+        else:
+            # URL直指定ではpush用resolverを使えないため、pushInsteadOfが
+            # 一つでもあれば拒否する。自前で書換え規則を再実装しない。
+            push_rewrites = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.fsmonitor=",
+                    "-C",
+                    str(repo),
+                    "config",
+                    "--name-only",
+                    "--get-regexp",
+                    r"^url\..*\.pushinsteadof$",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=REMOTE_QUERY_TIMEOUT_SECONDS,
+            )
+            if push_rewrites.returncode == 0:
+                raise RuntimeError(
+                    "送信先の履歴照会先を特定できません "
+                    "(URL直指定とpushInsteadOf設定の併用)"
+                )
+            if push_rewrites.returncode != 1:
+                raise RuntimeError("送信先のURL書換え設定を確認できませんでした")
+            destinations = _git(
+                repo, "ls-remote", "--get-url", "--", remote
+            ).splitlines()
+        if len(destinations) != 1:
+            raise RuntimeError("送信先が一意でないため検査範囲を決められません")
+        destination = destinations[0]
+        # ls-remoteはfetch用のinsteadOfを再適用する。別の宛先へ変わるなら
+        # その履歴を除外根拠にせず停止する（--get-urlは通信しない）。
+        lookup_destinations = _git(
+            repo, "ls-remote", "--get-url", "--", destination
+        ).splitlines()
+        if lookup_destinations != [destination]:
+            raise RuntimeError("送信先の履歴照会先が再書換えされるため停止します")
+        advertised = subprocess.run(
+            [
+                "git",
+                "-c",
+                "core.fsmonitor=",
+                "-C",
+                str(repo),
+                "ls-remote",
+                "--heads",
+                "--refs",
+                "--",
+                destination,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=REMOTE_QUERY_TIMEOUT_SECONDS,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("送信先の履歴照会が時間切れになりました") from None
+    except OSError:
+        raise RuntimeError("送信先の履歴を照会できませんでした") from None
+    if advertised.returncode != 0:
+        # URLやGitのstderrには認証情報・個人のパスが入り得るため出力しない。
+        raise RuntimeError("送信先の履歴を照会できませんでした")
+    commits = []
+    for line in advertised.stdout.splitlines():
+        fields = line.split()
+        if (
+            len(fields) != 2
+            or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", fields[0])
+            or not fields[1].startswith("refs/heads/")
+        ):
+            raise RuntimeError("送信先の履歴照会結果を確認できませんでした")
+        sha = fields[0]
+        # 未取得の先端は除外しない。必要なら既存履歴も含めて安全側へ検査する。
+        if _git(repo, "cat-file", "-t", sha, check=False).strip() == "commit":
+            commits.append(sha)
+    return list(dict.fromkeys(commits))
+
+
 def push_ranges_from_stdin(repo: Path, remote: str, stdin_text: str) -> list[list[str]]:
     """pre-push の stdin から、まだ remote に無いコミットの範囲を作る。"""
     ranges = []
+    remote_commits: list[str] | None = None
     for line in stdin_text.splitlines():
         fields = line.split()
         if len(fields) != 4:
@@ -390,27 +485,11 @@ def push_ranges_from_stdin(repo: Path, remote: str, stdin_text: str) -> list[lis
         if remote_sha != ZERO_SHA:
             ranges.append([f"{remote_sha}..{local_sha}"])
         else:
-            names = _git(repo, "remote").splitlines()
-            matches = (
-                [remote]
-                if remote in names
-                else [
-                    name
-                    for name in names
-                    if _git(repo, "remote", "get-url", "--push", name).strip() == remote
-                ]
+            if remote_commits is None:
+                remote_commits = _advertised_remote_commits(repo, remote)
+            ranges.append(
+                [local_sha, "--not", *remote_commits] if remote_commits else [local_sha]
             )
-            if len(matches) != 1:
-                raise RuntimeError("送信先に対応するリモート名を一意に確認できません")
-            fetch_urls = _git(
-                repo, "remote", "get-url", "--all", matches[0]
-            ).splitlines()
-            push_urls = _git(
-                repo, "remote", "get-url", "--push", "--all", matches[0]
-            ).splitlines()
-            if len(fetch_urls) != 1 or push_urls != fetch_urls:
-                raise RuntimeError("取得先と送信先が異なるため追跡履歴を除外できません")
-            ranges.append([local_sha, "--not", f"--remotes={matches[0]}"])
     return ranges
 
 
