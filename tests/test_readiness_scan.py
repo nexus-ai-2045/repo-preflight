@@ -220,7 +220,9 @@ def test_release_tag_inventory_error_fails_closed(tmp_path: Path, monkeypatch):
     assert report["checks"]["readme_release_freshness"]["status"] == "tool_error"
 
 
-def test_release_identity_base_separates_pending_commits_from_history(tmp_path: Path):
+def test_release_identity_base_separates_pending_commits_from_history(
+    tmp_path: Path, monkeypatch
+):
     repo = make_release_repo(tmp_path)
     git(repo, "tag", "v1.0.0")
     (repo / "legacy.txt").write_text("historical commit\n", encoding="utf-8")
@@ -243,8 +245,19 @@ def test_release_identity_base_separates_pending_commits_from_history(tmp_path: 
     git(repo, "add", "README.md")
     git(repo, "commit", "-m", "document current release")
     expected = "Test Author <test-author@example.invalid>"
+    monkeypatch.setenv(
+        "PREFLIGHT_PRIVATE_PATTERNS",
+        json.dumps(
+            {
+                "allow_emails": ["test-author@example.invalid"],
+                "allow_names": ["Test Author"],
+                "deny_patterns": ["synthetic-private-identity-marker"],
+            }
+        ),
+    )
 
     unscoped = MODULE.scan(repo, release=True, expected_identity=expected)
+    assert unscoped["checks"]["identity_gate"]["status"] == "fail"
     assert unscoped["checks"]["commit_identity"]["status"] == "fail"
     scoped = MODULE.scan(
         repo, release=True, expected_identity=expected, identity_base_ref="origin/main"
@@ -2447,3 +2460,111 @@ def test_empty_quoted_username_does_not_turn_root_into_personal_path(
     data = f"{root}{quote}{quote}/project".encode(encoding)
     assert not MODULE.text_has(MODULE.PATH_PATTERNS, data)
     assert not MODULE.personal_path_matches(data)
+
+
+@pytest.mark.parametrize(
+    ("gate_status", "expected_status"),
+    [
+        ("pass", "pass"),
+        ("fail", "blocked"),
+        ("unknown", "blocked"),
+        ("tool_error", "tool_error"),
+    ],
+)
+def test_identity_gate_controls_overall_status(
+    tmp_path, monkeypatch, gate_status, expected_status
+):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(
+        MODULE, "_identity_gate_result", lambda *args: {"status": gate_status}
+    )
+    report = MODULE.scan(repo)
+    assert report["status"] == expected_status
+
+
+def test_missing_private_identity_policy_blocks_scan(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.delenv("PREFLIGHT_PRIVATE_PATTERNS", raising=False)
+    monkeypatch.delenv("PREFLIGHT_PRIVATE_PATTERNS_FILE", raising=False)
+    report = MODULE.scan(repo)
+    assert (
+        report["checks"]["identity_gate"]["reason"] == "private_patterns_not_configured"
+    )
+    assert report["status"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "not-json",
+        "[]",
+        "{}",
+        '{"allow_emails":"bad"}',
+        '{"allow_email_patterns":["("]}',
+    ],
+)
+def test_invalid_private_identity_policy_is_safe_tool_error(
+    tmp_path, monkeypatch, policy
+):
+    repo = make_repo(tmp_path)
+    monkeypatch.setenv("PREFLIGHT_PRIVATE_PATTERNS", policy)
+    report = MODULE.scan(repo)
+    assert report["checks"]["identity_gate"] == {
+        "status": "tool_error",
+        "reason": "private_patterns_invalid",
+    }
+    assert report["status"] == "tool_error"
+    assert policy not in json.dumps(report) or policy in ("[]", "{}")
+
+
+def test_explicit_missing_policy_file_does_not_fall_back(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    monkeypatch.setenv(
+        "PREFLIGHT_PRIVATE_PATTERNS_FILE", str(tmp_path / "missing-policy.json")
+    )
+    report = MODULE.scan(repo)
+    assert report["checks"]["identity_gate"]["reason"] == "private_patterns_invalid"
+    assert report["status"] == "tool_error"
+
+
+def test_denylisted_commit_message_blocks_without_echo(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    base = set_remote_base(repo)
+    private = "synthetic-private-identity-marker"
+    git(repo, "commit", "--allow-empty", "-m", private)
+    report = MODULE.scan(repo, base_ref=base)
+    assert report["checks"]["identity_gate"]["status"] == "fail"
+    assert report["status"] == "blocked"
+    assert private not in json.dumps(report)
+
+
+def test_identity_history_failure_is_safe_tool_error(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    import identity_gate
+
+    def unavailable(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1, ["git", "synthetic-private-identity-marker"]
+        )
+
+    monkeypatch.setattr(identity_gate, "check_range", unavailable)
+    report = MODULE.scan(repo)
+    assert report["checks"]["identity_gate"] == {
+        "status": "tool_error",
+        "reason": "identity_history_unavailable",
+    }
+    assert report["status"] == "tool_error"
+    assert "synthetic-private-identity-marker" not in json.dumps(report)
+
+
+def test_identity_gate_scans_non_head_branch_messages(tmp_path):
+    repo = make_repo(tmp_path)
+    original = subprocess.check_output(
+        ["git", "branch", "--show-current"], cwd=repo, text=True
+    ).strip()
+    git(repo, "checkout", "-b", "side-branch")
+    git(repo, "commit", "--allow-empty", "-m", "synthetic-private-identity-marker")
+    git(repo, "checkout", original)
+    report = MODULE.scan(repo)
+    assert report["checks"]["identity_gate"]["status"] == "fail"
+    assert report["status"] == "blocked"

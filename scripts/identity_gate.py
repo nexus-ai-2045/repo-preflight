@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""名義・共同作者行・本文の検査（repo-preflight 拡張の下書き）。
+"""名義・共同作者行・本文の必須検査。
 
 個人の型はこのファイルに書かない。非公開の設定から読む:
   1. 環境変数 PREFLIGHT_PRIVATE_PATTERNS_FILE が指すJSON
@@ -36,13 +36,41 @@ class Policy:
 def load_policy() -> Policy:
     raw = None
     p = os.environ.get("PREFLIGHT_PRIVATE_PATTERNS_FILE")
-    if p and os.path.exists(p):
-        raw = open(p, encoding="utf-8").read()
+    if p:
+        with open(p, encoding="utf-8") as stream:
+            raw = stream.read()
     elif os.environ.get("PREFLIGHT_PRIVATE_PATTERNS"):
         raw = os.environ["PREFLIGHT_PRIVATE_PATTERNS"]
     if not raw:
         raise SystemExit("設定なし: 非公開の型設定が読めません（失敗扱い）")
     d = json.loads(raw)
+    if not isinstance(d, dict):
+        raise ValueError("private_policy_object_required")
+    if set(d) - {
+        "allow_emails",
+        "allow_email_patterns",
+        "allow_names",
+        "deny_patterns",
+        "allow_path_patterns",
+        "reject_all_coauthors",
+    }:
+        raise ValueError("private_policy_unknown_key")
+    for key in (
+        "allow_emails",
+        "allow_email_patterns",
+        "allow_names",
+        "deny_patterns",
+        "allow_path_patterns",
+    ):
+        values = d.get(key, [])
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            raise ValueError("private_policy_list_invalid")
+    if type(d.get("reject_all_coauthors", True)) is not bool:
+        raise ValueError("private_policy_boolean_required")
+    if not d.get("allow_emails") and not d.get("allow_email_patterns"):
+        raise ValueError("private_policy_email_allowlist_required")
     c = lambda xs: [re.compile(x, re.I) for x in xs]
     return Policy(
         allow_emails=[e.lower() for e in d.get("allow_emails", [])],
@@ -105,18 +133,27 @@ def git(repo: str, *a: str) -> str:
     ).stdout
 
 
-def check_range(pol: Policy, repo: str, rng: str) -> list[str]:
+def check_range(
+    pol: Policy, repo: str, rng: str, *, identity_rng: str | None = None, git_fn=None
+) -> list[str]:
     """PRの全コミット（基点..HEAD）を1件ずつ検査。マージコミットも含める。"""
+    run_git = git if git_fn is None else git_fn
+    identity_commits = (
+        set(run_git(repo, "rev-list", identity_rng).splitlines())
+        if identity_rng is not None
+        else None
+    )
     fmt = "%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e"
     out = []
-    for rec in git(repo, "log", "--format=" + fmt, rng).split("\x1e"):
+    for rec in run_git(repo, "log", "--format=" + fmt, rng).split("\x1e"):
         rec = rec.strip("\n")
         if not rec:
             continue
         h, an, ae, cn, ce, body = rec.split("\x1f", 5)
         w = h[:8]
-        out += check_identity(pol, an, ae, "作者", w)
-        out += check_identity(pol, cn, ce, "コミッター", w)
+        if identity_commits is None or h in identity_commits:
+            out += check_identity(pol, an, ae, "作者", w)
+            out += check_identity(pol, cn, ce, "コミッター", w)
         out += scan_text(pol, body, w + " 本文")
     return out
 
@@ -132,22 +169,39 @@ def main(argv: list[str]) -> int:
         "--pr-event", help="GITHUB_EVENT_PATH のJSON（PR本文・題名・コメント）"
     )
     ns = ap.parse_args(argv)
-    pol = load_policy()
-    issues: list[str] = []
-    if ns.message_file:
-        issues += scan_text(
-            pol, open(ns.message_file, encoding="utf-8").read(), "コミット文"
-        )
-    if ns.range:
-        issues += check_range(pol, ns.repo, ns.range)
-    if ns.pr_event:
-        ev = json.load(open(ns.pr_event, encoding="utf-8"))
-        pr = ev.get("pull_request") or ev.get("issue") or {}
-        issues += scan_text(
-            pol, (pr.get("title") or "") + "\n" + (pr.get("body") or ""), "PR本文"
-        )
-        if ev.get("comment"):
-            issues += scan_text(pol, ev["comment"].get("body") or "", "コメント")
+    if not (ns.message_file or ns.range or ns.pr_event):
+        ap.error("検査対象を指定してください")
+    try:
+        pol = load_policy()
+    except (OSError, UnicodeError, ValueError, TypeError, re.error):
+        print('{"status": "tool_error", "reason": "private_patterns_invalid"}')
+        return 2
+    try:
+        issues: list[str] = []
+        if ns.message_file:
+            issues += scan_text(
+                pol, open(ns.message_file, encoding="utf-8").read(), "コミット文"
+            )
+        if ns.range:
+            issues += check_range(pol, ns.repo, ns.range)
+        if ns.pr_event:
+            ev = json.load(open(ns.pr_event, encoding="utf-8"))
+            pr = ev.get("pull_request") or ev.get("issue") or {}
+            issues += scan_text(
+                pol, (pr.get("title") or "") + "\n" + (pr.get("body") or ""), "PR本文"
+            )
+            if ev.get("comment"):
+                issues += scan_text(pol, ev["comment"].get("body") or "", "コメント")
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        subprocess.SubprocessError,
+    ):
+        print('{"status": "tool_error", "reason": "identity_input_unavailable"}')
+        return 2
     for i in issues:
         print("失敗:", i, file=sys.stderr)
     print(

@@ -31,6 +31,8 @@ python scripts/publish_gate.py --repo /path/to/clone --apply --confirm OWNER/NAM
 
 **ラチェットの基準値は使いません。** 基準値で CI を通している既存の指摘（履歴に残った個人の path など）があると、公開コマンドは止まります。CI が緑でも公開できるとは限らない、という点に注意してください。
 
+全体検査には名義検査（`identity_gate`）も含まれるため、公開コマンドを実行する手元には非公開設定（`PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS`）が要ります。無ければ止まります。
+
 レビュー済みの例外を使う repo は `--reviewed-secret-exceptions` をそのまま渡せます。
 
 | `status` | 意味 | 終了コード |
@@ -95,6 +97,6 @@ python /path/to/repo-preflight/scripts/preflight_ratchet.py --repo . --update-ba
 - 件数だけを比べます。同じ検査の中で指摘が入れ替わっても件数が同じなら気づけません。
 - 基準値ファイルを書いた直後は作業ツリーが汚れるため、commit してから再実行してください。
 
-数える検査は `clean_worktree`、`required_documents`、`secret_scan`、`personal_path_scan`、`commit_identity`、`dependency_configuration`、`ci_configuration`、`origin`、`repository_consistency` です。件数欄が無い検査は `fail` か `unknown` を1件と数えます。
+数える検査は `clean_worktree`、`required_documents`、`secret_scan`、`personal_path_scan`、`commit_identity`、`dependency_configuration`、`ci_configuration`、`origin`、`repository_consistency` です。`identity_gate` は数えません。CI には非公開設定を置かないためで、名義は手元の検査と公開コマンドで押さえます。件数欄が無い検査は `fail` か `unknown` を1件と数えます。
 
 設計判断は [ADR-0009](adr/0009-publish-gate-and-ratchet.md) にあります。

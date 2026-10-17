@@ -573,3 +573,17 @@ def test_human_release_dialogue_explains_freshness_inventory_error(
     assert "release_readme_baseline_unavailable" in human
     assert "readme_release_freshness" in human
     assert "再検査" in human
+
+
+def test_private_identity_failure_has_non_dismissible_hold(tmp_path):
+    repo = make_repo(tmp_path)
+    git(repo, "commit", "--allow-empty", "-m", "synthetic-private-identity-marker")
+    scan = SCAN.scan(repo)
+    report = DIALOGUE.build_dialogue(intent="push", scan=scan)
+    assert report["status"] == "blocked"
+    hold = next(
+        p for p in report["proposals"] if p["id"] == "resolve_private_identity_gate"
+    )
+    assert hold["dismissible"] is False
+    assert {o["id"] for o in hold["options"]} == {"fix", "stop"}
+    assert "synthetic-private-identity-marker" not in json.dumps(report)

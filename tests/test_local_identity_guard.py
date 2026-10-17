@@ -503,3 +503,24 @@ def test_repo_history_personal_identity_is_collected(tmp_path):
     values = GUARD._history_personal_values(repo, GUARD.DEFAULT_ALLOWED_EMAIL)
     assert "old.private@example.invalid" in values and "Oldo Namae" in values
     assert "Claude" not in values and "nexus_ai" not in values
+
+
+def test_exec_redacts_inherited_denylist_in_both_streams(monkeypatch, capsys):
+    inherited = "synthetic-inherited-private-contact"
+    fake = identities()
+    monkeypatch.setenv(GUARD.EXTRA_DENYLIST_ENV, inherited)
+    monkeypatch.setattr(GUARD, "collect_identities", lambda **_: fake)
+    code = GUARD.main(
+        [
+            "exec",
+            "--",
+            sys.executable,
+            "-c",
+            "import os,sys; value=os.environ['PUBLIC_IDENTITY_DENYLIST_EXTRA'].splitlines()[0]; "
+            "print(value); print(value,file=sys.stderr)",
+        ]
+    )
+    output = capsys.readouterr()
+    assert code == 0, output.err
+    assert inherited not in output.out + output.err
+    assert output.err.count(GUARD.REDACTED) == 2

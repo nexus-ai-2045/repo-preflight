@@ -40,7 +40,7 @@ python scripts/readiness_scan.py --repo /path/to/your-repo
 
 各リポジトリは `uses:` の1行で共通の CI ゲートを呼べます。指摘の件数は基準値ファイルとのラチェットで比べ、増えたら止めます。手順は [公開コマンドと共通CIゲート](docs/publish-and-ci-gate.md) です。
 
-持ち主の個人名義を環境から集めて照合する `scripts/local_identity_guard.py` と、名義・共同作者行の検査も含みます。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
+持ち主の個人名義を環境から集めて照合する `scripts/local_identity_guard.py` と、名義・共同作者行の検査も含みます。名義検査は全体の必須判定になり、非公開設定が無ければ止まります。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)を参照してください。
 
 ### PRレビューの収束確認
 
@@ -197,6 +197,9 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 加えて、trackedなのにignore対象でもあるpathの新規増加は、公開release wheelのURLとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
 
 持ち主の個人名義を人に書かせずに照合する `scripts/local_identity_guard.py` の使い方は [docs/local-identity-guard.md](docs/local-identity-guard.md) を参照してください。
+
+名義・共同作者行・コミット本文の `identity_gate` も必須判定です。非公開設定 `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` が欠ければ停止します。型・正規表現・入力ファイルが不正な場合は、値を出さず検査不能として止めます。通常は全参照、差分操作は指定した比較元以降の全コミットを検査します。リリース時の `--identity-base-ref` は名義だけを今回範囲へ限定し、本文の全参照検査を狭めません。設定や個人名義をプルリクエスト・チャットへ貼らないでください。
+
 
 ## CIから使う
 
