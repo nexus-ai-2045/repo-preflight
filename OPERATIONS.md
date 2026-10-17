@@ -31,6 +31,12 @@ release準備では `--release` を省略しません。`readme_release_design` 
 
 浅い clone では履歴個人pathが無く `pass` になり得ます。完全履歴では `personal_path_scan` で `blocked` になり得ますが、それは別件です。整合性の `tool_error`（`change_sensitive_scope_unavailable`）にはしない、というのがこの Smoke の契約です。
 
+## リリース
+
+1. 版上げの PR で `pyproject.toml` の version、`CHANGELOG.md` 先頭の `## X.Y.Z - YYYY-MM-DD`（日付は JST）、リリースノート `docs/releases/vX.Y.Z.md`（1行目が `# タイトル`）をそろえて merge する。
+2. Actions の `release` workflow を main で手動起動し、`version` に `X.Y.Z` を渡す。版の不一致や既存 tag があれば何も作らずに止まる。
+3. 不要なリモートブランチは `delete-branches` に空白区切りで渡すと、リリース前に消す。開いた PR があるブランチは消さずに止まる。
+
 ## 更新
 
 scanner pattern、Git probe、状態契約を変更した場合は全testとself-scanを再実行します。GitHub公開後はCI結果、visibility、Security Advisories、rulesetを別途再確認します。
