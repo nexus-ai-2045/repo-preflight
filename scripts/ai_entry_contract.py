@@ -26,6 +26,7 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -840,6 +841,10 @@ def apply_entry(
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--home", type=Path, default=Path.home())

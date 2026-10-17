@@ -110,7 +110,13 @@ python /path/to/repo-preflight/scripts/preflight_ratchet.py --repo . --update-ba
 
 公開コマンドは内部で `gh` を呼ぶため、このフックからは見えずにそのまま通ります。標準ライブラリだけで書いてあり、入出力は UTF-8 で扱うので、macOS・Linux・Windows で同じように動きます（CI で3つの OS のテストを通しています）。
 
-ユーザー設定（`~/.claude/settings.json`、Windows は `%USERPROFILE%\.claude\settings.json`）の `hooks` に足します。すべての repository とセッションに効きます。
+repo-preflight の clone で次の1行を実行すると、ユーザー設定（`~/.claude/settings.json`、Windows は `%USERPROFILE%\.claude\settings.json`）に足します。すべての repository とセッションに効きます。既存の設定は残し、元のファイルは `settings.json.bak` に保存します。2回目以降は何もしません。
+
+```bash
+python3 scripts/publish_guard_hook.py --install   # Windows は py -3 scripts/publish_guard_hook.py --install
+```
+
+手で書く場合は、次の形を `hooks` に足します。
 
 ```json
 {

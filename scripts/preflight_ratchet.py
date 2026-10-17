@@ -128,6 +128,8 @@ def read_baseline_at_ref(repo: Path, ref: str, rel_path: str) -> dict[str, int] 
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if verify.returncode != 0:
         raise RatchetError("baseline base ref: not found")
@@ -136,6 +138,7 @@ def read_baseline_at_ref(repo: Path, ref: str, rel_path: str) -> dict[str, int] 
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
     )
     if shown.returncode != 0:
         exists = subprocess.run(
