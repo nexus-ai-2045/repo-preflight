@@ -45,6 +45,8 @@ SCRIPT_OWNERS = (
     "preferences.py",
     "github_pr_review_snapshot.py",
     "ai_entry_contract.py",
+    "publish_gate.py",
+    "preflight_ratchet.py",
 )
 
 
