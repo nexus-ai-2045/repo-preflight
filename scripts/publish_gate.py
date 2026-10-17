@@ -7,7 +7,9 @@ GitHub には「公開に切り替える操作そのもの」を止める仕組�
 1. 手元の clone が origin の default branch と同じ commit で、origin の全 branch / tag を取得済み
    （検査した履歴と公開される履歴を一致させる）
 2. readiness_scan.py の全体検査（削除済みを含む全履歴）が `pass`。ラチェットの基準値は使わない
-3. `--apply` と、対象 repository 名をもう一度打った `--confirm OWNER/NAME` がある
+3. 公開後も検査が走り続けるよう、HEAD に共通 CI ゲート（`preflight-gate.yml` を呼ぶ workflow）と
+   ラチェットの基準値ファイルがある
+4. `--apply` と、対象 repository 名をもう一度打った `--confirm OWNER/NAME` がある
 
 既定は dry-run で、何も変更しない。結果は `repo-preflight.publish/v1` の JSON で返す。
 「pass」は機械で調べた範囲の結果で、公開してよいという承認ではない。承認は人が出す。
@@ -113,6 +115,41 @@ def check_remote_refs_fetched(run: Runner, repo: Path, default_branch: str) -> s
     return head_sha
 
 
+GATE_USES_RE = re.compile(
+    r"^\s*uses:\s*['\"]?(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|\.)"
+    r"/\.github/workflows/preflight-gate\.ya?ml(?:@\S+)?['\"]?\s*(?:#.*)?$",
+    re.M,
+)
+BASELINE_INPUT_RE = re.compile(r"^\s*baseline:\s*['\"]?([^'\"#\s]+)", re.M)
+DEFAULT_BASELINE = ".repo-preflight/ratchet-baseline.json"
+
+
+def check_ci_gate(run: Runner, repo: Path, head: str) -> str:
+    """HEAD に共通 CI ゲートと基準値があるかを確かめ、ゲートの workflow の path を返す。
+
+    publish_gate を通しても、ゲートが無ければ公開後の push / PR では検査が一度も走らない。
+    """
+    listed = git(
+        run, repo, "ls-tree", "-r", "--name-only", head, "--", ".github/workflows"
+    )
+    if listed.returncode != 0:
+        raise GateStop("tool_error", "workflow_list_failed")
+    for path in sorted(listed.stdout.splitlines()):
+        if not path.endswith((".yml", ".yaml")):
+            continue
+        shown = git(run, repo, "show", f"{head}:{path}")
+        if shown.returncode != 0:
+            raise GateStop("tool_error", "workflow_read_failed")
+        if not GATE_USES_RE.search(shown.stdout):
+            continue
+        match = BASELINE_INPUT_RE.search(shown.stdout)
+        baseline = match.group(1) if match else DEFAULT_BASELINE
+        if git(run, repo, "cat-file", "-e", f"{head}:{baseline}").returncode != 0:
+            raise GateStop("blocked", "ratchet_baseline_missing")
+        return path
+    raise GateStop("blocked", "ci_gate_missing")
+
+
 def run_scan(run: Runner, repo: Path, scan_args: Sequence[str]) -> dict:
     proc = run([sys.executable, str(SCAN_SCRIPT), "--repo", str(repo), *scan_args])
     try:
@@ -158,6 +195,7 @@ def evaluate(
                 and check.get("status") in {"fail", "unknown", "tool_error"}
             )
             raise GateStop("blocked", "scan_not_pass")
+        result["ci_gate"] = check_ci_gate(run, repo, head)
         if not apply:
             result["status"] = "ready"
             result["next"] = f"--apply --confirm {slug}"

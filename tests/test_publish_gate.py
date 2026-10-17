@@ -11,6 +11,11 @@ import publish_gate as p
 SLUG = "example-owner/example-repo"
 HEAD = "a" * 40
 REPO = Path("/nonexistent/repo")
+GATE_WORKFLOW = """name: preflight
+jobs:
+  gate:
+    uses: example-owner/repo-preflight/.github/workflows/preflight-gate.yml@0123abc # v0.7.0
+"""
 
 
 class FakeRunner:
@@ -26,7 +31,13 @@ class FakeRunner:
         scan_status="pass",
         edit_ok=True,
         visibility_after="PUBLIC",
+        workflows=None,
     ):
+        self.workflows = (
+            workflows
+            if workflows is not None
+            else {".github/workflows/preflight.yml": GATE_WORKFLOW}
+        )
         self.origin = origin
         self.visibility = visibility
         self.archived = archived
@@ -69,6 +80,10 @@ class FakeRunner:
             return self.done(0, self.origin + "\n")
         if args[0] == "ls-remote":
             return self.done(0, "".join(f"{s}\t{r}\n" for s, r in self.refs))
+        if args[0] == "ls-tree":
+            return self.done(0, "".join(f"{path}\n" for path in self.workflows))
+        if args[0] == "show":
+            return self.done(0, self.workflows[args[1].split(":", 1)[1]])
         if args[0] == "cat-file":
             return self.done(1 if args[-1] in self.missing else 0)
         if args[0] == "rev-parse":
@@ -190,3 +205,38 @@ def test_apply単独は受け付けない(capsys):
 def test_ssh形式のoriginも読む():
     runner = FakeRunner(origin=f"git@github.com:{SLUG}.git")
     assert run(runner)["repository"] == SLUG
+
+
+def test_CIゲートが無ければ公開しない():
+    run = FakeRunner(workflows={".github/workflows/ci.yml": "name: ci\n"})
+    result = p.evaluate(REPO, apply=True, confirm=SLUG, run=run)
+    assert result["status"] == "blocked"
+    assert result["issue"] == "ci_gate_missing"
+    assert not run.edited
+
+
+def test_ラチェットの基準値が無ければ公開しない():
+    run = FakeRunner(missing={f"{HEAD}:.repo-preflight/ratchet-baseline.json"})
+    result = p.evaluate(REPO, apply=True, confirm=SLUG, run=run)
+    assert result["status"] == "blocked"
+    assert result["issue"] == "ratchet_baseline_missing"
+    assert not run.edited
+
+
+def test_基準値の置き場所を変えたゲートも認める():
+    workflow = GATE_WORKFLOW + "    with:\n      baseline: ci/baseline.json\n"
+    run = FakeRunner(
+        workflows={".github/workflows/gate.yaml": workflow},
+        missing={f"{HEAD}:.repo-preflight/ratchet-baseline.json"},
+    )
+    result = p.evaluate(REPO, apply=False, confirm=None, run=run)
+    assert result["status"] == "ready"
+    assert result["ci_gate"] == ".github/workflows/gate.yaml"
+
+
+def test_コメント中のゲート名だけではゲートとみなさない():
+    run = FakeRunner(
+        workflows={".github/workflows/ci.yml": "# preflight-gate.yml を後で入れる\n"}
+    )
+    result = p.evaluate(REPO, apply=False, confirm=None, run=run)
+    assert result["issue"] == "ci_gate_missing"
