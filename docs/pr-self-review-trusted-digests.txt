@@ -5,3 +5,4 @@
 # 配布物を更新するときは、再生成した実物から digest を計算し直して
 # この file を同じ変更で更新する（人間 review 対象）。
 c10495d383e2286a1edf938b3143dfc4d2c12afa46261e732c8c3ff6864cd0c0
+d053b0378fe7cd79d0f1901d2be735b34b99dd45429b6c8999dba16b375b5e20
