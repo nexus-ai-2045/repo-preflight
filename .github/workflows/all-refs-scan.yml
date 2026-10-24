@@ -6,8 +6,12 @@ name: all-refs-scan
 # - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
 # - 秘密・個人パス・名義の件数：scripts/preflight_ratchet.py（基準値はデフォルト枝の版より緩められない）
 # - 鍵：固定した gitleaks（全履歴）
+# - 注釈付きタグ：タグの作者（tagger）と注釈文（入れ子のタグも）を identity_gate.check_pushed_tags で見る
 # 許可名義の一覧と名義検査の例外一覧は、デフォルト枝の版（tool 側）だけを読む。枝側で広げても通らない。
-# 書き込みはしない（Issue・コメントも作らない）。ログには ref・commit・ファイル・行・種類だけを出し、値は出さない。
+# 書き込みはしない（Issue・コメントも作らない）。
+# ログに出すのは件数と種類だけ。ref 名・ファイル名・作者名（commit の作者・タグの作者）・値は、
+# 個人名が入りうるので出さない。commit やタグのハッシュも出さない。各検査の出力は作業場のファイルにだけ書き、
+# 下の summarize.py が種類と件数に直してから出す。どの ref かは、手元で同じ検査を回して確かめる。
 
 on:
   schedule:
@@ -42,12 +46,14 @@ jobs:
             echo "all-refs-scan はデフォルト枝の版でだけ動かします" >&2
             exit 1
           fi
-      - name: Check out target repository (all branches and tags)
+      # actions/checkout で全履歴（fetch-depth: 0）を取ると、取った枝・タグの名前を1行ずつログに出す。
+      # ref 名には個人名が入りうるので、ここでは浅く1つだけ取り、全 ref は下の手順で静かに（-q）取る。
+      - name: Check out target repository (default branch only)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: target
           persist-credentials: false
-          fetch-depth: 0
+          fetch-depth: 1
       - name: Check out repo-preflight (default branch)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -64,8 +70,9 @@ jobs:
       # preflight-gate・ci と同じ固定版（references/gitleaks-pins.json の配布物ハッシュと本体ハッシュ）
       - name: Install pinned gitleaks
         run: python tool/scripts/install_pinned_gitleaks.py --dest "${{ runner.temp }}/gitleaks" --github-path
-      # PR の head（refs/pull/*/head）も取る。merge 用の ref は GitHub が作る合成物なので見ない。
-      - name: Fetch pull request heads
+      # 全履歴と、全部の枝・タグ・PR の head（refs/pull/*/head）を取る。merge 用の ref は GitHub が作る合成物なので見ない。
+      # -q で取った ref の名前をログに出さない。
+      - name: Fetch every branch, tag and pull request head quietly
         env:
           EVENT_FETCH_TOKEN: ${{ github.token }}
         run: |
@@ -83,7 +90,10 @@ jobs:
           GIT_CONFIG_KEY_1=credential.helper \
           GIT_CONFIG_VALUE_1= \
           GIT_TERMINAL_PROMPT=0 \
-            git -C target fetch --no-tags origin '+refs/pull/*/head:refs/remotes/pull/*'
+            git -C target fetch -q --unshallow --no-tags origin \
+              '+refs/heads/*:refs/remotes/origin/*' \
+              '+refs/tags/*:refs/tags/*' \
+              '+refs/pull/*/head:refs/remotes/pull/*'
           unset auth_header
       - name: Scan every ref
         env:
@@ -99,28 +109,123 @@ jobs:
           policy="$tool/references/public-commit-identities.json"
           work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/all-refs-scan.XXXXXX")"
           : > "$work/refs.txt"
+          : > "$work/tags.txt"
+          # 各検査の出力（ファイル名・commit・作者などを含みうる）を、種類と件数だけに直してログへ出す。
+          # 種類にパス・メール・山かっこの形が混ざっていたら、その種類も伏せる。
+          cat > "$work/summarize.py" <<'PY'
+          import collections
+          import json
+          import re
+          import sys
+
+          mode, path, where = sys.argv[1], sys.argv[2], sys.argv[3]
+          kinds = collections.Counter()
+          try:
+              with open(path, encoding="utf-8", errors="replace") as stream:
+                  text = stream.read()
+          except OSError:
+              text = ""
+          if mode == "issues":
+              for line in text.splitlines():
+                  line = line.strip()
+                  if line.startswith("失敗:"):
+                      kinds[line.rsplit(": ", 1)[-1]] += 1
+                  elif line.startswith("{"):
+                      try:
+                          data = json.loads(line)
+                      except ValueError:
+                          continue
+                      if data.get("status") == "tool_error":
+                          kinds[f"tool_error {data.get('reason', '')}".strip()] += 1
+          elif mode == "ratchet":
+              start = text.find("{")
+              try:
+                  data = json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else {}
+              except ValueError:
+                  data = {}
+              for key in ("increased", "loosened"):
+                  for item in data.get(key) or []:
+                      kinds[f"{key} {item.get('check', '')}".strip()] += 1
+              if not kinds:
+                  kinds[f"status {data.get('status', 'tool_error')}"] += 1
+          elif mode == "gitleaks":
+              try:
+                  findings = json.loads(text) if text.strip() else []
+              except ValueError:
+                  findings = []
+              for finding in findings or []:
+                  kinds[f"gitleaks {finding.get('RuleID', '')}".strip()] += 1
+              if not kinds:
+                  kinds["gitleaks を実行できません"] += 1
+          if not kinds:
+              kinds["種類の読めない失敗"] += 1
+          for kind, count in sorted(kinds.items()):
+              if len(kind) > 80 or re.search(r"[/\\@<>:]|\.\w{1,5}\b", kind):
+                  kind = "種類を伏せた指摘"
+              print(f"赤: {where}: {kind} {count} 件", file=sys.stderr)
+          PY
           # 枝（origin/HEAD の別名は除く）・タグ・PR の head。タグは指す commit に直す。commit に直せない ref は赤。
+          # 注釈付きタグは、commit に直す前にタグの object を控えておき、下で作者と注釈文を見る。
           while read -r ref; do
             case "$ref" in refs/remotes/origin/HEAD) continue ;; esac
-            if sha="$(git -C "$target" rev-parse -q --verify "${ref}^{commit}")"; then
-              printf '%s %s\n' "$sha" "$ref" >> "$work/refs.txt"
+            if [ "$(git -C "$target" cat-file -t "$ref" 2>/dev/null)" = tag ]; then
+              git -C "$target" rev-parse -q --verify "$ref" 2>/dev/null >> "$work/tags.txt" || true
+            fi
+            if sha="$(git -C "$target" rev-parse -q --verify "${ref}^{commit}" 2>/dev/null)"; then
+              printf '%s\n' "$sha" >> "$work/refs.txt"
             else
-              printf 'unresolved %s\n' "$ref" >> "$work/refs.txt"
+              printf 'unresolved\n' >> "$work/refs.txt"
             fi
           done < <(git -C "$target" for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags)
           test -s "$work/refs.txt" || { echo "検査する ref がありません" >&2; exit 1; }
-          git -C "$target" cat-file -e "${DEFAULT_SHA}^{commit}"
+          git -C "$target" cat-file -e "${DEFAULT_SHA}^{commit}" 2>/dev/null
+          commits="$(grep -v '^unresolved$' "$work/refs.txt" | sort -u || true)"
+          total="$(printf '%s\n' "$commits" | grep -c . || true)"
+          echo "ref $(wc -l < "$work/refs.txt" | tr -d ' ') 件（注釈付きタグ $(wc -l < "$work/tags.txt" | tr -d ' ') 件、検査する commit ${total} 件）"
           failed=0
-          if grep -q '^unresolved ' "$work/refs.txt"; then
-            grep '^unresolved ' "$work/refs.txt" | while read -r _ ref; do
-              echo "赤: ${ref}: commit を指していない ref" >&2
-            done
+          unresolved="$(grep -c '^unresolved$' "$work/refs.txt" || true)"
+          if [ "$unresolved" -gt 0 ]; then
+            echo "赤: commit を指していない ref ${unresolved} 件" >&2
             failed=1
           fi
-          # 同じ commit を指す ref はまとめて1回だけ検査する
-          for sha in $(grep -v '^unresolved ' "$work/refs.txt" | cut -d' ' -f1 | sort -u); do
-            refs="$(awk -v s="$sha" '$1 == s { print $2 }' "$work/refs.txt" | paste -sd, -)"
-            scan="$work/repo-$sha"
+          # 注釈付きタグの作者（tagger）と注釈文。入れ子のタグもたどる。pre-push と同じ check_pushed_tags を、
+          # デフォルト枝の版（tool 側）の許可名義で呼ぶ。指摘はファイルにだけ書き、種類と件数に直して出す。
+          if [ -s "$work/tags.txt" ]; then
+            if ! python - "$tool/scripts" "$policy" "$target" "$work/tags.txt" > "$work/tags.out" 2>&1 <<'PY'
+          import sys
+
+          sys.path.insert(0, sys.argv[1])
+          import identity_gate
+
+          policy = identity_gate.load_public_policy(sys.argv[2])
+          failed = 0
+          with open(sys.argv[4], encoding="utf-8") as stream:
+              for tag_sha in stream.read().split():
+                  try:
+                      issues = identity_gate.check_pushed_tags(
+                          policy,
+                          sys.argv[3],
+                          f"tag {tag_sha} tag {identity_gate.ZERO_OID}\n",
+                      )
+                  except Exception:
+                      issues = ["タグ: タグを読めない"]
+                  for issue in issues:
+                      print("失敗:", issue)
+                      failed = 1
+          sys.exit(failed)
+          PY
+            then
+              python "$work/summarize.py" issues "$work/tags.out" "注釈付きタグ"
+              failed=1
+            fi
+          fi
+          # 同じ commit を指す ref はまとめて1回だけ検査する。ログでは何番目かと ref の件数だけで示す。
+          index=0
+          for sha in $commits; do
+            index=$((index + 1))
+            nrefs="$(grep -cx "$sha" "$work/refs.txt" || true)"
+            where="検査 ${index}/${total}（ref ${nrefs} 件）"
+            scan="$work/repo-$index"
             # ref ごとに別の作業場へ、その ref の履歴とデフォルト枝の commit だけを入れる。
             # 他の ref が入ると全履歴の検査（--all）が他の枝の中身を見てしまう（#2 の原因）。
             git init -q "$scan"
@@ -133,11 +238,11 @@ jobs:
             rm -f "$scan/.git/FETCH_HEAD"
             test -z "$(git -C "$scan" for-each-ref --format='%(refname)')"
             git -C "$scan" remote add origin "$ORIGIN_URL"
-            echo "== ${sha:0:12} (${refs})"
+            echo "== ${where}"
             # デフォルト枝との分かれ目。整合性の比較元（preflight-gate の preflight-event-base と同じ形）と、
             # identity_gate の範囲（デフォルト枝に無い commit）に使う。分かれ目は HEAD の祖先なので、全履歴の範囲は広がらない。
             ratchet_args=(--repo "$scan" --allowed-identities "$policy" --baseline-base-ref "$DEFAULT_SHA")
-            if mb="$(git -C "$scan" merge-base "$DEFAULT_SHA" HEAD)"; then
+            if mb="$(git -C "$scan" merge-base "$DEFAULT_SHA" HEAD 2>/dev/null)"; then
               git -C "$scan" update-ref refs/remotes/origin/all-refs-scan-base "$mb"
               ratchet_args+=(--consistency-base-ref refs/remotes/origin/all-refs-scan-base)
               id_range="${mb}..HEAD"
@@ -145,42 +250,26 @@ jobs:
               # デフォルト枝と共通の祖先が無い ref は、全履歴を足した commit として見る
               id_range=HEAD
             fi
-            # 名義・本文・足した行の形。例外一覧は tool 側（デフォルト枝の版）だけを読む。出力は commit と種類だけ。
+            # 名義・本文・足した行の形。例外一覧は tool 側（デフォルト枝の版）だけを読む。
             # デフォルト枝の commit は、その push の CI（preflight-gate）が当時の固定した版で見ている。
             # 例外一覧はファイルの最新の中身の SHA256 だけを持つので、今の一覧で古い中身を見直すと必ず赤になる。
-            if ! python "$tool/scripts/identity_gate.py" --public --repo "$scan" --allowed-identities "$policy" --range "$id_range"; then
-              echo "赤: ${refs}: identity_gate" >&2
+            if ! python "$tool/scripts/identity_gate.py" --public --repo "$scan" --allowed-identities "$policy" --range "$id_range" > "$work/identity.out" 2>&1; then
+              python "$work/summarize.py" issues "$work/identity.out" "${where}: identity_gate"
               failed=1
             fi
-            # 秘密・個人パス・名義の件数（全履歴）。基準値はその ref の版を使い、デフォルト枝の版より緩めていれば赤。出力は件数だけ。
-            if ! python "$tool/scripts/preflight_ratchet.py" "${ratchet_args[@]}"; then
-              echo "赤: ${refs}: preflight_ratchet" >&2
+            # 秘密・個人パス・名義の件数（全履歴）。基準値はその ref の版を使い、デフォルト枝の版より緩めていれば赤。
+            if ! python "$tool/scripts/preflight_ratchet.py" "${ratchet_args[@]}" > "$work/ratchet.out" 2>&1; then
+              python "$work/summarize.py" ratchet "$work/ratchet.out" "${where}: preflight_ratchet"
               failed=1
             fi
-            # 鍵。値は report にだけ伏せ字で書き、ログにはファイル・行・commit・規則だけを出す。
-            report="$work/gitleaks-$sha.json"
+            # 鍵。値は report にだけ伏せ字で書き、ログには規則の種類と件数だけを出す。
+            report="$work/gitleaks-$index.json"
             if ! gitleaks git --no-banner --redact --log-level error --config "$tool/.gitleaks.toml" \
                 --log-opts=HEAD --report-format json --report-path "$report" "$scan" > /dev/null 2>&1; then
-              if [ -s "$report" ]; then
-                python - "$report" "$refs" <<'PY'
-          import json
-          import sys
-
-          findings = json.load(open(sys.argv[1], encoding="utf-8"))
-          if not findings:
-              print(f"赤: {sys.argv[2]}: gitleaks を実行できません", file=sys.stderr)
-          for f in findings:
-              print(
-                  f"赤: {sys.argv[2]}: gitleaks: {f.get('File')}:{f.get('StartLine')}"
-                  f" ({str(f.get('Commit'))[:8]}, {f.get('RuleID')})",
-                  file=sys.stderr,
-              )
-          PY
-              else
-                echo "赤: ${refs}: gitleaks を実行できません" >&2
-              fi
+              python "$work/summarize.py" gitleaks "$report" "${where}: gitleaks"
               failed=1
             fi
-            rm -rf "$scan" "$report"
+            rm -rf "$scan" "$report" "$work/identity.out" "$work/ratchet.out"
           done
+          if [ "$failed" -eq 0 ]; then echo "緑: 全 ref"; fi
           exit "$failed"

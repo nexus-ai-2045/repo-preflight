@@ -1,5 +1,6 @@
 """全 ref 検査（.github/workflows/all-refs-scan.yml）の形と、実際の Git 履歴での赤・緑。"""
 
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -14,9 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github/workflows/all-refs-scan.yml"
 PUBLIC_NAME = "nexus_ai"
 PUBLIC_EMAIL = "273569186+nexus-ai-2045@users.noreply.github.com"
-# 名簿に無い名義。値はログに出てはいけない
-UNLISTED = "Unapproved Fixture <unapproved-fixture@example.invalid>"
+# 以下はすべて架空の値。個人名が ref 名・ファイル名・作者名・タグの作者・注釈文に入った場合の代わりで、
+# ログ（標準出力・標準エラー）のどこにも出てはいけない
+PERSONAL = "fictional-hanako-fixture"
+UNLISTED_NAME = "Fictional Hanako"
+UNLISTED_EMAIL = "fictional-hanako@example.invalid"
+UNLISTED = f"{UNLISTED_NAME} <{UNLISTED_EMAIL}>"
+PERSONAL_FILE = f"{PERSONAL}-notes.md"
 ORIGIN_URL = "https://example.invalid/fixture.git"
+# 実在しない形だけの鍵（gitleaks の github-pat 規則に当たる）。ソースに字面で置かないよう実行時に組み立てる
+FAKE_TOKEN = "gh" + "p_" + hashlib.sha256(b"all-refs-scan fixture").hexdigest()[:36]
 
 
 def load_workflow():
@@ -84,10 +92,56 @@ def test_fetches_every_branch_tag_and_pull_head():
         if str(step.get("uses", "")).startswith("actions/checkout@")
         and step["with"].get("path") == "target"
     ]
-    assert len(targets) == 1 and targets[0]["with"]["fetch-depth"] == 0
-    runs = all_run_text()
-    assert "'+refs/pull/*/head:refs/remotes/pull/*'" in runs
+    # actions/checkout の全履歴取得は取った枝・タグの名前をログに出すので、浅く1つだけ取る
+    assert len(targets) == 1 and targets[0]["with"]["fetch-depth"] == 1
+    fetch = [step for step in steps() if "git -C target fetch" in step.get("run", "")]
+    assert len(fetch) == 1
+    run = fetch[0]["run"]
+    assert "fetch -q --unshallow" in run
+    for refspec in (
+        "'+refs/heads/*:refs/remotes/origin/*'",
+        "'+refs/tags/*:refs/tags/*'",
+        "'+refs/pull/*/head:refs/remotes/pull/*'",
+    ):
+        assert refspec in run
     assert "refs/heads refs/remotes refs/tags" in scan_script()
+
+
+def test_logs_only_counts_and_kinds():
+    """ref 名・ファイル名・作者名・ハッシュはログに出さない。各検査の出力はファイルに書き、種類と件数に直す。"""
+    script = scan_script()
+    for line in script.splitlines():
+        if re.search(r"\b(?:echo|printf)\b", line) and ">>" not in line:
+            # ログに出す echo・printf は固定の文と件数・番号の変数だけ
+            for var in ("ref", "sha", "refs", "tag_sha", "mb", "label"):
+                assert f"${var}" not in line and f"${{{var}" not in line, line
+    # 検査道具の出力はそのままログへ流さない（行の継続はつないで見る）
+    joined = re.sub(r"\\\n\s*", " ", script)
+    for call in (
+        'identity_gate.py" --public',
+        'preflight_ratchet.py" "${ratchet_args[@]}"',
+        "gitleaks git ",
+    ):
+        lines = [line for line in joined.splitlines() if call in line]
+        assert lines, call
+        for line in lines:
+            assert re.search(
+                r">\s*\"?\$work/\w+\.out\"?\s+2>&1|> /dev/null 2>&1", line
+            ), line
+    # GitHub の注釈（::error など）も出さない
+    assert "::" not in all_run_text()
+    # actions/checkout 以外で ref を取る git fetch は全部 -q
+    for line in all_run_text().splitlines():
+        if re.search(r"\bgit\b.*\bfetch\b", line):
+            assert re.search(r"fetch -q\b", line), line
+
+
+def test_annotated_tags_are_checked_before_peeling():
+    script = scan_script()
+    assert 'cat-file -t "$ref"' in script
+    assert "identity_gate.check_pushed_tags(" in script
+    # 許可名義はデフォルト枝の版（tool 側）
+    assert 'python - "$tool/scripts" "$policy" "$target"' in script
 
 
 def test_policy_and_exceptions_come_only_from_default_branch_tool():
@@ -228,30 +282,49 @@ def run_scan(tmp_path, origin):
     )
 
 
-def assert_no_values(result):
+def assert_nothing_personal(result, *hashes):
+    """ログのどこにも、ref 名・ファイル名・作者名・タグの作者・注釈文・ハッシュが出ていない。"""
     out = result.stdout + result.stderr
-    assert "unapproved-fixture" not in out
-    assert "Unapproved Fixture" not in out
+    for value in (
+        PERSONAL,
+        PERSONAL_FILE,
+        UNLISTED_NAME,
+        UNLISTED_EMAIL,
+        "fictional",
+        "Fictional",
+        "refs/",
+        "leak.md",
+        FAKE_TOKEN,
+    ):
+        assert value not in out, value
+    for sha in hashes:
+        assert sha[:7] not in out
+
+
+def red_lines(result):
+    return [line for line in result.stderr.splitlines() if line.startswith("赤:")]
 
 
 @needs_tools
 def test_clean_branch_without_pr_is_green(tmp_path, origin):
-    git(origin, "checkout", "-qb", "clean-no-pr")
+    git(origin, "checkout", "-qb", f"{PERSONAL}/clean")
     commit_file(origin, "notes.md", "clean change\n")
     git(origin, "checkout", "-q", "main")
     result = run_scan(tmp_path, origin)
     assert result.returncode == 0, result.stderr
-    assert "赤:" not in result.stderr
-    assert "clean-no-pr" in result.stdout
+    assert not red_lines(result)
+    assert "緑: 全 ref" in result.stdout
+    assert re.search(
+        r"^ref \d+ 件（注釈付きタグ 0 件、検査する commit 2 件）$", result.stdout, re.M
+    )
+    assert_nothing_personal(result)
 
 
 @needs_tools
-def test_leaky_branch_without_pr_is_red_and_names_only_the_ref(tmp_path, origin):
-    git(origin, "checkout", "-qb", "clean-no-pr")
-    commit_file(origin, "notes.md", "clean change\n")
-    git(origin, "checkout", "-q", "main")
-    git(origin, "checkout", "-qb", "leaky-no-pr")
-    leaked = commit_file(origin, "leak.md", "unlisted author\n", author=UNLISTED)
+def test_leaky_branch_is_red_with_kind_only(tmp_path, origin):
+    """個人名入りの枝名・ファイル名・作者名（架空）。赤だが、ログは種類と件数だけ。"""
+    git(origin, "checkout", "-qb", f"{PERSONAL}/leak")
+    leaked = commit_file(origin, PERSONAL_FILE, f"連絡先 {UNLISTED}\n", author=UNLISTED)
     # 枝側で例外一覧を広げても、道具はデフォルト枝の版しか読まない
     (origin / ".repo-preflight/identity-fixture-exceptions.txt").write_text(
         "# widened on the branch\n", encoding="utf-8"
@@ -261,20 +334,114 @@ def test_leaky_branch_without_pr_is_red_and_names_only_the_ref(tmp_path, origin)
     git(origin, "checkout", "-q", "main")
     result = run_scan(tmp_path, origin)
     assert result.returncode == 1
-    assert "赤: refs/remotes/origin/leaky-no-pr: identity_gate" in result.stderr
-    assert leaked[:8] in result.stderr
-    assert "clean-no-pr: " not in result.stderr
-    assert_no_values(result)
+    lines = red_lines(result)
+    assert any(
+        re.fullmatch(r"赤: 検査 \d+/2（ref 1 件）: identity_gate: .+ \d+ 件", line)
+        for line in lines
+    ), lines
+    assert_nothing_personal(result, leaked)
 
 
 @needs_tools
 def test_leaky_tag_on_no_branch_is_red(tmp_path, origin):
     git(origin, "checkout", "-q", "--detach", "main")
-    commit_file(origin, "leak.md", "unlisted author\n", author=UNLISTED)
-    git(origin, "tag", "leaky-tag")
+    leaked = commit_file(origin, PERSONAL_FILE, "unlisted author\n", author=UNLISTED)
+    git(origin, "tag", f"{PERSONAL}-light")
     git(origin, "checkout", "-q", "main")
     result = run_scan(tmp_path, origin)
     assert result.returncode == 1
-    assert "赤: refs/tags/leaky-tag: identity_gate" in result.stderr
-    assert "refs/remotes/origin/main: " not in result.stderr
-    assert_no_values(result)
+    assert any(": identity_gate: " in line for line in red_lines(result))
+    assert_nothing_personal(result, leaked)
+
+
+@needs_tools
+def test_secret_in_personal_file_is_red_with_rule_only(tmp_path, origin):
+    """gitleaks の指摘も、ファイル名・行・commit を出さず規則の種類と件数だけ。"""
+    git(origin, "checkout", "-qb", f"{PERSONAL}/secret")
+    leaked = commit_file(origin, PERSONAL_FILE, f"token = {FAKE_TOKEN}\n")
+    git(origin, "checkout", "-q", "main")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert any(
+        re.fullmatch(
+            r"赤: 検査 \d+/2（ref 1 件）: gitleaks: gitleaks [\w-]+ \d+ 件", line
+        )
+        for line in red_lines(result)
+    ), red_lines(result)
+    assert_nothing_personal(result, leaked)
+
+
+@needs_tools
+def test_ref_to_non_commit_is_red_without_its_name(tmp_path, origin):
+    tree = git(origin, "rev-parse", "HEAD^{tree}")
+    git(origin, "update-ref", f"refs/tags/{PERSONAL}-tree", tree)
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert "赤: commit を指していない ref 1 件" in result.stderr
+    assert_nothing_personal(result, tree)
+
+
+# --- P2: 注釈付きタグの作者（tagger）と注釈文 ---------------------------------
+
+
+def make_tag(repo, name, message, *, tagger=None, target="main"):
+    env = {**os.environ}
+    if tagger:
+        env["GIT_COMMITTER_NAME"], env["GIT_COMMITTER_EMAIL"] = tagger
+    git(repo, "tag", "-a", name, "-m", message, target, env=env)
+    return git(repo, "rev-parse", name)
+
+
+@needs_tools
+def test_clean_annotated_tag_is_green(tmp_path, origin):
+    make_tag(origin, "v0.0.1", "公開用のタグ\n")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 0, result.stderr
+    assert "注釈付きタグ 1 件" in result.stdout
+
+
+@needs_tools
+def test_annotated_tag_with_unlisted_tagger_is_red(tmp_path, origin):
+    """commit はきれいでも、タグの作者が名簿に無ければ赤。値・タグ名・ハッシュは出さない。"""
+    tag = make_tag(
+        origin,
+        f"{PERSONAL}-tagger",
+        "公開用のタグ\n",
+        tagger=(UNLISTED_NAME, UNLISTED_EMAIL),
+    )
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert red_lines(result) == [
+        "赤: 注釈付きタグ: タグの作者が公開許可名義と不一致 1 件"
+    ]
+    assert_nothing_personal(result, tag)
+
+
+@needs_tools
+def test_annotated_tag_with_personal_identity_in_message_is_red(tmp_path, origin):
+    """作者が公開名義でも、注釈文に名簿に無い名義の行があれば赤。値は出さない。"""
+    tag = make_tag(
+        origin,
+        "v0.0.2",
+        f"公開用のタグ {PERSONAL}\n\nCo-authored-by: {UNLISTED}\n",
+    )
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert red_lines(result) == [
+        "赤: 注釈付きタグ: 作者情報の行が公開許可名義と不一致 1 件"
+    ]
+    assert_nothing_personal(result, tag)
+
+
+@needs_tools
+def test_nested_annotated_tag_is_followed(tmp_path, origin):
+    """タグを指すタグ。外側がきれいでも、内側の作者が名簿に無ければ赤。"""
+    inner = make_tag(origin, "inner", "内側\n", tagger=(UNLISTED_NAME, UNLISTED_EMAIL))
+    outer = make_tag(origin, "outer", "外側\n", target=inner)
+    git(origin, "tag", "-d", "inner")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert red_lines(result) == [
+        "赤: 注釈付きタグ: タグの作者が公開許可名義と不一致 1 件"
+    ]
+    assert_nothing_personal(result, inner, outer)
