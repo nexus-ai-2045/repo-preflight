@@ -7,7 +7,7 @@ fb797488094d06086df9c89bc9542b5530be53f3bc9500ce91c7123cf000cded  tests/test_git
 9032998aea5651efb061d570e13d451c3b60e889a1cff7b5d19d5ada36d78ea9  tests/test_identity_gate.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 7d003ed506a54de24168fd795a36f9b7cd38381bb37a856ccd51cd235a5de4cc  tests/test_identity_normalization.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 071e842235547978cff420618df15b7a9e811aebb3b30751ad153362f2ab0da6  tests/test_identity_recurrence.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-a5934ac1829213414dd52685c5f9c24912a4519e705c4b7ad665ff8fb43e377b  tests/test_local_identity_guard.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+5524a172423ebdb1eaf75fe22f78dc65e12877f3de233995c3ad9832cfb48847  tests/test_local_identity_guard.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 17b8b57083c519f4419f76ce53bf87828f9b54bc7874ccdd4ec6ea88ff6a7c9e  tests/test_preflight_enforcement.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 0149b93fec4b1c582479254eb33cdb93a389b2b93f3ffabc138f35082fd15526  tests/test_public_identity_policy.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 edf935d4ddd893781f8af043542523d3eab6bd220b2677cebe41a8454d463bb4  tests/test_public_synthetic_path_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
