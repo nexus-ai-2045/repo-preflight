@@ -789,6 +789,13 @@ class PrivateIdentityScan:
             except ImportError:
                 self.report["gif_decoder_settings"] = None
 
+            self.caff_checker = (
+                getattr(provider, "scan_private_caff", None) if bundled else None
+            )
+            self.caff_image_cache = {}
+            self.report["caff_decoder_sha256"] = getattr(
+                provider, "CAFF_DECODER_SHA256", None
+            )
             self.psd_checker = (
                 getattr(provider, "scan_private_psd", None) if bundled else None
             )
@@ -837,7 +844,13 @@ class PrivateIdentityScan:
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                if data.startswith(b"8BPS") and callable(
+                if data.startswith(b"CAFF") and callable(
+                    getattr(self, "caff_checker", None)
+                ):
+                    results = [
+                        self.caff_checker(data, self.patterns, self.caff_image_cache)
+                    ]
+                elif data.startswith(b"8BPS") and callable(
                     getattr(self, "psd_checker", None)
                 ):
                     results = [self.psd_checker(data, self.patterns)]
@@ -934,6 +947,8 @@ class PrivateIdentityScan:
                 "private_identity_jpeg_image_limit",
                 "private_identity_jpeg_text_limit",
                 "private_identity_jpeg_decoder_unavailable",
+                "private_identity_caff_unverified",
+                "private_identity_caff_size_limit",
                 "private_identity_gif_unverified",
                 "private_identity_gif_size_limit",
                 "private_identity_gif_decoder_unavailable",
@@ -1073,6 +1088,8 @@ class IdentityScanCache:
                 "policy_sha256": scan.report["policy_sha256"],
                 "provider_kind": scan.report["provider_kind"],
                 "normalized_path_provider_sha256": scan.path_normalizer_sha256,
+                "caff_checker": callable(getattr(scan, "caff_checker", None)),
+                "caff_decoder_sha256": scan.report.get("caff_decoder_sha256"),
                 "gif_checker": callable(getattr(scan, "gif_checker", None)),
                 "gif_decoder_version": scan.report.get("gif_decoder_version"),
                 "gif_decoder_settings": scan.report.get("gif_decoder_settings"),
@@ -1722,6 +1739,22 @@ def cmo3_contents_xml(data: bytes) -> bytes | None:
     entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
     the whole file unreadable rather than partly clean.
     """
+    if data[:14] == b"CAFF\0\0\0----\0\0\0":
+        # 実際のCAFFはヘッダにentry用キーを持つ。旧固定キーheuristicと混ぜない。
+        import runpy
+
+        try:
+            decoder = runpy.run_path(str(Path(__file__).with_name("caff_archive.py")))
+            documents = [
+                content
+                for entry, content in decoder["Archive"](data).contents()
+                if entry.tag == "main_xml"
+            ]
+            if len(documents) != 1 or len(documents[0]) > CMO3_MAX_XML_BYTES:
+                return None
+            return documents[0]
+        except Exception:
+            return None
     plain = data.translate(_CMO3_XOR_TABLE)
     documents: list[bytes] = []
     for match in _ZIP_LOCAL_HEADER.finditer(plain):

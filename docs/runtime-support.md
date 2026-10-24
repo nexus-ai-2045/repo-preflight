@@ -276,3 +276,12 @@ PSD（バージョン1）が対象で、PSB（バージョン2）は未対応で
 `.[images]` のPillowを使い、GIF87a/89aの構造を検証した後、拡張ブロックの本文と全フレームを検査します。コメントのsubblockを連結してから既存の文字列検査へ渡します。フレームは単独で展開し、透明・差分合成で元のパレット番号を消さず、番号と色の両方を直接照合します。画像の画素をプログラムとして解析しません。OCRは行いません。
 
 入力128MiB、1フレームのRGBA換算128MiB、全フレーム累計512MiB、512フレーム、拡張本文8MiBが上限です。構造不正・画像展開失敗・追加依存不足・切れた画像を許す設定・元の番号を失う強制RGB設定は検査不能にします。Pillowの版とデコーダ設定は検査キャッシュの鍵に含めます。
+
+
+## CubismのCMO3（CAFF）を含む個人情報検査
+
+CAFF v0.0.0 / format `----` のファイル表と各ファイル固有のXORキーを読み、圧縮画素を文字列式として解析しません。内部名・main_xml・全埋込みPNG・PNGのpreviewを既存の検査器へ渡します。中央directory付きZIPはPythonの標準ライブラリ、Cubismのstreaming ZIPは既存の局所header・deflate終端・descriptor・CRC検証を使います。未知の型、壊れたentry、重複名、範囲外や重なったoffsetは検査不能として停止します。
+
+入力128MiB、展開したentryの合計256MiB、main_xml 64MiB、entry 1万件、XML要素10万件が上限です。XMLはUTF-8のみで、DTD・外部entityを読みません。補助デコーダのSHA-256を検査キャッシュ鍵へ含めます。埋込み画像の再検査の控えも検査方針へ束縛します。旧来のCMO3パス検査も同じ読取りを再利用します。
+
+形式を確認した一次実装は [stretchystudioのCAFF読み取り](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/cmo3_decrypt.py) と [書き込み](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/caff_packer.py) です。独自のZIP圧縮器や暗号処理を作り直さず、標準のZIP・zlib・CRCを再利用します。`rewrite_main_xml` は全entryの再読取りを行い、XML以外の内容がbyte単位で同じことを確認してから結果を返します。本人情報の削除を自動で承認する機能ではありません。

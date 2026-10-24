@@ -1424,24 +1424,10 @@ def test_ignored_virtual_environment_is_not_scanned(tmp_path: Path):
 
 
 def make_cmo3(xml: bytes) -> bytes:
-    """Live2D Cubism の .cmo3 と同じ包み方をした最小のfileを作る。
+    # 実CAFFのheader・ファイル表・streaming ZIPを共通fixtureから作る。
+    from test_caff_identity import archive
 
-    実物は ``CAFF`` 先頭で、全byteを 0xE3 で XOR すると途中に zip の
-    ローカルファイルヘッダ (名前 ``contents``、method 8、flag 0x0808 のため
-    ヘッダ上のサイズは0) が現れ、その直後が raw deflate の XML になる。
-    ヘッダ位置は固定ではないので、前に余分なbyteを置いて位置決め打ちを落とす。
-    """
-    compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
-    deflated = compressor.compress(xml) + compressor.flush()
-    name = b"contents"
-    local_header = struct.pack(
-        "<IHHHHHIIIHH", 0x04034B50, 20, 0x0808, 8, 0, 0, 0, 0, 0, len(name), 0
-    )
-    descriptor = struct.pack(
-        "<IIII", 0x08074B50, zlib.crc32(xml), len(deflated), len(xml)
-    )
-    body = b"\x00" * 37 + local_header + name + deflated + descriptor
-    return b"CAFF" + bytes(byte ^ 0xE3 for byte in body)
+    return archive(xml=xml, key=0xE3, streaming=True)
 
 
 def cmo3_xml(psd_path: str) -> bytes:
@@ -1531,8 +1517,8 @@ def test_unreadable_cmo3_is_unknown_instead_of_pass(tmp_path: Path, damage: str)
     check = report["checks"]["personal_path_scan"]
     assert check["status"] == "unknown"
     assert check["files"] == []
-    assert check["unscanned_files"] == [rel]
-    assert report["status"] == "blocked"
+    assert check["unscanned_files"] == ["<redacted-path>"]
+    assert report["status"] == "tool_error"
 
 
 def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(tmp_path: Path):
@@ -1544,8 +1530,10 @@ def test_publish_dialogue_carries_unreadable_cmo3_as_blocking_scan(tmp_path: Pat
         MODULE.ScanOptions(repo=repo, audience="public", intent="publish")
     )
 
-    assert dialogue["scan"]["status"] == "blocked"
-    assert dialogue["scan"]["checks"]["personal_path_scan"]["unscanned_files"] == [rel]
+    assert dialogue["scan"]["status"] == "tool_error"
+    assert dialogue["scan"]["checks"]["personal_path_scan"]["unscanned_files"] == [
+        "<redacted-path>"
+    ]
     assert dialogue["status"] != "ready_after_confirmation"
 
 
@@ -1561,7 +1549,7 @@ def test_cmo3_expanding_past_the_size_cap_is_unknown(tmp_path: Path, monkeypatch
     assert check["unscanned_files"] == [rel]
 
 
-def test_cmo3_checks_every_contents_entry(tmp_path: Path):
+def test_cmo3_rejects_concatenated_containers(tmp_path: Path):
     repo = make_repo(tmp_path)
     clean = make_cmo3(cmo3_xml("art/avatar.psd"))
     leaking = make_cmo3(
@@ -1571,8 +1559,8 @@ def test_cmo3_checks_every_contents_entry(tmp_path: Path):
 
     check = MODULE.scan(repo)["checks"]["personal_path_scan"]
 
-    assert check["status"] == "fail"
-    assert check["files"] == [rel]
+    assert check["status"] == "unknown"
+    assert check["unscanned_files"] == ["<redacted-path>"]
 
 
 def test_cmo3_size_cap_covers_all_entries_together(tmp_path: Path, monkeypatch):
@@ -1586,7 +1574,7 @@ def test_cmo3_size_cap_covers_all_entries_together(tmp_path: Path, monkeypatch):
     check = MODULE.scan(repo)["checks"]["personal_path_scan"]
 
     assert check["status"] == "unknown"
-    assert check["unscanned_files"] == [rel]
+    assert check["unscanned_files"] == ["<redacted-path>"]
 
 
 def test_human_report_counts_unscanned_files():

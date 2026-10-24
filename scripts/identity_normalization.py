@@ -1428,3 +1428,132 @@ def scan_private_gif(data: bytes, patterns: list[str]) -> dict:
         "metadata_path_match": metadata_match,
         "reconstructed_path_match": reconstructed,
     }
+
+
+def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dict:
+    """CAFFの表・XML・全埋込み画像を、圧縮画素を式として評価せず検査する。"""
+    import hashlib
+    import json
+    from urllib.parse import unquote
+    import xml.etree.ElementTree as ET
+
+    if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise ValueError("private_identity_policy_empty")
+    archive = _CAFF_MODULE.Archive(data)
+    hits = set()
+    path_match = metadata_match = reconstructed = False
+
+    def record(result, metadata=False):
+        nonlocal path_match, metadata_match, reconstructed
+        if result["literal_match_count"]:
+            hits.add("match")
+        path_match |= result["local_path_match"]
+        metadata_match |= metadata and result["local_path_match"]
+        reconstructed |= result.get("reconstructed_path_match", False)
+
+    def literal(raw):
+        nonlocal path_match
+        for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+            text = raw.decode(encoding, errors="replace")
+            for value in (text, unquote(text)):
+                hits.update(hit_patterns(value, patterns))
+                path_match |= hit_local_absolute_path(value)
+
+    literal(data)
+    if archive.preview_size:
+        preview = data[
+            archive.preview_start : archive.preview_start + archive.preview_size
+        ]
+        record(scan_private_png(preview, patterns))
+    main_count = 0
+    for entry, content in archive.contents():
+        for value in (entry.name, entry.tag):
+            record(scan_private_text(value, patterns), True)
+        if entry.tag == "main_xml":
+            main_count += 1
+            try:
+                xml_text = content.decode("utf-8", "strict")
+            except UnicodeError:
+                raise ValueError("private_identity_caff_unverified") from None
+            if "<!DOCTYPE" in xml_text or "<!ENTITY" in xml_text:
+                raise ValueError("private_identity_caff_unverified")
+
+            class BoundedBuilder(ET.TreeBuilder):
+                count = 0
+
+                def start(self, tag, attrs):
+                    self.count += 1
+                    if self.count > _CAFF_MODULE.MAX_XML_NODES:
+                        raise ValueError("private_identity_caff_size_limit")
+                    return super().start(tag, attrs)
+
+            try:
+                root = ET.fromstring(
+                    content, parser=ET.XMLParser(target=BoundedBuilder())
+                )
+            except ET.ParseError:
+                raise ValueError("private_identity_caff_unverified") from None
+            literal(content)
+            record(scan_private_text(xml_text, patterns), True)
+            count = 0
+            for node in root.iter():
+                count += 1
+                if count > 100000:
+                    raise ValueError("private_identity_caff_size_limit")
+                for value in (
+                    node.tag,
+                    node.text,
+                    node.tail,
+                    *node.attrib.keys(),
+                    *node.attrib.values(),
+                ):
+                    if value:
+                        record(scan_private_text(value, patterns), True)
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            digest = (
+                hashlib.sha256(content).hexdigest(),
+                hashlib.sha256(
+                    json.dumps(
+                        patterns, ensure_ascii=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+            )
+            result = image_cache.get(digest) if image_cache is not None else None
+            if result is None:
+                result = scan_private_png(content, patterns)
+                if image_cache is not None:
+                    if len(image_cache) >= 4096:
+                        image_cache.clear()
+                    image_cache[digest] = result
+            record(result, True)
+        else:
+            raise ValueError("private_identity_caff_unverified")
+    if main_count != 1:
+        raise ValueError("private_identity_caff_unverified")
+    return {
+        "status": "fail" if hits or path_match else "pass",
+        "literal_match_count": len(hits),
+        "local_path_match": path_match,
+        "metadata_path_match": metadata_match,
+        "reconstructed_path_match": reconstructed,
+    }
+
+
+import importlib.util as _caff_importlib
+import hashlib as _caff_hashlib
+from pathlib import Path as _CaffPath
+
+_CAFF_PATH = _CaffPath(__file__).with_name("caff_archive.py")
+_CAFF_SOURCE = _CAFF_PATH.read_bytes()
+CAFF_DECODER_SHA256 = _caff_hashlib.sha256(_CAFF_SOURCE).hexdigest()
+_CAFF_SPEC = _caff_importlib.spec_from_file_location(
+    "_identity_caff_archive", _CAFF_PATH
+)
+_CAFF_MODULE = _caff_importlib.module_from_spec(_CAFF_SPEC)
+import sys as _caff_sys
+
+_caff_sys.modules[_CAFF_SPEC.name] = _CAFF_MODULE
+exec(compile(_CAFF_SOURCE, str(_CAFF_PATH), "exec"), _CAFF_MODULE.__dict__)
+
+# 消費側は別のCAFFパーサを持たず、これを利用する。
+CaffArchive = _CAFF_MODULE.Archive
