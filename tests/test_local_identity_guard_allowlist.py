@@ -1,7 +1,9 @@
-"""local_identity_guard の名義を、許可名義の一覧だけで決めることを確かめるカナリア。
+"""local_identity_guard の読み飛ばしを、許可名義の一覧だけに絞ることを確かめるカナリア。
 
-端末名（ホスト名）が何であっても結果は変わらない。許可した noreply は通り、
-許可外の個人名義はこれまでどおり止まる。値はすべて架空（example.invalid など）。
+端末名（ホスト名）は集める。許可名義の一覧の語（dependabot[bot] の bot など）だけを外し、
+端末名にだけ出る個人名は止める。global のメールを読み飛ばすのは、一覧に載った
+nexus の noreply と許可済みの bot だけ（ほかの users.noreply は止める）。
+値はすべて架空（example.invalid など）。
 """
 
 import importlib.util
@@ -24,6 +26,8 @@ sys.modules["local_identity_guard_allowlist"] = GUARD
 spec.loader.exec_module(GUARD)
 
 PUBLIC_EMAIL = "273569186+nexus-ai-2045@users.noreply.github.com"
+# 名簿にない noreply の形は、試験ファイル自体がゲートに当たらないよう実行時に組む。
+NOREPLY_DOMAIN = "@" + "users.noreply.github.com"
 
 
 @pytest.fixture(autouse=True)
@@ -125,27 +129,72 @@ def test_allowed_noreply_global_email_is_not_counted_as_personal(tmp_path, monke
     assert GUARD.effective_identity_problems(repo, allowed, found) == []
 
 
-@pytest.mark.parametrize(
-    "host",
-    [
-        "",
-        "bot",
-        "dependabot",
-        "Canary-MacBook-Pro",
-        "nexus-ai-2045",
-        "fakehost-example",
-    ],
-)
-def test_hostname_never_changes_the_result(tmp_path, monkeypatch, host):
-    baseline = collect_from_environment(monkeypatch, tmp_path, host="")
+@pytest.mark.parametrize("host", ["", "bot", "dependabot", "nexus-ai-2045"])
+def test_permitted_hostname_words_do_not_block_bot_lines(tmp_path, monkeypatch, host):
+    # 端末名が許可名義の一覧の語だけのときは、dependabot[bot] の行で止まらない。
     found = collect_from_environment(monkeypatch, tmp_path, host=host)
-    assert {i.value for i in found} == {i.value for i in baseline}
-    assert all(i.source != "host_name" for i in found)
     repo = make_repo(tmp_path)
     commits = commit_public_change(
         repo, "# Dependabot の PR は作者が dependabot[bot] になる\n"
     )
     assert GUARD.check_commits(repo, commits, found, GUARD.DEFAULT_ALLOWED_EMAIL) == []
+
+
+@pytest.mark.parametrize(
+    "host", ["Canaryperson-MacBook-Pro", "Canarypersons-MacBook-Air", "canaryperson"]
+)
+def test_personal_hostname_is_still_blocked(tmp_path, monkeypatch, host):
+    # P1: 端末名にだけ出る個人名（アカウント名は一般の runner）も止める。
+    found = collect_from_environment(monkeypatch, tmp_path, host=host)
+    assert any(i.source == "host_name" for i in found)
+    repo = make_repo(tmp_path)
+    commits = commit_public_change(repo, "メモ: Canaryperson の手元で確かめた\n")
+    violations = GUARD.check_commits(repo, commits, found, GUARD.DEFAULT_ALLOWED_EMAIL)
+    assert violations
+    assert "canary" not in "\n".join(violations).lower()
+
+
+@pytest.mark.parametrize(
+    "email",
+    [
+        "12345+canarylogin" + NOREPLY_DOMAIN,
+        "canarylogin" + NOREPLY_DOMAIN,
+        "99+canarylogin[bot]" + NOREPLY_DOMAIN,
+    ],
+)
+def test_unlisted_noreply_global_email_is_collected(tmp_path, monkeypatch, email):
+    # GitHub の noreply 全般は読み飛ばさない。一覧に無いログイン名は個人名義として止める。
+    found = collect_from_environment(monkeypatch, tmp_path, email=email)
+    values = {GUARD._normalize(i.value) for i in found}
+    assert GUARD._normalize(email.split("@", 1)[0]) in values
+    repo = make_repo(tmp_path)
+    commits = commit_public_change(repo, "作業: canarylogin\n")
+    assert GUARD.check_commits(repo, commits, found, GUARD.DEFAULT_ALLOWED_EMAIL)
+
+
+def test_listed_bot_global_email_is_not_collected(tmp_path, monkeypatch):
+    email = "49699333+dependabot[bot]@users.noreply.github.com"
+    found = collect_from_environment(monkeypatch, tmp_path, email=email)
+    values = {GUARD._normalize(i.value) for i in found}
+    assert GUARD._normalize(email) not in values
+    assert GUARD._normalize(email.split("@", 1)[0]) not in values
+
+
+def test_unreadable_permitted_list_skips_nothing(tmp_path, monkeypatch):
+    # 許可名義の一覧が読めないときは、何も読み飛ばさない（止める側に倒す）。
+    monkeypatch.setattr(GUARD, "PERMITTED_IDENTITIES_FILE", tmp_path / "absent.json")
+    found = collect_from_environment(monkeypatch, tmp_path, host="bot")
+    values = {(i.source, GUARD._normalize(i.value)) for i in found}
+    assert ("host_name", "bot") in values
+    local = GUARD._normalize(PUBLIC_EMAIL.split("@", 1)[0])
+    assert ("git_global_email", local) in values
+
+
+def test_permitted_list_matches_the_reference_file():
+    emails, tokens = GUARD.load_permitted_identities()
+    assert GUARD._normalize(PUBLIC_EMAIL) in emails
+    assert {"bot", "dependabot"} <= tokens
+    assert not any(e.endswith("@example.invalid") for e in emails)
 
 
 @pytest.mark.parametrize("host", ["", "bot"])

@@ -2,10 +2,10 @@
 
 ## Unreleased
 
+- `scripts/local_identity_guard.py` の読み飛ばしを、許可名義の一覧（`references/public-commit-identities.json`：nexus の noreply と許可済みの bot）に載った名義だけに絞った。git の global のメールは、一覧に載ったものだけを外し、ほかの GitHub の noreply はローカル部分とログイン名も個人名義として止める。端末名はこれまでどおり集め、一覧の語（例「bot」）だけを照合から外す（`dependabot[bot]` の行の誤検知を直す）。端末名にだけ出る個人名は止まる。一覧が読めないときは何も外さない。
 - CI を全 OS で緑にした。CI の全ジョブで、`references/gitleaks-pins.json` の gitleaks を配布物と本体の両方の SHA-256 を確かめて入れる（`scripts/install_pinned_gitleaks.py`）。Windows では `ai_command_guard.py` の stderr を UTF-8 に固定し、試験の偽 gitleaks を `.cmd` にし、WSL の入口ではなく動く bash を使う。
 - Dependabot の PR が止まらないようにした。`readiness_scan` の名義検査を役割ごとの完全一致にし（`committer_only` は記録者だけ）、自前の workflow を Action 参照の読み取り器で読める block 形式にした。ci.yml の規則に `allow_github_action_ref_updates` を足した。pip の更新は path 依存だけの `requirements-tools.txt` を `exclude-paths` で外した。
 - base-guard（`scripts/base_guard.py`）は、repo-preflight 本体（`--self-repository` が `nexus-ai-2045/repo-preflight`）に限って、`./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼ぶ自己検査の定義を通す。ほかの repo と、ほかの形はこれまでどおり赤。
-- `scripts/local_identity_guard.py` の誤検知を2種直した。(1) git の global のメールが許可名義の一覧（GitHub の noreply）に当たるとき、そのローカル部分を個人名義に数えていた。(2) 端末名の一部（例「bot」）が `dependabot[bot]` のような行に当たっていた。端末名は照合に使わず、公開してよい名義は許可名義の一覧と公開用の名義の指定だけで決める。許可外の個人メール・氏名・OS のアカウント名・ホームのパス・個人の共同作者行は、これまでどおり止まる。
 
 ## 0.10.0 - 2026-10-24
 

@@ -1,10 +1,9 @@
 """公開側へ持ち主の個人名義を出さないための検査。
 
-照合する個人名義 (本名・メール・OSのアカウント名・ホーム名) は、人に書かせず
-実行中の環境から毎回自動で集める。端末名 (ホスト名) は使わない。端末名は
-「bot」のような一般の語になり得て、何に当たるかが端末ごとに変わるため。
-公開してよい名義は、許可名義の一覧 (GitHub の noreply と bot のメール) と
---public-name だけで決める。一覧に当たるメールは、その一部も個人名義に数えない。
+照合する個人名義 (本名・メール・OSのアカウント名・端末名) は、人に書かせず
+実行中の環境から毎回自動で集める。読み飛ばすのは、許可名義の一覧
+(references/public-commit-identities.json: nexus の noreply と許可済みの bot) に
+載っている名義だけ。GitHub の noreply 全般は読み飛ばさない。
 集めた値はメモリ上だけで使い、標準出力・
 標準エラー・ファイルのどこにも書かない。報告は「どの種類の値が・どこに」
 だけを出し、値そのものはSHA-256の先頭だけで示す。
@@ -21,8 +20,10 @@ from __future__ import annotations
 import argparse
 import getpass
 import hashlib
+import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import unicodedata
@@ -81,7 +82,37 @@ GENERIC_VALUES = frozenset(
         "worker",
     }
 )
+# 端末名から名前らしい部分だけを残すために捨てる語。
+HOSTNAME_NOISE = frozenset(
+    {
+        "air",
+        "imac",
+        "iphone",
+        "ipad",
+        "lan",
+        "macbook",
+        "macbookair",
+        "macbookpro",
+        "macmini",
+        "macpro",
+        "mbp",
+        "mini",
+        "pc",
+        "pro",
+        "studio",
+        "the",
+        "desktop",
+        "laptop",
+        "home",
+        "local",
+    }
+)
 MIN_TOKEN_LENGTH = 3
+# 許可名義の一覧。nexus の noreply と許可済みの bot だけが載る。読めないときは何も読み飛ばさない。
+PERMITTED_IDENTITIES_FILE = (
+    Path(__file__).resolve().parents[1] / "references" / "public-commit-identities.json"
+)
+_IDENT_RE = re.compile(r"(?P<name>[^<>]*?)\s*<(?P<email>[^<>\s]+)>")
 # noreply のアドレスは個人を指さない (例: 共同作成者のtrailer)。
 NOREPLY_PATTERN = re.compile(r"(?:^|[.+_-])no-?reply(?:$|@|[.+_-])")
 
@@ -143,9 +174,63 @@ def _full_name_from_passwd() -> str:
     return gecos.split(",")[0].strip()
 
 
+def _hostname_tokens(name: str) -> list[str]:
+    tokens = []
+    for raw in re.split(r"[^0-9A-Za-z぀-ヿ一-鿿]+", name):
+        token = raw
+        # "Taro's MacBook" は "Taros-MacBook" になるので所有格の s を外した形も持つ。
+        if token.lower().endswith("s") and len(token) > MIN_TOKEN_LENGTH + 1:
+            tokens.append(token[:-1])
+        tokens.append(token)
+    return [t for t in tokens if t.casefold() not in HOSTNAME_NOISE]
+
+
+def load_permitted_identities(
+    path: Path | None = None,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """許可名義の一覧から (メール, 名前とメールのローカル部分の語) を読む。
+
+    一覧に載った名義だけを照合から外すために使う。読めない・形が違うときは空を返し、
+    何も読み飛ばさない (止める側に倒す)。
+    """
+    path = PERMITTED_IDENTITIES_FILE if path is None else path
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return frozenset(), frozenset()
+    if (
+        not isinstance(data, dict)
+        or data.get("schema") != "public-commit-identities/v1"
+    ):
+        return frozenset(), frozenset()
+    emails: set[str] = set()
+    tokens: set[str] = set()
+    for key in ("identities", "committer_only"):
+        entries = data.get(key, [])
+        for entry in entries if isinstance(entries, list) else []:
+            match = _IDENT_RE.fullmatch(str(entry).strip())
+            if not match:
+                continue
+            email = match.group("email")
+            emails.add(_normalize(email))
+            words = _normalize(match.group("name") + " " + email.split("@", 1)[0])
+            tokens.update(t for t in re.split(r"[^0-9a-z]+", words) if t)
+    return frozenset(emails), frozenset(tokens)
+
+
+# GitHub の noreply のローカル部分（数字+ログイン名、bot は末尾に [bot]）からログイン名を取る。
+_NOREPLY_LOGIN_RE = re.compile(r"(?:\d+\+)?(?P<login>.+?)(?:\[bot\])?")
+
+
 def _email_parts(email: str) -> list[str]:
     local = email.split("@", 1)[0]
-    return [email, local]
+    parts = [email, local]
+    if email.casefold().endswith("@users.noreply.github.com"):
+        # ログイン名だけでも個人を指すので、ログイン名も照合に加える。
+        login = _NOREPLY_LOGIN_RE.fullmatch(local)
+        if login and login.group("login") != local:
+            parts.append(login.group("login"))
+    return parts
 
 
 def _is_allowed_public(
@@ -239,9 +324,27 @@ def collect_identities(
         emails = _git_config("user.email", "--global") + _git_config(
             "user.email", "--system"
         )
-        # 許可名義の一覧に当たるメール (公開用の noreply など) は、ローカル部分も含めて数えない。
+        permitted_emails, permitted_tokens = load_permitted_identities()
+        # 読み飛ばすのは許可名義の一覧に載ったメール (nexus の noreply と許可済みの bot) だけ。
+        # ほかの users.noreply.github.com (別の個人のログイン名が入る) は、ローカル部分も集める。
         sources["git_global_email"] = [
-            p for e in emails if not allowed_email.fullmatch(e) for p in _email_parts(e)
+            p
+            for e in emails
+            if _normalize(e) not in permitted_emails
+            for p in _email_parts(e)
+        ]
+        hosts = [
+            socket.gethostname(),
+            _command_output(["scutil", "--get", "ComputerName"]),
+            _command_output(["scutil", "--get", "LocalHostName"]),
+        ]
+        # 端末名は集める。許可名義の一覧の語 (dependabot[bot] の bot など) だけは照合から外す。
+        sources["host_name"] = [
+            t
+            for h in hosts
+            if h
+            for t in _hostname_tokens(h)
+            if _normalize(t) not in permitted_tokens
         ]
         private_file = OPTIONAL_PRIVATE_FILE.expanduser()
         if private_file.is_file():
