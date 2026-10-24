@@ -190,6 +190,8 @@ class Archive:
             raise ValueError("private_identity_caff_size_limit")
         if len(data) < 60 or data[:14] != b"CAFF\0\0\0----\0\0\0" or data[-2:] != b"bc":
             raise _error()
+        if any(data[18:26] + data[28:30] + data[46:54]):
+            raise _error()
         self.key = int.from_bytes(data[14:18], "big", signed=True)
         self.preview_start = int.from_bytes(data[34:42], "big")
         self.preview_size = int.from_bytes(data[42:46], "big")
@@ -205,7 +207,8 @@ class Archive:
             size_field = r.pos
             size = r.integer(4, self.key)
             obfuscated, compression = r.integer(1, self.key), r.integer(1, self.key)
-            r.take(8)
+            if any(r.take(8)):
+                raise _error()
             if obfuscated not in (0, 1) or compression not in (16, 33, 37):
                 raise _error()
             entries.append(

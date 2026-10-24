@@ -23,7 +23,7 @@ CAFF = ENGINE._CAFF_MODULE
 DENIED = "caff-fixture@example.invalid"
 
 
-def png(values=b"clean pixels", text=None, compressed_text=False):
+def png(values=b"clean pixels", text=None, compressed_text=False, compress_level=6):
     image = Image.frombytes("P", (len(values), 1), values)
     image.putpalette([v for x in range(256) for v in (x, x, x)])
     stream = io.BytesIO()
@@ -32,7 +32,13 @@ def png(values=b"clean pixels", text=None, compressed_text=False):
     meta = PngInfo()
     if text is not None:
         meta.add_text("comment", text, zip=compressed_text)
-    image.save(stream, format="PNG", optimize=False, pnginfo=meta)
+    image.save(
+        stream,
+        format="PNG",
+        optimize=False,
+        pnginfo=meta,
+        compress_level=compress_level,
+    )
     return stream.getvalue()
 
 
@@ -273,3 +279,35 @@ def test_raw_path_review_does_not_waive_preview_metadata(tmp_path):
     scan.check(raw, reviewed_raw_paths=True)
     assert scan.result()["finding_count"] == 1
     assert scan.result()["status"] == "fail"
+
+
+@pytest.mark.parametrize("preview", [True, False])
+def test_validated_png_pixels_keep_their_non_text_role(preview):
+    image = png(values=DENIED.encode(), compress_level=0)
+    assert DENIED.encode() in image
+    assert ENGINE.scan_private_png(image, [DENIED])["status"] == "pass"
+    raw = archive(key=0, **({"preview": image} if preview else {"image": image}))
+    assert ENGINE.scan_private_caff(raw, [DENIED])["status"] == "pass"
+
+
+def test_xml_entities_then_url_decoding_detects_identity():
+    raw = archive(xml=b"<r>caff-fixture&#64;example%2Einvalid</r>")
+    assert ENGINE.scan_private_caff(raw, [DENIED])["status"] == "fail"
+
+
+def test_xml_entities_then_url_decoding_detects_home_path():
+    from urllib.parse import quote
+
+    value = quote(fixture_path("macos", "encoded-fixture", "work"), safe="").replace(
+        "%", "&#37;"
+    )
+    raw = archive(xml=f"<r>{value}</r>".encode())
+    result = ENGINE.scan_private_caff(raw, [DENIED])
+    assert result["local_path_match"] and result["metadata_path_match"]
+
+
+def test_unknown_reserved_metadata_is_not_silently_ignored():
+    raw = bytearray(archive())
+    raw[18:22] = b"name"
+    with pytest.raises(ValueError, match="caff_unverified"):
+        ENGINE.scan_private_caff(bytes(raw), [DENIED])

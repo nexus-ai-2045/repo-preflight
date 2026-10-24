@@ -1740,7 +1740,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
                 hits.update(hit_patterns(value, patterns))
                 path_match |= hit_local_absolute_path(value)
 
-    literal(data)
+    # ファイル表を検証した後は、PNGの画素を外側で再び文字列扱いしない。
     if archive.preview_size:
         preview = data[
             archive.preview_start : archive.preview_start + archive.preview_size
@@ -1749,7 +1749,8 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
     main_count = 0
     for entry, content in archive.contents():
         for value in (entry.name, entry.tag):
-            record(scan_private_text(value, patterns), True)
+            for view in {value, unquote(value)}:
+                record(scan_private_text(view, patterns), True)
         if entry.tag == "main_xml":
             main_count += 1
             try:
@@ -1789,7 +1790,8 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
                     *node.attrib.values(),
                 ):
                     if value:
-                        record(scan_private_text(value, patterns), True)
+                        for view in {value, unquote(value)}:
+                            record(scan_private_text(view, patterns), True)
         elif content.startswith(b"\x89PNG\r\n\x1a\n"):
             digest = (
                 hashlib.sha256(content).hexdigest(),
