@@ -23,7 +23,7 @@ CAFF = ENGINE._CAFF_MODULE
 DENIED = "caff-fixture@example.invalid"
 
 
-def png(values=b"clean pixels", text=None):
+def png(values=b"clean pixels", text=None, compressed_text=False):
     image = Image.frombytes("P", (len(values), 1), values)
     image.putpalette([v for x in range(256) for v in (x, x, x)])
     stream = io.BytesIO()
@@ -31,7 +31,7 @@ def png(values=b"clean pixels", text=None):
 
     meta = PngInfo()
     if text is not None:
-        meta.add_text("comment", text)
+        meta.add_text("comment", text, zip=compressed_text)
     image.save(stream, format="PNG", optimize=False, pnginfo=meta)
     return stream.getvalue()
 
@@ -43,6 +43,7 @@ def archive(
     image=None,
     streaming=False,
     zip_damage=None,
+    preview=None,
 ):
     def integer(value, size):
         low = key & 0xFFFFFFFF
@@ -122,8 +123,18 @@ def archive(
             + bytes(8)
         )
         offset += len(body)
-    header = b"CAFF\0\0\0----\0\0\0" + struct.pack(">i", key) + bytes(36)
-    return header + integer(len(entries), 4) + b"".join(rows) + b"".join(bodies) + b"bc"
+    header = bytearray(b"CAFF\0\0\0----\0\0\0" + struct.pack(">i", key) + bytes(36))
+    if preview is not None:
+        header[34:42] = offset.to_bytes(8, "big")
+        header[42:46] = len(preview).to_bytes(4, "big")
+    return (
+        bytes(header)
+        + integer(len(entries), 4)
+        + b"".join(rows)
+        + b"".join(bodies)
+        + (preview or b"")
+        + b"bc"
+    )
 
 
 @pytest.mark.parametrize("key", [0, 0x12345678, -816980164, -29])
@@ -238,3 +249,27 @@ def test_xml_node_limit_applies_during_construction(monkeypatch):
     monkeypatch.setattr(CAFF, "MAX_XML_NODES", 3)
     with pytest.raises(ValueError, match="caff_size_limit"):
         ENGINE.scan_private_caff(archive(xml=b"<r><a/><b/><c/></r>"), [DENIED])
+
+
+def test_preview_metadata_keeps_its_decoded_path_classification():
+    value = fixture_path("macos", "preview-fixture", "source.psd")
+    raw = archive(preview=png(text=value, compressed_text=True))
+    result = ENGINE.scan_private_caff(raw, [DENIED])
+    assert result["local_path_match"] and result["metadata_path_match"]
+
+
+def test_raw_path_review_does_not_waive_preview_metadata(tmp_path):
+    value = fixture_path("macos", "preview-fixture", "source.psd")
+    raw = archive(preview=png(text=value, compressed_text=True))
+    spec = importlib.util.spec_from_file_location(
+        "caff_readiness_test", ROOT / "scripts/readiness_scan.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scan = module.PrivateIdentityScan(repo, True)
+    assert scan.checker is not None
+    scan.check(raw, reviewed_raw_paths=True)
+    assert scan.result()["finding_count"] == 1
+    assert scan.result()["status"] == "fail"

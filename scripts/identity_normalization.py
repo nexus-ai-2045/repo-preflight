@@ -1464,7 +1464,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
         preview = data[
             archive.preview_start : archive.preview_start + archive.preview_size
         ]
-        record(scan_private_png(preview, patterns))
+        record(scan_private_png(preview, patterns), True)
     main_count = 0
     for entry, content in archive.contents():
         for value in (entry.name, entry.tag):
