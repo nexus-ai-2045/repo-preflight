@@ -46,7 +46,8 @@ GENERIC_PATH_RES = [
 # レビュー3C 高7: 「:」の後ろが ID の形（数字を含む英数字の塊）のときだけ。英語の文（Start a Claude session: run …）は通す。
 SESSION_TRACE_RES = (
     re.compile(
-        r"(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*:"
+        # レビュー3C 中以下: key = value と JSON のキー（"claude_session_id": …・claudeSessionId）も見る
+        r"(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*\"']*[:=]"
         r"[\s*`'\"]*(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{4,}",
         re.I,
     ),
@@ -65,9 +66,16 @@ SESSION_TRACE_RES = (
 
 # 伏せた書き方（[at]・(dot) など）と、文字列の連結（"…" + "…"）
 _AT_FORM_RE = re.compile(r"\s*[\[({<]\s*at\s*[\])}>]\s*", re.I)
-_DOT_FORM_RE = re.compile(r"\s*[\[({<]\s*dot\s*[\])}>]\s*", re.I)
-_CONCAT_RE = re.compile(r"[\"']\s*\+\s*[\"']")
+# レビュー3C 中以下: 括弧で囲んだ点（[.]・(.)・{.}）も伏せた点として戻す
+_DOT_FORM_RE = re.compile(r"\s*[\[({<]\s*(?:dot|[.])\s*[\])}>]\s*", re.I)
+# レビュー3C 中以下: + の無い隣り合う文字列（"…" "…"）も連結として見る
+_CONCAT_RE = re.compile(r"[\"']\s*\+?\s*[\"']")
 _JSON_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
+# レビュー3C 中以下: 言語の文字列エスケープ（\x2f・8進の \057）
+_BYTE_ESCAPE_RE = re.compile(r"\\(?:x([0-9a-fA-F]{2})|([0-7]{3}))")
+# レビュー3C 中以下: ゼロ幅の文字と、ハイフンに似た文字
+_ZERO_WIDTH_RE = re.compile("[\u00ad\u200b-\u200f\u2060\ufeff]")
+_HYPHEN_LIKE = str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"})
 
 
 def text_variants(text: str) -> list[str]:
@@ -96,6 +104,10 @@ def _text_variants(text: str) -> tuple[str, ...]:
         if "\\" not in value and "&" not in value:
             continue
         unescaped = _JSON_ESCAPE_RE.sub(lambda m: chr(int(m.group(1), 16)), value)
+        unescaped = _BYTE_ESCAPE_RE.sub(
+            lambda m: chr(int(m.group(1), 16) if m.group(1) else int(m.group(2), 8)),
+            unescaped,
+        )
         unescaped = html.unescape(unescaped.replace("\\/", "/"))
         if unescaped != value:
             out.append(unescaped)
@@ -104,9 +116,13 @@ def _text_variants(text: str) -> tuple[str, ...]:
                 if again != unescaped:
                     out.append(again)
     for value in list(out):
-        normal = value if value.isascii() else unicodedata.normalize("NFKC", value)
+        if value.isascii():
+            normal = value
+        else:
+            normal = _ZERO_WIDTH_RE.sub("", value).translate(_HYPHEN_LIKE)
+            normal = unicodedata.normalize("NFKC", normal)
         normal = _DOT_FORM_RE.sub(".", _AT_FORM_RE.sub("@", normal))
-        if "+" in normal:
+        if '"' in normal or "'" in normal:
             normal = _CONCAT_RE.sub("", normal)
         out.append(normal)
     return tuple(dict.fromkeys(out))
@@ -185,9 +201,15 @@ KEY_SHAPE_RES = (
     re.compile(r"(?<![A-Za-z0-9])sk-(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
-    re.compile(r"AKIA[0-9A-Z]{16}"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
+    re.compile(r"BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY"),
+    # レビュー3C 中以下: Google・GitLab・Hugging Face・Stripe・xAI の鍵の形
+    re.compile(r"(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}"),
+    re.compile(r"(?<![A-Za-z0-9])glpat-[0-9A-Za-z_-]{20,}"),
+    re.compile(r"(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}"),
+    re.compile(r"(?<![A-Za-z0-9])[rs]k_live_[0-9A-Za-z]{20,}"),
+    re.compile(r"(?<![A-Za-z0-9])xai-[A-Za-z0-9]{40,}"),
 )
 # 実ホームパスの例外にしてよいのは、個人でない固定の利用者名だけ。
 # GitHub Actions のホスト型ランナーの利用者名は runner で固定。
@@ -212,6 +234,12 @@ EXTRA_PATH_RES = (
     # 高4: 逆斜線で区切ったホームも見る
     re.compile(_ASCII_PATH_BEFORE + r"[/\\]+ho" r"me[/\\]+" + _PATH_USER, re.I),
     re.compile(r"/mnt/[a-z]/us" r"ers/" + _PATH_USER, re.I),
+    # レビュー3C 中以下: /var・/export の下のホーム、外付けの macOS、共有フォルダの URL
+    re.compile(r"(?<![A-Za-z0-9_.-])/(?:var|export)/ho" r"me/" + _PATH_USER),
+    re.compile(r"(?<![A-Za-z0-9_.-])/Volumes/[^/\s]+/Us" r"ers/" + _PATH_USER),
+    re.compile(
+        r"(?:smb|afp|nfs|cifs)://[^/\s]+/(?:us" r"ers|ho" r"me)/" + _PATH_USER, re.I
+    ),
     re.compile(r"(?<![a-z])[a-z]:[/\\]+us" r"ers[/\\]+" + _PATH_USER, re.I),
     # 高3: 道具のリンク（vscode://file/…・cursor://file/…・file://localhost/…）
     re.compile(
