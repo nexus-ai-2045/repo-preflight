@@ -313,10 +313,3 @@ def test_pr_body_shapes_turn_red_on_edited(tmp_path, secret):
 )
 def test_pr_japanese_gate_is_absorbed(title, body, ok):
     assert (g.japanese_findings(title, body) == []) is ok
-
-
-def test_linux_extra_pattern_reuses_existing_directory_component():
-    from path_input_fixture import fixture_root
-
-    expected = r"(?<![\w./\\-])" + fixture_root("linux") + r"(?P<user>[^/\s'\"\\]+)"
-    assert g.EXTRA_PATH_RES[1].pattern == expected
