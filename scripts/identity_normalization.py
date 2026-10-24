@@ -1187,12 +1187,9 @@ def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
         elif isinstance(value, str):
             text(value)
         elif isinstance(value, bytes):
+            # 未対応のframingでも本文を捨てず、正規化できない場合は停止する。
             for candidate in raw_views(value):
-                # 構造のゼロ区切りは本文の結合として解釈しない。
-                for segment in re.findall(
-                    r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", candidate
-                ):
-                    text(segment)
+                text(candidate)
         elif isinstance(value, Mapping):
             for key, item in value.items():
                 visit(key)

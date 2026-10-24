@@ -207,3 +207,12 @@ def test_truncated_iptc_record_is_unverified():
     image._record.write(stream)
     with pytest.raises(ValueError, match="psd_unverified"):
         ENGINE.scan_private_psd(stream.getvalue(), [DENIED])
+
+
+def test_unknown_metadata_control_whitespace_does_not_split_expression():
+    image = PSDImage.new("RGB", (2, 2))
+    value = b'"psd-fixture-"\x1f+ "private@example.invalid"'
+    image._record.image_resources[4000] = ImageResource(key=4000, data=value)
+    stream = io.BytesIO()
+    image._record.write(stream)
+    assert ENGINE.scan_private_psd(stream.getvalue(), [DENIED])["status"] == "fail"
