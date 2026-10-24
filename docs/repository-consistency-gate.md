@@ -37,6 +37,8 @@ Git inventory は index mode を保持し、symlink (`120000`) と gitlink (`160
 
 ## GitHub Actions 接続例
 
+このrepositoryの並行制御は、`ci.yml`・`documentation-contract.yml`・`ai-ratchet-gate.yml`・`repository-preflight.yml` の各callerが持ちます。workflowとevent、PR番号またはGit refで分け、古いPR検証を取り消します。全treeを検査する `ci.yml` と `ai-ratchet-gate.yml` は古いbranch pushも取消対象にします。イベントごとのbaseを使う `documentation-contract.yml` と `repository-preflight.yml` は各main差分の検査を保持します。保持する実行はrun IDとattemptでgroupも一意にし、pendingの置換を避けます。matrix job同士や、呼び出される `preflight-gate.yml` に同じgroupを重ねません。merge queue・手動release・tagの処理は取消対象にしません。必須check名とplatform matrixを保持し、workflow全体のpath filterによる必須checkの未解決を避けます。権限・secretの隔離、人間レビューと保護設定の境界は変えません。
+
 ```yaml
 # tag ではなく完全 SHA へ固定する（このリポジトリの ci.yml と同じ規律）
 - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
