@@ -19,6 +19,11 @@ _UNIX_PATH_START = (
 # rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
 _QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
 _QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
+from pathlib import PurePosixPath
+
+MACOS_SHARED_DIRECTORY = PurePosixPath("/", "Users", "Shared").as_posix()
+_MACOS_SHARED_COMPONENT = MACOS_SHARED_DIRECTORY.rsplit("/", 1)[-1]
+
 PATH_PATTERNS = (
     re.compile(
         r"[A-Za-z]:[/\\]+Us"
@@ -29,7 +34,9 @@ PATH_PATTERNS = (
     re.compile(
         _UNIX_PATH_START
         + r"(?P<personal_path>/Us"
-        + r"ers/(?!Shared(?:/|$))(?:[^/\s'\"]+|"
+        + r"ers/"
+        + rf"(?!{re.escape(_MACOS_SHARED_COMPONENT)}(?:/|$))"
+        + r"(?:[^/\s'\"]+|"
         + _QUOTED_UNIX_USER
         + r"))"
     ),
@@ -1732,6 +1739,11 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
         metadata_match |= metadata and result["local_path_match"]
         reconstructed |= result.get("reconstructed_path_match", False)
 
+    def metadata_text(value):
+        # XMLの要素・属性だけでなくcomment/PIを含むsourceにも同じ順序を使う。
+        for view in {value, unquote(value)}:
+            record(scan_private_text(view, patterns), True)
+
     def literal(raw):
         nonlocal path_match
         for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
@@ -1749,8 +1761,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
     main_count = 0
     for entry, content in archive.contents():
         for value in (entry.name, entry.tag):
-            for view in {value, unquote(value)}:
-                record(scan_private_text(view, patterns), True)
+            metadata_text(value)
         if entry.tag == "main_xml":
             main_count += 1
             try:
@@ -1776,7 +1787,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
             except ET.ParseError:
                 raise ValueError("private_identity_caff_unverified") from None
             literal(content)
-            record(scan_private_text(xml_text, patterns), True)
+            metadata_text(xml_text)
             count = 0
             for node in root.iter():
                 count += 1
@@ -1790,8 +1801,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
                     *node.attrib.values(),
                 ):
                     if value:
-                        for view in {value, unquote(value)}:
-                            record(scan_private_text(view, patterns), True)
+                        metadata_text(value)
         elif content.startswith(b"\x89PNG\r\n\x1a\n"):
             digest = (
                 hashlib.sha256(content).hexdigest(),

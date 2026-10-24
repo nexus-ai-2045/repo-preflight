@@ -365,3 +365,14 @@ def test_builtin_macos_shared_directory_is_not_a_personal_home():
 def test_shared_directory_rule_never_exempts_actual_user_homes(flavour, username):
     value = fixture_path(flavour, username, "work")
     assert ENGINE.hit_local_absolute_path(value)
+
+
+@pytest.mark.parametrize(
+    "xml",
+    [
+        b'<r><!-- "caff-fixture%40" + "example.invalid" --></r>',
+        b'<r><?metadata "caff-fixture%40" + "example.invalid"?></r>',
+    ],
+)
+def test_url_decoded_xml_source_gets_the_full_text_normalizer(xml):
+    assert ENGINE.scan_private_caff(archive(xml=xml), [DENIED])["status"] == "fail"
