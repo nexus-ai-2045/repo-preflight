@@ -1012,3 +1012,241 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         "reconstructed_path_match": bool(reconstructed),
         "metadata_path_match": bool(metadata_match),
     }
+
+
+def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
+    """PSDの構造とメタデータを検査し、圧縮画素をソースコードにしない。"""
+    import io
+    import warnings
+    import logging
+    import threading
+    from contextlib import contextmanager
+    from collections.abc import Mapping
+    from urllib.parse import unquote
+
+    if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise ValueError("private_identity_policy_empty")
+    if len(data) > 128 * 1024 * 1024:
+        raise ValueError("private_identity_psd_size_limit")
+    if not data.startswith(b"8BPS\x00\x01"):
+        raise ValueError("private_identity_psd_unverified")
+    try:
+        from psd_tools.psd import PSD
+    except ImportError:
+        raise ValueError("private_identity_psd_decoder_unavailable") from None
+
+    @contextmanager
+    def strict_decode():
+        class RejectWarning(logging.Handler):
+            def emit(self, record):
+                if record.levelno >= logging.WARNING and record.thread == owner:
+                    raise ValueError("private_identity_psd_unverified")
+
+        owner = threading.get_ident()
+        handler = RejectWarning()
+        logger = logging.getLogger("psd_tools")
+        logger.addHandler(handler)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                yield
+        finally:
+            logger.removeHandler(handler)
+
+    def validate_encoded(raw, compression, rows, row_bytes):
+        import struct
+        import zlib
+
+        expected_size = rows * row_bytes
+        if int(compression) == 0:
+            if len(raw) != expected_size:
+                raise ValueError("private_identity_psd_unverified")
+        elif int(compression) == 1:
+            table_size = rows * 2
+            if len(raw) < table_size:
+                raise ValueError("private_identity_psd_unverified")
+            counts = struct.unpack(">" + "H" * rows, raw[:table_size])
+            if sum(counts) != len(raw) - table_size:
+                raise ValueError("private_identity_psd_unverified")
+            offset = table_size
+            for count in counts:
+                end = offset + count
+                produced = 0
+                while offset < end:
+                    control = raw[offset]
+                    offset += 1
+                    if control < 128:
+                        amount = control + 1
+                        offset += amount
+                        produced += amount
+                    elif control > 128:
+                        offset += 1
+                        produced += 257 - control
+                    if offset > end or produced > row_bytes:
+                        raise ValueError("private_identity_psd_unverified")
+                if produced != row_bytes:
+                    raise ValueError("private_identity_psd_unverified")
+        elif int(compression) in (2, 3):
+            decoder = zlib.decompressobj()
+            decoded = decoder.decompress(raw, expected_size + 1)
+            if (
+                len(decoded) != expected_size
+                or not decoder.eof
+                or decoder.unused_data
+                or decoder.unconsumed_tail
+            ):
+                raise ValueError("private_identity_psd_unverified")
+        else:
+            raise ValueError("private_identity_psd_unverified")
+
+    try:
+        with strict_decode():
+            document = PSD.read(io.BytesIO(data))
+            header = document.header
+            expected = (
+                ((header.width * header.depth + 7) // 8)
+                * header.height
+                * header.channels
+            )
+            if expected > 128 * 1024 * 1024:
+                raise ValueError("image_limit")
+            validate_encoded(
+                document.image_data.data,
+                document.image_data.compression,
+                header.height * header.channels,
+                (header.width * header.depth + 7) // 8,
+            )
+            merged_pixels = document.image_data.get_data(
+                header, split=False, max_output_bytes=128 * 1024 * 1024
+            )
+            if len(merged_pixels) != expected:
+                raise ValueError("image_size_mismatch")
+    except Exception:
+        raise ValueError("private_identity_psd_unverified") from None
+    hits = set()
+    path_match = metadata_match = reconstructed = False
+    size = nodes = 0
+
+    def raw_views(raw):
+        values = {raw.decode("utf-8", errors="replace")}
+        for encoding in ("utf-16-le", "utf-16-be"):
+            values.add(raw.decode(encoding, errors="replace"))
+        return {unquote(v) for v in values} | values
+
+    # 圧縮画素を含む全byteの直接照合は残す。
+    for raw in (data, merged_pixels):
+        for value in raw_views(raw):
+            hits.update(hit_patterns(value, patterns))
+            path_match |= hit_local_absolute_path(value)
+
+    def text(value):
+        nonlocal size, path_match, metadata_match, reconstructed
+        size += len(value.encode("utf-8", errors="replace"))
+        if size > 8 * 1024 * 1024:
+            raise ValueError("private_identity_psd_text_limit")
+        for candidate in (value, unquote(value)):
+            result = scan_private_text(candidate, patterns)
+            if result["literal_match_count"]:
+                hits.add("metadata")
+            path_match |= result["local_path_match"]
+            metadata_match |= result["local_path_match"]
+            reconstructed |= result.get("reconstructed_path_match", False)
+
+    def visit(value):
+        nonlocal nodes
+        nodes += 1
+        if nodes > 100000:
+            raise ValueError("private_identity_psd_text_limit")
+        if isinstance(value, str):
+            text(value)
+        elif isinstance(value, bytes):
+            for candidate in raw_views(value):
+                # 構造のゼロ区切りは本文の結合として解釈しない。
+                for segment in candidate.split("\x00"):
+                    if segment and all(
+                        ch.isprintable() or ch in "\r\n\t" for ch in segment
+                    ):
+                        text(segment)
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                visit(key)
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+        elif hasattr(type(value), "__attrs_attrs__"):
+            for field in type(value).__attrs_attrs__:
+                visit(getattr(value, field.name))
+        elif value is not None and not isinstance(value, (int, float, bool)):
+            raise ValueError("private_identity_psd_unverified")
+
+    visit(document.image_resources)
+    info = document.layer_and_mask_information
+    expanded = len(merged_pixels)
+    if info.layer_info is not None:
+        layer_info = info.layer_info
+        if len(layer_info.layer_records) != len(layer_info.channel_image_data):
+            raise ValueError("private_identity_psd_unverified")
+        for record, channels in zip(
+            layer_info.layer_records, layer_info.channel_image_data
+        ):
+            if len(record.channel_info) != len(channels):
+                raise ValueError("private_identity_psd_unverified")
+            for description, channel in zip(record.channel_info, channels):
+                rectangle = record
+                prefix = ""
+                if description.id in (-2, -3):
+                    rectangle = record.mask_data
+                    prefix = "real_" if description.id == -3 else ""
+                if rectangle is None:
+                    raise ValueError("private_identity_psd_unverified")
+                edges = [
+                    getattr(rectangle, prefix + key)
+                    for key in ("top", "left", "bottom", "right")
+                ]
+                if any(edge is None for edge in edges):
+                    raise ValueError("private_identity_psd_unverified")
+                top, left, bottom, right = edges
+                width, height = right - left, bottom - top
+                if width < 0 or height < 0:
+                    raise ValueError("private_identity_psd_unverified")
+                required = ((width * header.depth + 7) // 8) * height
+                if required == 0:
+                    if channel.data:
+                        raise ValueError("private_identity_psd_unverified")
+                    continue
+                expanded += required
+                if expanded > 128 * 1024 * 1024:
+                    raise ValueError("private_identity_psd_size_limit")
+                try:
+                    with strict_decode():
+                        validate_encoded(
+                            channel.data,
+                            channel.compression,
+                            height,
+                            (width * header.depth + 7) // 8,
+                        )
+                        decoded = channel.get_data(
+                            width,
+                            height,
+                            header.depth,
+                            header.version,
+                            max_output_bytes=128 * 1024 * 1024,
+                        )
+                    if len(decoded) != required:
+                        raise ValueError("channel_size_mismatch")
+                except Exception:
+                    raise ValueError("private_identity_psd_unverified") from None
+                for value in raw_views(decoded):
+                    hits.update(hit_patterns(value, patterns))
+                    path_match |= hit_local_absolute_path(value)
+        visit(layer_info.layer_records)
+    visit(info.global_layer_mask_info)
+    visit(info.tagged_blocks)
+    return {
+        "status": "fail" if hits or path_match else "pass",
+        "literal_match_count": len(hits),
+        "local_path_match": path_match,
+        "metadata_path_match": metadata_match,
+        "reconstructed_path_match": reconstructed,
+    }

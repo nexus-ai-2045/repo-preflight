@@ -262,3 +262,9 @@ python scripts/github_pr_review_snapshot.py \
 通常コメント、review概要、CI、GraphQL review threadを別々のsurfaceとして読みます。HEAD不一致は
 `tool_error`、未解決threadやCI失敗は`blocked`、review待ちやCI実行中は`pending`です。
 `pass`はreview snapshotの機械検査結果であり、merge承認ではありません。
+
+## PSDを含む個人情報検査
+
+`.[images]` の `psd-tools` を使ってPSD形式を読みます。圧縮された画素をプログラムの文字列式として解析せず、全バイトの直接照合、合成画像および非表示を含む全レイヤー・マスクの展開後の直接照合、画像リソース・レイヤー名・追加メタデータの文字列検査を分けます。メタデータの文字列連結・パーセント符号化も既存の正規化器で検査します。OCRは行いません。
+
+PSD（バージョン1）が対象で、PSB（バージョン2）は未対応です。ファイル128MiB、展開後の合成画像と全レイヤーの累計128MiB、メタデータ文字列8MiB、メタデータ走査10万要素が上限です。構造不正・上限超過・追加依存不足・未確認の型は検査不能として停止します。旧版PSDで起きた `private_identity_normalization_incomplete` を、ファイルの除外や検査の無効化で回避しません。
