@@ -1837,6 +1837,15 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
                 xml_text = content.decode("utf-8", "strict")
             except UnicodeError:
                 raise ValueError("private_identity_caff_unverified") from None
+            # UTF-16/32のASCII列はUTF-8 decodeに成功する場合がある。NULと別encoding宣言を拒否する。
+            declared_encoding = re.match(
+                r"^\ufeff?<\?xml\s+[^?]*?encoding\s*=\s*['\"]([^'\"]+)['\"]", xml_text
+            )
+            if "\0" in xml_text or (
+                declared_encoding
+                and declared_encoding.group(1).casefold().replace("-", "") != "utf8"
+            ):
+                raise ValueError("private_identity_caff_unverified")
             if "<!DOCTYPE" in xml_text or "<!ENTITY" in xml_text:
                 raise ValueError("private_identity_caff_unverified")
 
@@ -1851,7 +1860,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
 
             try:
                 root = ET.fromstring(
-                    content, parser=ET.XMLParser(target=BoundedBuilder())
+                    xml_text, parser=ET.XMLParser(target=BoundedBuilder())
                 )
             except ET.ParseError:
                 raise ValueError("private_identity_caff_unverified") from None

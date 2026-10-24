@@ -426,3 +426,18 @@ def test_shared_reference_is_not_joined_with_unrelated_relative_path():
 def test_parent_reference_that_remains_inside_shared_is_not_personal():
     value = ENGINE.MACOS_SHARED_DIRECTORY + "/assets/../source.psd"
     assert ENGINE.scan_private_text(value, [DENIED])["status"] == "pass"
+
+
+@pytest.mark.parametrize("codec", ["utf-16-be", "utf-16-le", "utf-32-be", "utf-32-le"])
+def test_unsupported_xml_encoding_never_splits_parser_and_source_views(codec):
+    xml = '<?xml version="1.0" encoding="UTF-16"?><r><!-- "caff-fixture" + "@example.invalid" --></r>'.encode(
+        codec
+    )
+    with pytest.raises(ValueError, match="caff_unverified"):
+        ENGINE.scan_private_caff(archive(xml=xml), [DENIED])
+
+
+def test_non_utf8_xml_declaration_is_rejected_even_when_ascii_decodes():
+    xml = b'<?xml version="1.0" encoding="ISO-8859-1"?><r>clean</r>'
+    with pytest.raises(ValueError, match="caff_unverified"):
+        ENGINE.scan_private_caff(archive(xml=xml), [DENIED])
