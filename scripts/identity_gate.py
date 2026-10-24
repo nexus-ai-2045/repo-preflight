@@ -75,7 +75,9 @@ _JSON_ESCAPE_RE = re.compile(r"\\u([0-9a-fA-F]{4})")
 _BYTE_ESCAPE_RE = re.compile(r"\\(?:x([0-9a-fA-F]{2})|([0-7]{3}))")
 # レビュー3C 中以下: ゼロ幅の文字と、ハイフンに似た文字
 _ZERO_WIDTH_RE = re.compile("[\u00ad\u200b-\u200f\u2060\ufeff]")
-_HYPHEN_LIKE = str.maketrans({c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"})
+_HYPHEN_LIKE = str.maketrans(
+    {c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"}
+)
 
 
 def text_variants(text: str) -> list[str]:
@@ -247,18 +249,21 @@ EXTRA_PATH_RES = (
     re.compile(r"(?<![a-z])[a-z]:[/\\]+us" r"ers[/\\]+" + _PATH_USER, re.I),
     # 高3: 道具のリンク（vscode://file/…・cursor://file/…・file://localhost/…）
     re.compile(
-        r"(?:[a-z][a-z0-9+.-]*://file|file://localhost)/+(?:us" r"ers|ho" r"me)/"
-        + _PATH_USER,
+        r"(?:[a-z][a-z0-9+.-]*://file|file://localhost)/+(?:us"
+        r"ers|ho"
+        r"me)/" + _PATH_USER,
         re.I,
     ),
     # 高4: WSL の UNC パス（wsl$ と wsl.localhost の下のホーム）
     re.compile(
-        r"[/\\]{2}wsl(?:\$|[.]localhost)[/\\]+[^/\\\s]+[/\\]+ho" r"me[/\\]+" + _PATH_USER,
+        r"[/\\]{2}wsl(?:\$|[.]localhost)[/\\]+[^/\\\s]+[/\\]+ho"
+        r"me[/\\]+" + _PATH_USER,
         re.I,
     ),
     # 高3: 道具が / を - に置き換えて符号化したホーム（Claude のプロジェクト置き場の名前など）
     re.compile(
-        r"(?<![^/\\\s'\"=:(\[])(?:[A-Za-z]-)?-Us" r"ers-(?P<user>[A-Za-z0-9._]+)"
+        r"(?<![^/\\\s'\"=:(\[])(?:[A-Za-z]-)?-Us"
+        r"ers-(?P<user>[A-Za-z0-9._]+)"
         r"(?=[-/\\\s'\"]|$)",
         re.M,
     ),
@@ -284,13 +289,27 @@ def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
     user = user.strip("\"'")
     if (
         user.casefold() in allowed
-        or user == _MAC_SHARED_USER
+        or (user == _MAC_SHARED_USER and _mac_shared_dir(candidate, start))
         or user.startswith(_PLACEHOLDER_USER_START)
     ):
         return True
     if _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]):
         return True
     return _web_route(candidate, start)
+
+
+# macOS の共有フォルダは、前にドライブも逆斜線も無い、斜線で区切った Users の下の Shared だけ外す。
+# Windows のドライブ付き・逆斜線の形と、Linux の home の下の Shared は利用者名として止めたまま。
+_MAC_SHARED_DIR_RE = re.compile(r"/Us" r"ers/Shared(?![^/\\\s'\"])")
+_DRIVE_OR_BACKSLASH_BEFORE = re.compile(r"(?:[A-Za-z]:|\\)$")
+
+
+def _mac_shared_dir(candidate: str, start: int) -> bool:
+    return (
+        _MAC_SHARED_DIR_RE.match(candidate, start) is not None
+        and _DRIVE_OR_BACKSLASH_BEFORE.search(candidate[max(0, start - 2) : start])
+        is None
+    )
 
 
 def _web_route(candidate: str, start: int) -> bool:
@@ -692,7 +711,18 @@ RESERVED_MAIL_DOMAIN_RE = re.compile(
     r"(?:^|[.])(?:example(?:[.](?:com|net|org))?|invalid|test|localhost|local)$", re.I
 )
 # ssh の git 利用者（git@github.com:… の clone 手順）。個人メールの形は別に見る。
+# 外すのは ssh の参照の形だけ：直後が「:」と経路の文字（scp の形）か、直前が ssh://。
+# ただの連絡先の git@会社のドメイン は名簿に無ければ止める。
 SSH_GIT_LOCAL = "git"
+_SSH_SCP_AFTER = re.compile(r":[A-Za-z0-9~_./-]")
+
+
+def _ssh_git_reference(candidate: str, m: re.Match) -> bool:
+    if m.group(0).split("@", 1)[0] != SSH_GIT_LOCAL:
+        return False
+    return _SSH_SCP_AFTER.match(candidate, m.end()) is not None or candidate[
+        : m.start()
+    ].casefold().endswith("ssh://")
 
 
 def unlisted_mail_found(text: str, policy: "PublicPolicy") -> bool:
@@ -705,7 +735,7 @@ def unlisted_mail_found(text: str, policy: "PublicPolicy") -> bool:
                 continue  # 「個人メールの形」として別に数える
             if RESERVED_MAIL_DOMAIN_RE.search(domain):
                 continue
-            if m.group(0).split("@", 1)[0] == SSH_GIT_LOCAL:
+            if _ssh_git_reference(candidate, m):
                 continue
             if m.group(0).casefold().rstrip(".") not in allowed:
                 return True

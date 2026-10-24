@@ -5,7 +5,7 @@
 
 import pytest
 
-from test_review_3c import H, U, message, policy  # noqa: F401
+from test_review_3c import AT, H, U, message, policy  # noqa: F401
 
 GREEN = {
     "例示の user": f"/{H}/user/project",
@@ -20,7 +20,24 @@ RED = {
     "似た名前は止まる": f"/{H}/username/x",
     "小文字の shared は外さない": f"/{U}/shared-alice/x",
     "vscode の後ろの実名ではなく前": f"/{U}/alice/vscode",
+    "Windows の Shared は止める": f"C:\\{U}\\Shared\\project",
+    "Windows の斜線の Shared は止める": f"C:/{U}/Shared/project",
+    "Linux の Shared は止める": f"/{H}/Shared/project",
+    "連絡先の git の会社メールは止める": "Contact: git" + AT + "corp.example-co.jp",
+    "git の会社メールの後ろが空白の「:」でも止める": "git"
+    + AT
+    + "corp.example-co.jp: 連絡",
 }
+
+# ssh の参照の形の git は外したまま
+GREEN.update(
+    {
+        "scp の形の git": "git clone git" + AT + "github.com:nexus-ai-2045/repo.git",
+        "ssh:// の git": "git clone ssh://git"
+        + AT
+        + "github.com/nexus-ai-2045/repo.git",
+    }
+)
 
 
 @pytest.mark.parametrize("name", sorted(GREEN))

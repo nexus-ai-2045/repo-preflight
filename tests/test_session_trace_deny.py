@@ -48,7 +48,9 @@ BLOCK = [
 # 品質判定 H1: 行頭でなくても、新しく足すものでは止める（全履歴のラチェットの型は広げない）
 GATE_ONLY_BLOCK = [
     # レビュー3C 高7: 「:」の後ろが ID の形のときだけ止める（英語の文や「は書かない」は通す）
-    pytest.param("".join(["note: Claude-", "Session: zz-0000 は書かない"]), id="行頭でない"),
+    pytest.param(
+        "".join(["note: Claude-", "Session: zz-0000 は書かない"]), id="行頭でない"
+    ),
 ]
 PASS = [
     pytest.param("Claude Code で作業しました", id="道具名だけ"),

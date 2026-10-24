@@ -187,7 +187,9 @@ def _rename(repo, rel):
 NAMES = {
     "メールのファイル名": lambda r: _add(r, "alice" + AT + GM + ".txt"),
     "符号化ホームのフォルダ名": lambda r: _add(r, f"C--{U}-alice-proj/a.txt"),
-    "セッション名のファイル": lambda r: _add(r, J(["claude", ".ai_code_session_0000.txt"])),
+    "セッション名のファイル": lambda r: _add(
+        r, J(["claude", ".ai_code_session_0000.txt"])
+    ),
     "git mv での改名": lambda r: _rename(r, "d/alice" + AT + GM + ".txt"),
 }
 
@@ -240,4 +242,7 @@ def test_gitleaks_rules_follow_session_shapes():
     text = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
     assert "(?:ai|com)" in text
     assert "projects?|chat|share|code" in text
-    assert "[0-9]" in text.split('id = "claude-session-trailer"', 1)[1].split("[[rules]]", 1)[0]
+    assert (
+        "[0-9]"
+        in text.split('id = "claude-session-trailer"', 1)[1].split("[[rules]]", 1)[0]
+    )
