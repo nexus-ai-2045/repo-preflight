@@ -234,9 +234,11 @@ python -m pytest -q
 CI定義があることと、対象commitのジョブが開始・成功したことは別です。実行が制限されている場合は、ローカル試験の結果とGitHub上の未実行を分けて報告します。
 
 
+検証済みpixelや数値表に意図的に隠した文字列の不存在は保証しません。画像全byteのliteral不存在が必要な利用要件には、この境界は適合しません。Git在庫の相対名は名前専用contextで確認し、本文の絶対path・名前のidentity literal・埋込みhost pathの検査は維持します。
+
 ### PNGを含むprivate identity検査
 
-PNGは全byteのliteral・絶対path照合を維持し、圧縮画素をsource codeとして解析しません。文字metadata（tEXt・zTXt・iTXt）は[PNG仕様](https://www.w3.org/TR/png-3/#11textinfo)に沿って読み、圧縮文も展開して既存の静的文字列連結・URL表記の検査へ渡します。未知の付加chunkも既存の文字viewで検査します。
+PNGは[ADR-0012](adr/0012-image-binary-and-repository-name-semantics.md)に従い、構造・CRC・展開・scanlineを検証したcoding・pixel領域をbinaryとして扱い、文字としてのliteral・path照合から分けます。文字metadata（tEXt・zTXt・iTXt）は[PNG仕様](https://www.w3.org/TR/png-3/#11textinfo)に沿って読み、圧縮文も展開して既存の静的文字列連結・URL表記の検査へ渡します。未知の付加chunkも既存の文字viewで検査します。
 
 chunk境界・CRC・必要なheaderを確認し、壊れた構造、読めない文字metadata、展開上限超過は検査不能として停止します。PNGの全画像復号・OCRを保証する検査ではありません。既存のtext入力の厳格な正規化と、不明をpassにしない境界は維持します。
 
@@ -244,7 +246,7 @@ chunk境界・CRC・必要なheaderを確認し、壊れた構造、読めない
 
 ### JPEGを含むprivate identity検査
 
-JPEGは拡張子ではなく実signatureで判定し、[ADR-0010](adr/0010-strict-jpeg-private-scan.md)のstrict復号を終えてから画素をコード解析と分けます。全byteのliteral・path照合と、COMなど文字metadataの既存文字検査は保持します。未解析のAPP payloadはsource連結せず、raw照合だけを維持します。APP1のXMP本文だけは文字として連結検査します。破損・警告・時間や容量の上限超過・依存不足は検査不能です。今回の送信（比較元からHEADまでの差分と、未commitの追加・変更）に含まれるJPEGの検査不能は走査全体を止めます。送信に含まれない既存JPEGの構造不正（`private_identity_jpeg_unverified`）は、そのfileを未展開として数え、送信全体は止めません。読めるfileの個人識別子と、送信に含まれるJPEGは止めます。範囲は [ADR-0011](adr/0011-existing-jpeg-unverified-does-not-block-submission.md) です。
+JPEGは拡張子ではなく実signatureで判定し、[ADR-0010](adr/0010-strict-jpeg-private-scan.md)のstrict復号を終えてから画素をコード解析と分けます。検証済みcoding・entropy・JFIF thumbnail・Adobe数値項目は[ADR-0012](adr/0012-image-binary-and-repository-name-semantics.md)に従いbinaryとして扱います。COMなど文字metadataの既存文字検査は保持します。未解析のAPP payloadはsource連結せず、raw照合だけを維持します。APP1のXMP本文だけは文字として連結検査します。破損・警告・時間や容量の上限超過・依存不足は検査不能です。今回の送信（比較元からHEADまでの差分と、未commitの追加・変更）に含まれるJPEGの検査不能は走査全体を止めます。送信に含まれない既存JPEGの構造不正（`private_identity_jpeg_unverified`）は、そのfileを未展開として数え、送信全体は止めません。読めるfileの個人識別子と、送信に含まれるJPEGは止めます。範囲は [ADR-0011](adr/0011-existing-jpeg-unverified-does-not-block-submission.md) です。
 
 JPEG検査のruntimeには、任意の`images`追加依存の`simplejpeg`を導入した仮想環境を使用します。`python -m venv .venv`で分離し、その環境の`python -m pip install ".[images]"`で依存を入れて、同じ環境のPythonから既存CLIを起動してください。hookや外部wrapperから呼ぶ場合も、呼出元がその環境のPythonを選んでいることを別途確認します。標準ライブラリだけの旧実行経路はJPEGを成功扱いにせず、`private_identity_jpeg_decoder_unavailable`で停止します。homeのhookやsystem Pythonを自動変更する処理は含みません。
 

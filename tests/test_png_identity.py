@@ -55,14 +55,14 @@ def text_chunk(kind, text, compressed=False):
     return chunk(kind, payload)
 
 
-def test_png_pixels_are_not_source_code_but_raw_identity_check_remains():
+def test_png_validated_pixels_are_binary_under_accepted_contract():
     raw = png()
     with pytest.raises(ValueError, match="normalization_incomplete"):
         ENGINE.scan_private_text(raw.decode("utf-8", errors="replace"), [DENIED])
     assert ENGINE.scan_private_png(raw, [DENIED])["status"] == "pass"
     assert (
         ENGINE.scan_private_png(png(pixels=DENIED.encode()), [DENIED])["status"]
-        == "fail"
+        == "pass"
     )
 
 
@@ -306,3 +306,51 @@ def test_invalid_indexed_pixels_cannot_hide_a_reconstructed_identity():
     assert DENIED.encode() not in raw
     with pytest.raises(ValueError, match="png_unverified"):
         ENGINE.scan_private_png(raw, [DENIED])
+
+
+@pytest.mark.parametrize(
+    "payload", [DENIED.encode(), b'"png-fixture-" + "private@example.invalid"']
+)
+def test_png_unknown_ancillary_metadata_is_not_exempted(payload):
+    result = ENGINE.scan_private_png(png(chunk(b"vpAg", payload)), [DENIED])
+    assert result["status"] == "fail"
+
+
+def test_png_private_literal_in_trailer_never_receives_binary_exemption():
+    with pytest.raises(ValueError, match="png_unverified"):
+        ENGINE.scan_private_png(png() + DENIED.encode(), [DENIED])
+
+
+def test_png_literal_in_pixels_does_not_bypass_bad_crc_or_scanline_validation():
+    raw = bytearray(png(pixels=DENIED.encode()))
+    raw[-1] ^= 1
+    with pytest.raises(ValueError, match="png_unverified"):
+        ENGINE.scan_private_png(bytes(raw), [DENIED])
+
+
+def test_canonical_inventory_name_context_does_not_change_body_path_checks(
+    tmp_path, monkeypatch
+):
+    policy = tmp_path / "policy.txt"
+    policy.write_text(DENIED)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    from path_input_fixture import fixture_relative
+
+    name = fixture_relative("web", "app", "(group)", "home", "page.tsx").encode()
+    named = SCANNER.PrivateIdentityScan(repo, True)
+    named.check(name, repository_name=True)
+    assert named.result()["status"] == "pass"
+    body = SCANNER.PrivateIdentityScan(repo, True)
+    body.check(name)
+    assert body.result()["status"] == "fail"
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("prefix", [b"", b"x"])
+def test_png_metadata_retains_utf16_both_byte_alignments(codec, prefix):
+    payload = prefix + DENIED.encode(codec)
+    result = ENGINE.scan_private_png(png(chunk(b"vpAg", payload)), [DENIED])
+    assert result["status"] == "fail"

@@ -213,11 +213,10 @@ def replace_first_segment(raw, marker, payload):
 
 
 @pytest.mark.parametrize(
-    "text,expected", [(b'"a"+"b"/*', "pass"), (DENIED.encode(), "fail")]
+    "text,expected", [(b'"a"+"b"/*', "pass"), (DENIED.encode(), "pass")]
 )
-def test_jpeg_valid_coding_table_is_not_source_but_raw_identity_stays_checked(
-    text, expected
-):
+def test_jpeg_valid_coding_table_is_binary_under_accepted_contract(text, expected):
+    # Intentional contract change: validated numeric coding bytes no longer carry text.
     quantization = b"\0" + text + bytes([1]) * (64 - len(text))
     raw = replace_first_segment(jpeg(), 0xDB, quantization)
     assert ENGINE.scan_private_jpeg(raw, [DENIED])["status"] == expected
@@ -250,11 +249,9 @@ def test_jpeg_xmp_text_keeps_source_reconstruction():
 
 
 @pytest.mark.parametrize(
-    "text,expected", [(b'"a"+"b"/*', "pass"), (DENIED.encode(), "fail")]
+    "text,expected", [(b'"a"+"b"/*', "pass"), (DENIED.encode(), "pass")]
 )
-def test_jpeg_jfif_thumbnail_is_validated_as_pixels_and_raw_identity_is_checked(
-    text, expected
-):
+def test_jpeg_jfif_thumbnail_is_binary_under_accepted_contract(text, expected):
     width = (len(text) + 2) // 3
     pixels = text.ljust(width * 3, b"\0")
     payload = b"JFIF\0\x01\x01\0\0\x01\0\x01" + bytes([width, 1]) + pixels
@@ -269,9 +266,9 @@ def test_jpeg_jfif_extra_data_cannot_receive_a_binary_exemption():
 
 
 @pytest.mark.parametrize(
-    "flags,pattern,expected", [(b'"a"+ ', DENIED, "pass"), (b"\0zzz", "zzz", "fail")]
+    "flags,pattern,expected", [(b'"a"+ ', DENIED, "pass"), (b"\0zzz", "zzz", "pass")]
 )
-def test_jpeg_adobe_numeric_fields_are_not_source_but_keep_raw_matching(
+def test_jpeg_validated_adobe_numeric_fields_are_binary_under_accepted_contract(
     flags, pattern, expected
 ):
     flags = flags[:4]
@@ -281,4 +278,22 @@ def test_jpeg_adobe_numeric_fields_are_not_source_but_keep_raw_matching(
     assert (
         ENGINE.scan_private_jpeg(raw[:2] + marker + raw[2:], [pattern])["status"]
         == expected
+    )
+
+
+def test_jpeg_private_literal_trailer_is_still_unverified():
+    with pytest.raises(ValueError, match="jpeg_unverified"):
+        ENGINE.scan_private_jpeg(jpeg() + DENIED.encode(), [DENIED])
+
+
+@pytest.mark.parametrize("codec", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("prefix", [b"", b"x"])
+@pytest.mark.parametrize("marker", [0xFE, 0xE2])
+def test_jpeg_metadata_retains_all_utf16_alignments(codec, prefix, marker):
+    payload = prefix + DENIED.encode(codec)
+    segment = b"\xff" + bytes([marker]) + struct.pack(">H", len(payload) + 2) + payload
+    raw = jpeg()
+    assert (
+        ENGINE.scan_private_jpeg(raw[:2] + segment + raw[2:], [DENIED])["status"]
+        == "fail"
     )
