@@ -15,7 +15,7 @@
 
 ## 使い方
 
-検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
+検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git

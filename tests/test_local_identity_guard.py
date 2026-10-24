@@ -84,6 +84,37 @@ def test_collect_skips_generic_public_and_short_values():
     assert extra == []
 
 
+@pytest.mark.parametrize("public_scope", ["--global", "--system"])
+def test_collect_applies_registered_email_policy_before_deriving_localpart(
+    monkeypatch, public_scope
+):
+    private = "private.writer@example.invalid"
+
+    def config(key, scope):
+        if key != "user.email":
+            return []
+        return [PUBLIC_EMAIL] if scope == public_scope else [private]
+
+    monkeypatch.setattr(GUARD, "_git_config", config)
+    monkeypatch.setattr(GUARD, "_command_output", lambda _: "")
+    monkeypatch.setattr(GUARD, "_full_name_from_passwd", lambda: "")
+    values = {
+        item.value
+        for item in GUARD.collect_identities(environ={"HOME": "/fixture"})
+        if item.source == "git_global_email"
+    }
+    assert PUBLIC_EMAIL not in values
+    assert PUBLIC_EMAIL.split("@", 1)[0] not in values
+    assert private in values
+    assert private.split("@", 1)[0] in values
+
+
+def test_public_email_fix_does_not_suppress_explicit_private_alias():
+    localpart = PUBLIC_EMAIL.split("@", 1)[0]
+    values = GUARD.collect_identities(sources={"private_file": [localpart]})
+    assert [item.value for item in values] == [localpart]
+
+
 def test_find_hits_respects_word_boundaries_and_case():
     ids = identities()
     assert {i.value for i in GUARD.find_hits("by FAKEPERSON today", ids)} == {
