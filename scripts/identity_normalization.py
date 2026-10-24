@@ -904,7 +904,9 @@ PNG_TEXT_LIMIT = 2_000_000
 PNG_IMAGE_LIMIT = 64_000_000
 
 
-def scan_private_png(data: bytes, patterns: list[str]) -> dict:
+def scan_private_png(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """PNG containerのraw照合とmetadata照合。圧縮画素をsource codeと解釈しない。"""
     import struct
     import zlib
@@ -913,6 +915,8 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
     if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(PNG_SIGNATURE):
+        raise ValueError("private_identity_png_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
         raise ValueError("private_identity_png_unverified")
     hits = set()
     path_match = reconstructed = metadata_path_match = False
@@ -939,6 +943,8 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         if metadata_size > PNG_TEXT_LIMIT:
             raise ValueError("private_identity_png_text_limit")
         for candidate in {value, unquote(value)}:
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             views = static_string_views(candidate)
             variants = [
                 candidate,
@@ -1134,6 +1140,11 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
                 "local_path_match": bool(path_match),
                 "reconstructed_path_match": bool(reconstructed),
                 "metadata_path_match": bool(metadata_path_match),
+                **(
+                    {"metadata_observer_complete": True}
+                    if metadata_observer is not None
+                    else {}
+                ),
             }
         elif kind == b"PLTE":
             if (
@@ -1153,6 +1164,12 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
             try:
                 key, rest = payload.split(b"\0", 1)
                 keyword(key)
+                if (
+                    metadata_observer is not None
+                    and key.lower() == b"xml:com.adobe.xmp"
+                ):
+                    # This image path has no bounded XML semantics decoder.
+                    raise ValueError("private_identity_png_unverified")
                 if kind == b"tEXt":
                     text = rest.decode("latin-1")
                 elif kind == b"zTXt":
@@ -1187,6 +1204,10 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         else:
             if not kind[0] & 32:
                 raise ValueError("private_identity_png_unverified")
+            if metadata_observer is not None:
+                # Only parsed text and validated core chunks have cover metadata
+                # semantics here. Raw ancillary views cannot certify structures.
+                raise ValueError("private_identity_png_unverified")
             # 未知の付加chunkは免除しない。既存の文字viewと正規化で調べる。
             for value in text_views(payload):
                 inspect_text(value)
@@ -1218,7 +1239,9 @@ except Exception:
 """
 
 
-def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
+def scan_private_jpeg(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """JPEGの復号を分離processで検証し、画素以外の全segmentを文字検査する。"""
     import os
     import subprocess
@@ -1228,6 +1251,8 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
     if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(JPEG_SIGNATURE):
+        raise ValueError("private_identity_jpeg_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
         raise ValueError("private_identity_jpeg_unverified")
     if len(data) > JPEG_DATA_LIMIT:
         raise ValueError("private_identity_jpeg_image_limit")
@@ -1298,6 +1323,19 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         total += len(payload)
         if total > JPEG_METADATA_LIMIT:
             raise ValueError("private_identity_jpeg_text_limit")
+        if (
+            metadata_observer is not None
+            and 0xE0 <= kind <= 0xEF
+            and not (
+                kind == 0xE0
+                and payload.startswith(b"JFIF\0")
+                or kind == 0xEE
+                and payload.startswith(b"Adobe")
+            )
+        ):
+            # Only the already shape-validated JFIF/Adobe APP headers are
+            # supported here. ICC/Exif/XMP/other APP need semantic decoders.
+            raise ValueError("private_identity_jpeg_unverified")
         if kind == 0xE0 and payload.startswith(b"JFIF\0"):
             if (
                 len(payload) < 14
@@ -1341,12 +1379,16 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         raise ValueError("private_identity_jpeg_unverified")
     for raw in raw_segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             hits.update(hit_patterns(candidate, patterns))
             if hit_local_absolute_path(candidate):
                 metadata_match = True
                 path_match = True
     for raw in segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             result = scan_private_text(candidate, patterns)
             if result["literal_match_count"]:
                 literals = static_string_views(candidate)
@@ -1365,6 +1407,11 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         "local_path_match": bool(path_match),
         "reconstructed_path_match": bool(reconstructed),
         "metadata_path_match": bool(metadata_match),
+        **(
+            {"metadata_observer_complete": True}
+            if metadata_observer is not None
+            else {}
+        ),
     }
 
 

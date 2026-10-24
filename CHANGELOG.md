@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### 形式別の媒体検査
+
+- PDF・MP3・限定H264 MP4を同梱adapterから既存の文字・画像検査へ接続。worktreeとGit blobのextension/magicを同じ入口で確認する。MP4は同一sourceのstrict Hachoir・packet・全decode・traceを結合し、container補集合とSEI UUID/payload/連結viewを検査する。外部providerにbinary exemptionを与えない。
+- decoder環境の完全束縛まで媒体のclean-pass cache lookup/recordを停止。adapter hashとdecoder versionsを値非表示のreportへ残す。
+
+- PDFの原本stream read範囲をobject identityへ束縛し、header/comment/free objectを含む補集合とPDF文字列escapeを既存parserで検査。正しいxrefのコメント・free文字objectの見逃しを回帰化した。依存版/source hash、Flate完全消費、位置・EOF・resourceを検証し、GoTo navigation/構造属性/Type3 glyphの役割を区別する。PDF lexerはPython 3.10+、埋込みfont検査は3.11+のoptional依存とし、core3.9は維持。
+
+- 既存readerの標準null互換を明示known-free参照だけに限定し、元free bytesの検査・strict読取り・競合拒否を維持。mailtoを非送信のmetadataとして原文/percent復号を確認する。CJK glyph名の測定に基づきunique文字列数のみ既存100000 object上限へ整合し、文字量2MBや他上限を変更しない。
+
+- 実FontFileの既存guarded Type1 decoderとexact readstring/object結合を追加し、raw/decrypted metadata・comments・unused sourceを検査。通常のTilingPattern/Function graphicsをinert sourceとして確認し、checksumだけは公式warning診断へ分離する。全table/glyphの読取り、未知/破損・予算超過拒否、原本bytes保持は維持。
+
+- PDFの全linked xref componentを同一原本の既存strict readerで確認し、上書きされた圧縮metadata・旧actionも省略しない。XRef streamのW/Index/decoded長と全消費、graph/cycle、global budgets、exact source rangeの同一性を検査する。
+- MP4の全decoder入力をmov・external drefs/absolute無効・file/pipeへ限定。復号された合成secretをworktreeと削除済み履歴の既存secret gateへ接続し、Hachoir/helper SHA/decoder版・固定diagnosticを残す。
+
+### その他の変更
+
 - 旧履歴 `719dc3a` の本人採用済みADR-0012を再構築後のmain `ad1531f` へ移植。検証済みPNG/JPEGのcoding・pixel・CRC領域とGit相対名を本文から区別し、metadataの全UTF-16 alignment・strict復号・不正入力の停止を維持する。現行PSD/GIF対応と公開名義policyは変更しない。
 
 - `scripts/local_identity_guard.py` の読み飛ばしを、許可名義の一覧（`references/public-commit-identities.json`：nexus の noreply と許可済みの bot）に載った名義だけに絞った。git の global のメールは、一覧に載ったものだけを外し、ほかの GitHub の noreply はローカル部分とログイン名も個人名義として止める。端末名はこれまでどおり集め、一覧の語（例「bot」）だけを照合から外す（`dependabot[bot]` の行の誤検知を直す）。端末名にだけ出る個人名は止まる。一覧が読めないときは何も外さない。
