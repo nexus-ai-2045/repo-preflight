@@ -1,7 +1,11 @@
 """公開側へ持ち主の個人名義を出さないための検査。
 
-照合する個人名義 (本名・メール・OSのアカウント名・端末名) は、人に書かせず
-実行中の環境から毎回自動で集める。集めた値はメモリ上だけで使い、標準出力・
+照合する個人名義 (本名・メール・OSのアカウント名・ホーム名) は、人に書かせず
+実行中の環境から毎回自動で集める。端末名 (ホスト名) は使わない。端末名は
+「bot」のような一般の語になり得て、何に当たるかが端末ごとに変わるため。
+公開してよい名義は、許可名義の一覧 (GitHub の noreply と bot のメール) と
+--public-name だけで決める。一覧に当たるメールは、その一部も個人名義に数えない。
+集めた値はメモリ上だけで使い、標準出力・
 標準エラー・ファイルのどこにも書かない。報告は「どの種類の値が・どこに」
 だけを出し、値そのものはSHA-256の先頭だけで示す。
 
@@ -19,7 +23,6 @@ import getpass
 import hashlib
 import os
 import re
-import socket
 import subprocess
 import sys
 import unicodedata
@@ -76,31 +79,6 @@ GENERIC_VALUES = frozenset(
         "vagrant",
         "vscode",
         "worker",
-    }
-)
-# 端末名から名前らしい部分だけを残すために捨てる語。
-HOSTNAME_NOISE = frozenset(
-    {
-        "air",
-        "imac",
-        "iphone",
-        "ipad",
-        "lan",
-        "macbook",
-        "macbookair",
-        "macbookpro",
-        "macmini",
-        "macpro",
-        "mbp",
-        "mini",
-        "pc",
-        "pro",
-        "studio",
-        "the",
-        "desktop",
-        "laptop",
-        "home",
-        "local",
     }
 )
 MIN_TOKEN_LENGTH = 3
@@ -163,17 +141,6 @@ def _full_name_from_passwd() -> str:
     except (ImportError, KeyError, OSError):
         return ""
     return gecos.split(",")[0].strip()
-
-
-def _hostname_tokens(name: str) -> list[str]:
-    tokens = []
-    for raw in re.split(r"[^0-9A-Za-z぀-ヿ一-鿿]+", name):
-        token = raw
-        # "Taro's MacBook" は "Taros-MacBook" になるので所有格の s を外した形も持つ。
-        if token.lower().endswith("s") and len(token) > MIN_TOKEN_LENGTH + 1:
-            tokens.append(token[:-1])
-        tokens.append(token)
-    return [t for t in tokens if t.casefold() not in HOSTNAME_NOISE]
 
 
 def _email_parts(email: str) -> list[str]:
@@ -272,13 +239,10 @@ def collect_identities(
         emails = _git_config("user.email", "--global") + _git_config(
             "user.email", "--system"
         )
-        sources["git_global_email"] = [p for e in emails for p in _email_parts(e)]
-        hosts = [
-            socket.gethostname(),
-            _command_output(["scutil", "--get", "ComputerName"]),
-            _command_output(["scutil", "--get", "LocalHostName"]),
+        # 許可名義の一覧に当たるメール (公開用の noreply など) は、ローカル部分も含めて数えない。
+        sources["git_global_email"] = [
+            p for e in emails if not allowed_email.fullmatch(e) for p in _email_parts(e)
         ]
-        sources["host_name"] = [t for h in hosts if h for t in _hostname_tokens(h)]
         private_file = OPTIONAL_PRIVATE_FILE.expanduser()
         if private_file.is_file():
             try:
