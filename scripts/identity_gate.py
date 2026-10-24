@@ -213,7 +213,11 @@ KEY_SHAPE_RES = (
 )
 # 実ホームパスの例外にしてよいのは、個人でない固定の利用者名だけ。
 # GitHub Actions のホスト型ランナーの利用者名は runner で固定。
-DEFAULT_ALLOWED_HOME_USERS = frozenset({"runner"})
+# レビュー3C 高8 の提案（2026-10-24 15:29 人承認）: 例示とコンテナで決まって使う利用者名
+# （例示の user、devcontainer の vscode、docker の node）も外す。macOS の共有フォルダは
+# _path_user_exempt で大文字の Shared だけ外す。
+DEFAULT_ALLOWED_HOME_USERS = frozenset({"runner", "user", "vscode", "node"})
+_MAC_SHARED_USER = "Shared"
 
 
 def _home_user(match: re.Match) -> str:
@@ -268,7 +272,11 @@ _HTTP_VERB_BEFORE = re.compile(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[ \t]
 
 def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
     user = user.strip("\"'")
-    if user.casefold() in allowed or user.startswith(_PLACEHOLDER_USER_START):
+    if (
+        user.casefold() in allowed
+        or user == _MAC_SHARED_USER
+        or user.startswith(_PLACEHOLDER_USER_START)
+    ):
         return True
     return _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]) is not None
 
