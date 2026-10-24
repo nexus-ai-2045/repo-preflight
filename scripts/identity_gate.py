@@ -269,16 +269,15 @@ EXTRA_PATH_RES = (
     ),
     re.compile(r"(?<![^/\\\s'\"=:(\[])-ho" r"me-(?P<user>[A-Za-z0-9._]+)-"),
 )
-# 高7・高8: 例示の記号（<user>・$USER・${USER}・{id}・:id）で始まる利用者名と、
-# HTTP の動詞の直後（GET のすぐ後ろの feed などの経路）は実ホームとして見ない。
+# 高7・高8: 例示の記号（<user>・$USER・${USER}・{id}・:id）で始まる利用者名は実ホームとして見ない。
+# HTTP の動詞（GET・POST など）の直後のホームは止める（人の承認の範囲外。品質係の下見）。
 _PLACEHOLDER_USER_START = ("<", "$", "{", ":")
-_HTTP_VERB_BEFORE = re.compile(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[ \t]+$")
-# Web の経路（2026-10-24 15:29 人承認）: 経路を書く呼び出し・属性の引用符の中で、/home/ のあとに
-# 経路の名前が1つだけ続いて引用符が閉じる形（app.get の中の index の経路など）は実ホームとして見ない。
-# /home/ の下に続きがある形と、経路の文脈でない引用符の中は止めたまま。ubuntu も止めたまま。
+# Web の経路（2026-10-24 15:29 人承認）: 人が承認した `.get(` と `href=` の引用符の中で、/home/ のあとに
+# 経路の名前が1つだけ続いて引用符が閉じる形（app.get の中の index の経路など）だけ実ホームとして見ない。
+# ほかの呼び出し（.post( など）・属性（path=・url=・to=・redirect= など）、/home/ の下に続きがある形、
+# 経路の文脈でない引用符の中は止めたまま。ubuntu も止めたまま。
 _ROUTE_BEFORE = re.compile(
-    r"(?:[.](?:get|post|put|patch|delete|all|use|route|navigate|push|redirect)\s*\(\s*"
-    r"|\b(?:href|to|path|route|redirect|url|action)\s*[=:]\s*\{?\s*)[\"'`]$",
+    r"(?:[.]get\s*\(\s*|(?<![A-Za-z0-9_-])href\s*=\s*\{?\s*)[\"'`]$",
     re.I,
 )
 _ROUTE_HOME_RE = re.compile(r"/ho" r"me/(?P<name>[a-z0-9_-]+)[\"'`?#]")
@@ -292,8 +291,6 @@ def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
         or (user == _MAC_SHARED_USER and _mac_shared_dir(candidate, start))
         or user.startswith(_PLACEHOLDER_USER_START)
     ):
-        return True
-    if _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]):
         return True
     return _web_route(candidate, start)
 
@@ -707,8 +704,9 @@ def _public_policy(allowed_identities) -> PublicPolicy:
 
 
 # 例示用に予約されたドメイン（RFC 2606 / 6761）。実在の人に届かないので本文に出てよい。
+# .local は外さない（git が自動で作る「名前@端末名.local」に端末名と個人名が出るため）。
 RESERVED_MAIL_DOMAIN_RE = re.compile(
-    r"(?:^|[.])(?:example(?:[.](?:com|net|org))?|invalid|test|localhost|local)$", re.I
+    r"(?:^|[.])(?:example(?:[.](?:com|net|org))?|invalid|test|localhost)$", re.I
 )
 # ssh の git 利用者（clone 手順のホスト名の前の git）。個人メールの形は別に見る。
 # 外すのは ssh の参照の形だけ：直後が「:」と経路の文字（scp の形）か、直前が ssh://。

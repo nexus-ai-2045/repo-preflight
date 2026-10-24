@@ -7,14 +7,17 @@ import pytest
 
 from test_review_3c import H, message, policy  # noqa: F401
 
+# 人の承認（15:29）は `.get(` と `href=` の中だけ。ほかの呼び出し・属性は止める（品質係の下見）。
 GREEN = {
     "express の get": f'app.get("/{H}/index", show)',
-    "router の post": f"router.post('/{H}/feed', save)",
+    "get とクエリ": f"router.get('/{H}/settings?tab=1')",
     "href の経路": f'<a href="/{H}/feed">',
-    "jsx の to": f'<Link to={{"/{H}/settings"}}>',
-    "push とクエリ": f"router.push('/{H}/settings?tab=1')",
+    "jsx の href": f'<Link href={{"/{H}/settings"}}>',
 }
 RED = {
+    "router の post は承認の外": f"router.post('/{H}/feed', save)",
+    "jsx の to は承認の外": f'<Link to={{"/{H}/settings"}}>',
+    "push は承認の外": f"router.push('/{H}/settings?tab=1')",
     "経路の下に続きがある実名": f'app.get("/{H}/alice/x")',
     "経路でない引用符の実名": f'path_name = "/{H}/alice"',
     "読み込みの実名": f'fs.readFile("/{H}/alice")',
