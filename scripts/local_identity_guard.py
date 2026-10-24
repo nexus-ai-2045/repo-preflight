@@ -272,7 +272,15 @@ def collect_identities(
         emails = _git_config("user.email", "--global") + _git_config(
             "user.email", "--system"
         )
-        sources["git_global_email"] = [p for e in emails for p in _email_parts(e)]
+        # Apply the existing public-email policy before deriving private aliases.
+        # Otherwise an allowed numeric noreply address creates its own localpart
+        # deny candidate and rejects the same registered public commit identity.
+        sources["git_global_email"] = [
+            part
+            for email in emails
+            if not allowed_email.fullmatch(email.strip())
+            for part in _email_parts(email)
+        ]
         hosts = [
             socket.gethostname(),
             _command_output(["scutil", "--get", "ComputerName"]),
