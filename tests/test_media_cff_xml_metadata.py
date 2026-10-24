@@ -225,3 +225,41 @@ def test_opentype_cff_string_index_metadata(private):
         cff_bytes(extra=DENIED if private else None, opentype=True), cff=True
     )
     assert scan(data, "pdf")["status"] == ("fail" if private else "pass")
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "siblings",
+        "parent_text",
+        "parent_tail",
+        "cdata",
+        "aggregate",
+        "nested_aggregate",
+    ],
+)
+def test_xml_username_value_boundaries_and_fragment_reconstruction(layout):
+    username = "ProtectedFixtureUser"
+    encoded = refs(username)
+    assert ENGINE.scan_private_text(username, [username])["status"] == "fail"
+    assert (
+        ENGINE.scan_private_text("prefix" + username + "suffix", [username])["status"]
+        == "pass"
+    )
+    documents = {
+        "siblings": f"<r><a>prefix</a><b>{encoded}</b><c>suffix</c></r>",
+        "parent_text": f"<r><a>prefix</a><p>{encoded}<empty/></p><c>suffix</c></r>",
+        "parent_tail": f"<r><a>prefix</a><p><empty/>{encoded}<empty/></p><c>suffix</c></r>",
+        "cdata": f"<r><a>prefix</a><b>{refs(username[:7])}<![CDATA[{username[7:]}]]></b><c>suffix</c></r>",
+        "aggregate": f"<r><a>{refs(username[:7])}</a><b>{refs(username[7:])}</b></r>",
+        "nested_aggregate": f"<r><a>prefix</a><b>{refs(username[:7])}<empty/>{refs(username[7:])}</b><c>suffix</c></r>",
+    }
+    data = compressed_pdf(documents[layout].encode())
+    assert username.encode() not in data
+    assert scan(data, "pdf", [username])["status"] == "fail"
+
+
+def test_xml_one_value_keeps_numeric_reference_fragments_together():
+    username = "ProtectedFixtureUser"
+    xml = f"<r><v>prefix{refs(username)}suffix</v></r>"
+    assert scan(compressed_pdf(xml.encode()), "pdf", [username])["status"] == "pass"

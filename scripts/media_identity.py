@@ -355,6 +355,8 @@ def _pdf_xml_metadata(data, output):
     deadline = time.monotonic() + DECODE_TIMEOUT
     depth = events = decoded_bytes = 0
     text = []
+    value_fragments = []
+    subtree_starts = []
 
     def tick():
         nonlocal events
@@ -367,9 +369,16 @@ def _pdf_xml_metadata(data, output):
     def refuse(*args):
         raise MediaError("unsupported_metadata")
 
+    def flush_value():
+        if value_fragments:
+            output.text("".join(value_fragments))
+            value_fragments.clear()
+
     def start(name, attributes):
         nonlocal depth
         tick()
+        flush_value()
+        subtree_starts.append(len(text))
         depth += 1
         if depth > 64:
             raise MediaError("object_limit")
@@ -382,6 +391,8 @@ def _pdf_xml_metadata(data, output):
     def end(name):
         nonlocal depth
         tick()
+        flush_value()
+        output.text("".join(text[subtree_starts.pop() :]))
         depth -= 1
 
     def characters(value):
@@ -391,6 +402,7 @@ def _pdf_xml_metadata(data, output):
         if decoded_bytes > TEXT_LIMIT:
             raise MediaError("text_limit")
         text.append(value)
+        value_fragments.append(value)
 
     def namespace(prefix, uri):
         tick()
@@ -405,12 +417,13 @@ def _pdf_xml_metadata(data, output):
     parser.StartElementHandler = start
     parser.EndElementHandler = end
     parser.CharacterDataHandler = characters
-    # Join callbacks so numeric references, CDATA and parser chunking cannot
-    # fragment a value before it reaches the existing identity/secret callback.
+    # Reconstruct each element text/tail value across entity/CDATA callbacks.
+    # Start/end events delimit values; subtree/whole aggregates are extra views.
     try:
         parser.Parse(data, True)
     except expat.ExpatError:
         raise MediaError("unsupported_metadata") from None
+    flush_value()
     output.text("".join(text))
 
 

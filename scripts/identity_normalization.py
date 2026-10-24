@@ -1201,12 +1201,12 @@ def scan_private_png(
         elif kind in (b"acTL", b"fcTL", b"fdAT"):
             # frame毎の復号を検証していないAPNGを、静止画の画素免除へ入れない。
             raise ValueError("private_identity_png_animation_unverified")
-        elif kind == b"iCCP" and metadata_observer is not None:
-            # Compressed ICC text is not inspected by the ancillary raw views.
-            # Do not certify full cover metadata without an adopted ICC decoder.
-            raise ValueError("private_identity_png_unverified")
         else:
             if not kind[0] & 32:
+                raise ValueError("private_identity_png_unverified")
+            if metadata_observer is not None:
+                # Only parsed text and validated core chunks have cover metadata
+                # semantics here. Raw ancillary views cannot certify structures.
                 raise ValueError("private_identity_png_unverified")
             # 未知の付加chunkは免除しない。既存の文字viewと正規化で調べる。
             for value in text_views(payload):
@@ -1258,7 +1258,6 @@ def scan_private_jpeg(
         raise ValueError("private_identity_jpeg_image_limit")
     hits = set()
     path_match = reconstructed = metadata_match = False
-    icc_seen = False
 
     def views(raw, metadata=False):
         values = {raw.decode("utf-8", errors="replace")}
@@ -1324,18 +1323,19 @@ def scan_private_jpeg(
         total += len(payload)
         if total > JPEG_METADATA_LIMIT:
             raise ValueError("private_identity_jpeg_text_limit")
-        if metadata_observer is not None:
-            if kind == 0xE1 and payload.lower().startswith(
-                (xmp_header, b"http://ns.adobe.com/xmp/extension/\x00")
-            ):
-                # Raw XML is insufficient for numeric/entity reference values.
-                raise ValueError("private_identity_jpeg_unverified")
-            if kind == 0xE2 and payload.startswith(b"ICC_PROFILE\x00"):
-                # Split ICC text can cross APP2 boundaries. Only the complete
-                # single-segment metadata reaches the existing raw text views.
-                if icc_seen or payload[12:14] != b"\x01\x01":
-                    raise ValueError("private_identity_jpeg_unverified")
-                icc_seen = True
+        if (
+            metadata_observer is not None
+            and 0xE0 <= kind <= 0xEF
+            and not (
+                kind == 0xE0
+                and payload.startswith(b"JFIF\0")
+                or kind == 0xEE
+                and payload.startswith(b"Adobe")
+            )
+        ):
+            # Only the already shape-validated JFIF/Adobe APP headers are
+            # supported here. ICC/Exif/XMP/other APP need semantic decoders.
+            raise ValueError("private_identity_jpeg_unverified")
         if kind == 0xE0 and payload.startswith(b"JFIF\0"):
             if (
                 len(payload) < 14

@@ -15,20 +15,32 @@ from test_png_identity import ENGINE, png, chunk
 SECRET = "ghp_" + "B" * 24
 
 
-def icc_profile(text):
+def icc_profile(text, multi_locale=False):
     from PIL import ImageCms
 
     profile = bytearray(
         ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
     )
-    value = text.encode("utf-16-be")
+    texts = (
+        [("jaJP", "prefix"), ("enUS", text), ("frFR", "suffix")]
+        if multi_locale
+        else [("enUS", text)]
+    )
+    records = []
+    values = b""
+    for locale, value in texts:
+        encoded = value.encode("utf-16-be")
+        records.append(
+            locale.encode()
+            + struct.pack(">II", len(encoded), 16 + 12 * len(texts) + len(values))
+        )
+        values += encoded
     tag = (
         b"mluc"
         + b"\0" * 4
-        + struct.pack(">II", 1, 12)
-        + b"enUS"
-        + struct.pack(">II", len(value), 28)
-        + value
+        + struct.pack(">II", len(texts), 12)
+        + b"".join(records)
+        + values
     )
     for index in range(struct.unpack_from(">I", profile, 128)[0]):
         entry = 132 + 12 * index
@@ -41,7 +53,8 @@ def icc_profile(text):
     else:
         raise AssertionError("synthetic sRGB profile has no copyright tag")
     # Existing ICC decoder verifies the fixture; production gets no ICC parser.
-    ImageCms.ImageCmsProfile(io.BytesIO(profile))
+    decoded = ImageCms.ImageCmsProfile(io.BytesIO(profile))
+    assert ImageCms.getProfileCopyright(decoded).strip() == text
     return bytes(profile)
 
 
@@ -58,11 +71,11 @@ def cover(kind, text):
             payload = b"ICC_PROFILE\0" + bytes((number, 2)) + part
             blocks.append(b"\xff\xe2" + struct.pack(">H", len(payload) + 2) + payload)
         return raw[:2] + b"".join(blocks) + raw[2:]
-    if kind in {"png-icc", "jpeg-icc"}:
+    if kind in {"png-icc", "jpeg-icc", "jpeg-icc-mluc"}:
         image.save(
             output,
             format="JPEG" if kind.startswith("jpeg") else "PNG",
-            icc_profile=icc_profile(text),
+            icc_profile=icc_profile(text, multi_locale=kind == "jpeg-icc-mluc"),
         )
         return output.getvalue()
     if kind.startswith("jpeg-xmp"):
@@ -129,7 +142,7 @@ def audio_with_cover(tmp_path, kind, text):
 
 
 @requires_decoder
-@pytest.mark.parametrize("kind", ["png-ztxt", "png-itxt", "jpeg", "jpeg-icc"])
+@pytest.mark.parametrize("kind", ["png-ztxt", "png-itxt", "jpeg"])
 def test_actual_cover_callback_counts_decoded_secrets(tmp_path, monkeypatch, kind):
     repo = setup_scan(tmp_path, monkeypatch)
     scanner = MODULE.PrivateIdentityScan(repo, True)
@@ -142,7 +155,7 @@ def test_actual_cover_callback_counts_decoded_secrets(tmp_path, monkeypatch, kin
 
 @requires_decoder
 @pytest.mark.parametrize("historical", [False, True])
-@pytest.mark.parametrize("kind", ["png-ztxt", "jpeg-icc"])
+@pytest.mark.parametrize("kind", ["png-ztxt", "jpeg"])
 def test_compressed_cover_secret_reaches_worktree_and_history(
     tmp_path, monkeypatch, historical, kind
 ):
@@ -162,7 +175,7 @@ def test_compressed_cover_secret_reaches_worktree_and_history(
 
 
 @requires_decoder
-@pytest.mark.parametrize("kind", ["png-ztxt", "png-itxt", "jpeg", "jpeg-icc"])
+@pytest.mark.parametrize("kind", ["png-ztxt", "png-itxt", "jpeg"])
 def test_cover_clean_and_private_identity_controls(tmp_path, monkeypatch, kind):
     repo = setup_scan(tmp_path, monkeypatch)
     scanner = MODULE.PrivateIdentityScan(repo, True)
@@ -220,7 +233,15 @@ def test_image_observer_failure_cannot_return_a_clean_pass(kind):
 
 @requires_decoder
 @pytest.mark.parametrize(
-    "kind", ["png-icc", "png-xmp", "jpeg-xmp", "jpeg-xmp-extended", "jpeg-icc-split"]
+    "kind",
+    [
+        "png-icc",
+        "png-xmp",
+        "jpeg-xmp",
+        "jpeg-xmp-extended",
+        "jpeg-icc-split",
+        "jpeg-icc",
+    ],
 )
 @pytest.mark.parametrize("text", ["Public metadata", SECRET])
 def test_unverified_icc_or_declared_xmp_cover_is_refused(
@@ -235,7 +256,7 @@ def test_unverified_icc_or_declared_xmp_cover_is_refused(
 
 
 @pytest.mark.parametrize(
-    "kind", ["png-icc", "png-xmp", "jpeg-xmp", "jpeg-xmp-extended"]
+    "kind", ["png-icc", "png-xmp", "jpeg-xmp", "jpeg-xmp-extended", "jpeg-icc"]
 )
 def test_unsupported_observer_metadata_preserves_two_argument_api(kind):
     candidate = cover(kind, SECRET)
@@ -286,3 +307,75 @@ def test_duplicate_single_segment_icc_is_not_certified():
         ENGINE.scan_private_jpeg(
             changed, [DENIED], metadata_observer=lambda value: None
         )
+
+
+@requires_decoder
+@pytest.mark.parametrize("protected", ["ProtectedFixtureUser", "sk-" + "A" * 24])
+def test_single_icc_multi_locale_logical_values_are_refused(
+    tmp_path, monkeypatch, protected
+):
+    repo = setup_scan(tmp_path, monkeypatch)
+    policy = tmp_path / "policy.txt"
+    policy.write_text("ProtectedFixtureUser\n")
+    candidate = audio_with_cover(tmp_path, "jpeg-icc-mluc", protected)
+    assert protected.encode() not in candidate
+    scanner = MODULE.PrivateIdentityScan(repo, True)
+    scanner.check(candidate, source_names=("audio.mp3",))
+    assert scanner.report["status"] == "tool_error"
+
+
+@pytest.mark.parametrize(
+    "kind,payload",
+    [
+        (b"eXIf", b"II*\0public fixture"),
+        (b"caBX", b"public structured fixture"),
+        (b"pHYs", struct.pack(">IIB", 1000, 1000, 1)),
+        (b"gAMA", struct.pack(">I", 45455)),
+    ],
+)
+def test_png_unparsed_ancillary_is_not_certified(kind, payload):
+    candidate = png(metadata=chunk(kind, payload))
+    assert ENGINE.scan_private_png(candidate, [DENIED])["status"] == "pass"
+    with pytest.raises(ValueError, match="private_identity_png_unverified"):
+        ENGINE.scan_private_png(
+            candidate, [DENIED], metadata_observer=lambda value: None
+        )
+
+
+@pytest.mark.parametrize(
+    "kind,payload",
+    [
+        (0xE1, b"Exif\0\0II*\0public fixture"),
+        (0xED, b"Photoshop 3.0\0public fixture"),
+        (0xE3, b"public unknown APP fixture"),
+        (0xE0, b"JFXX\0public unparsed thumbnail"),
+    ],
+)
+def test_jpeg_unparsed_app_is_not_certified(kind, payload):
+    raw = cover("jpeg", "Public metadata")
+    candidate = (
+        raw[:2]
+        + bytes((255, kind))
+        + struct.pack(">H", len(payload) + 2)
+        + payload
+        + raw[2:]
+    )
+    assert ENGINE.scan_private_jpeg(candidate, [DENIED])["status"] == "pass"
+    with pytest.raises(ValueError, match="private_identity_jpeg_unverified"):
+        ENGINE.scan_private_jpeg(
+            candidate, [DENIED], metadata_observer=lambda value: None
+        )
+
+
+def test_existing_validated_adobe_and_jfif_headers_remain_supported():
+    raw = cover("jpeg", "Public metadata")
+    payload = b"Adobe" + b"\0" * 7
+    candidate = (
+        raw[:2] + b"\xff\xee" + struct.pack(">H", len(payload) + 2) + payload + raw[2:]
+    )
+    observed = []
+    result = ENGINE.scan_private_jpeg(
+        candidate, [DENIED], metadata_observer=observed.append
+    )
+    assert result["status"] == "pass" and result["metadata_observer_complete"] is True
+    assert any("Public metadata" in value for value in observed)
