@@ -3,6 +3,7 @@
 (a) .local のメール（git が自動で作る「名前@端末名.local」）
 (b) HTTP の動詞（GET・POST など）の直後のホーム
 (c) path=・url=・to=・redirect= などの後に引用符で来るホーム
+(d) 数字+x で始まるドメインと Punycode の末尾のメール（画像の倍率の除外が広すぎた分）
 
 値はすべて仮の値で、実行時に組み立てる。IDENTITY_GATE_SCRIPT で直す前の版に差し替えると、RED が落ちる。
 """
@@ -32,12 +33,16 @@ RED = {
     "action= の引用符": f'action="/{H}/alice"',
     "route: の引用符": f'route: "/{H}/alice"',
     "url: の JSX": f'url={{"/{H}/alice"}}',
+    # (d)
+    "数字+x で始まるドメイン": "fixture" + AT + "2x.company.com",
+    "Punycode の末尾": "fixture" + AT + "company.xn--p1ai",
 }
 GREEN = {
     "承認どおり .get( の中": f'app.get("/{H}/index", show)',
     "承認どおり href= の中": f'<a href="/{H}/feed">',
     "例示の localhost は外したまま": "user" + AT + "localhost",
     "例示の .test は外したまま": "alice" + AT + "example.test",
+    "画像の倍率は外したまま": "icon" + AT + "3x.webp",
 }
 
 
