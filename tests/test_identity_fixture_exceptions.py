@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -151,18 +152,123 @@ def test_exception_list_rejects_folders_wildcards_and_bad_lines(line):
         g.parse_fixture_exceptions(line + "\n")
 
 
+OTHER_REPO_REASON = re.compile(r"^他リポ [a-z0-9][a-z0-9-]* の\S")
+OTHER_REPO_EXTENSIONS = {"png", "jpg", "svg", "xmind", "ipynb"}
+
+
+def _bundled_lines() -> list[tuple[str, str, str]]:
+    text = g.FIXTURE_EXCEPTIONS_FILE.read_text(encoding="utf-8")
+    out = []
+    for line in text.split("\n"):
+        if not line.strip() or line.startswith("#"):
+            continue
+        m = g._EXCEPTION_LINE_RE.match(line)
+        assert m, "一覧の形が違う行がある"
+        out.append((m.group("path"), m.group("sha"), m.group("reason")))
+    return out
+
+
 def test_bundled_exception_list_matches_current_files_one_per_line():
-    """同梱の一覧は1行1ファイルで理由つき、書いたハッシュが今のファイルの中身と一致する。"""
+    """同梱の一覧は1行1ファイルで理由つき。
+
+    このリポのファイルは、書いたハッシュが今の中身と一致する。
+    このリポに無いファイルは、理由の頭に「他リポ <リポ名> の」を書いた画像・図・雛形・ノートだけ。
+    """
     text = g.FIXTURE_EXCEPTIONS_FILE.read_text(encoding="utf-8")
     entries = g.parse_fixture_exceptions(text)
     assert entries
-    for path, sha in entries.items():
-        assert (ROOT / path).is_file(), path
-        # 索引の中身（改行の変換前）で比べる。検査もコミットの中身で比べる
-        blob = subprocess.run(
-            ["git", "-C", str(ROOT), "cat-file", "blob", f":{path}"],
-            check=True,
-            capture_output=True,
-        ).stdout
-        assert hashlib.sha256(blob).hexdigest() == sha, path
+    lines = _bundled_lines()
+    assert len(lines) == len(entries)
+    for path, sha, reason in lines:
+        if not OTHER_REPO_REASON.match(reason):
+            assert (ROOT / path).is_file(), path
+            # 索引の中身（改行の変換前）で比べる。検査もコミットの中身で比べる
+            blob = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "blob", f":{path}"],
+                check=True,
+                capture_output=True,
+            ).stdout
+            assert hashlib.sha256(blob).hexdigest() == sha, path
+            continue
+        assert not (ROOT / path).exists(), path
+        assert path.rsplit(".", 1)[-1] in OTHER_REPO_EXTENSIONS, path
+        assert "人承認済み（2026-10-24 " in reason, path
     assert "tests/test_identity_fixture_exceptions.py" not in entries
+
+
+def _commit_bytes(repo: Path, path: str, blob: bytes) -> None:
+    target = repo / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(blob)
+    _git(repo, "add", path)
+    _git(repo, "commit", "-q", "-m", "変更")
+
+
+# XMind は zip。拡張子の一覧には無いが、git が中身を読めない形として数える
+XMIND_BLOB = b"PK\x03\x04\x14\x00\x00\x00content.xml\x00\x00fixture"
+
+
+def test_xmind_is_stopped_as_unreadable_without_exception(tmp_path):
+    repo = _repo(tmp_path)
+    _commit_bytes(repo, "templates/t.xmind", XMIND_BLOB)
+    issues = g.check_public_range(policy(), str(repo), "HEAD", diffs=True)
+    assert any(g.NEW_BINARY_KIND in i for i in issues)
+
+
+def test_xmind_exception_works_only_for_that_sha_and_path(tmp_path):
+    ok = {"templates/t.xmind": hashlib.sha256(XMIND_BLOB).hexdigest()}
+    repo = _repo(tmp_path)
+    _commit_bytes(repo, "templates/t.xmind", XMIND_BLOB)
+    assert (
+        g.check_public_range(policy(), str(repo), "HEAD", diffs=True, exceptions=ok)
+        == []
+    )
+    # 中身が1バイトでも変われば、また止まる
+    _commit_bytes(repo, "templates/t.xmind", XMIND_BLOB + b"\x00")
+    issues = g.check_public_range(
+        policy(), str(repo), "HEAD~1..HEAD", diffs=True, exceptions=ok
+    )
+    assert any(g.NEW_BINARY_KIND in i for i in issues)
+    # 同じ中身でも、別のパスには効かない
+    _commit_bytes(repo, "templates/other.xmind", XMIND_BLOB)
+    issues = g.check_public_range(
+        policy(), str(repo), "HEAD~1..HEAD", diffs=True, exceptions=ok
+    )
+    assert any(g.NEW_BINARY_KIND in i for i in issues)
+
+
+def test_notebook_exception_works_only_for_that_sha(tmp_path):
+    blob = json.dumps({"cells": [], "nbformat": 4}).encode("utf-8")
+    ok = {"notebooks/n.ipynb": hashlib.sha256(blob).hexdigest()}
+    repo = _repo(tmp_path)
+    _commit_bytes(repo, "notebooks/n.ipynb", blob)
+    assert any(
+        g.NEW_BINARY_KIND in i
+        for i in g.check_public_range(policy(), str(repo), "HEAD", diffs=True)
+    )
+    assert (
+        g.check_public_range(policy(), str(repo), "HEAD", diffs=True, exceptions=ok)
+        == []
+    )
+    _commit_bytes(repo, "notebooks/n.ipynb", blob + b"\n")
+    issues = g.check_public_range(
+        policy(), str(repo), "HEAD~1..HEAD", diffs=True, exceptions=ok
+    )
+    assert any(g.NEW_BINARY_KIND in i for i in issues)
+
+
+def test_svg_text_is_still_read_when_content_changes(tmp_path):
+    """SVG は文字として読む。例外の中身から変われば、足した行の形をまた見る。"""
+    svg = "<svg><text>図</text></svg>\n"
+    ok = {"assets/a.svg": _sha(svg)}
+    repo = _repo(tmp_path)
+    _commit(repo, {"assets/a.svg": svg})
+    assert (
+        g.check_public_range(policy(), str(repo), "HEAD", diffs=True, exceptions=ok)
+        == []
+    )
+    _commit(repo, {"assets/a.svg": svg + f"<!-- {FAKE_HOME} -->\n"})
+    issues = g.check_public_range(
+        policy(), str(repo), "HEAD~1..HEAD", diffs=True, exceptions=ok
+    )
+    assert any("差分に実ホームパスの形" in i for i in issues)

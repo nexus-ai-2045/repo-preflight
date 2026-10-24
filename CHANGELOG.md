@@ -5,6 +5,7 @@
 - CI を全 OS で緑にした。CI の全ジョブで、`references/gitleaks-pins.json` の gitleaks を配布物と本体の両方の SHA-256 を確かめて入れる（`scripts/install_pinned_gitleaks.py`）。Windows では `ai_command_guard.py` の stderr を UTF-8 に固定し、試験の偽 gitleaks を `.cmd` にし、WSL の入口ではなく動く bash を使う。
 - Dependabot の PR が止まらないようにした。`readiness_scan` の名義検査を役割ごとの完全一致にし（`committer_only` は記録者だけ）、自前の workflow を Action 参照の読み取り器で読める block 形式にした。ci.yml の規則に `allow_github_action_ref_updates` を足した。pip の更新は path 依存だけの `requirements-tools.txt` を `exclude-paths` で外した。
 - base-guard（`scripts/base_guard.py`）は、repo-preflight 本体（`--self-repository` が `nexus-ai-2045/repo-preflight`）に限って、`./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼ぶ自己検査の定義を通す。ほかの repo と、ほかの形はこれまでどおり赤。
+- 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポの画像・図・雛形・ノートを25件足した（画像20件・SVG 3件・XMind 1件は人承認 2026-10-24 16:14・品質係の目視 OK 16:16、清掃済みの版。ノート1件は人承認 2026-10-24 16:19）。どれも SHA256 で固定し、そのパスでその中身のときだけ外す。このリポに無いファイルの行は、理由の頭に「他リポ <リポ名> の」を書く決まりにし、試験で確かめる。XMind・ノートが例外なしでは止まり、中身が変われば、また止まることも試験に足した。
 
 ## 0.10.0 - 2026-10-24
 
