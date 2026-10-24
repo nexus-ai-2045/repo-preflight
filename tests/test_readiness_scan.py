@@ -4086,14 +4086,22 @@ def test_large_caff_history_requires_prior_exact_body_verification(
     assert checked.result()["status"] == "pass"
 
 
-def test_cached_caff_body_keeps_large_history_verification(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cache_enabled", [True, False])
+def test_cached_caff_body_keeps_large_history_verification(
+    tmp_path, monkeypatch, cache_enabled
+):
     from test_caff_identity import archive
 
     monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 10000)
+    if not cache_enabled:
+        monkeypatch.setenv(MODULE.IDENTITY_SCAN_CACHE_ENV, "0")
     repo = make_repo(tmp_path)
     add_model(repo, archive(xml=b"<r>" + b" " * 20000 + b"</r>", compression=16))
     first = MODULE.scan(repo)["checks"]["private_identity_scan"]
     second = MODULE.scan(repo)["checks"]["private_identity_scan"]
     assert first["status"] == second["status"] == "pass"
     assert second["verified_large_caff_objects_read"] == 1
-    assert second["worktree_files_cache_reused"] > 0
+    if os.name == "posix" and cache_enabled:
+        assert second["worktree_files_cache_reused"] > 0
+    else:
+        assert second["worktree_files_cache_reused"] == 0
