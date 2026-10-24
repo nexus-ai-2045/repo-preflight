@@ -9,6 +9,8 @@
 - YAML として読めない定義（重複キー・アンカー・別名・タグも読めない扱い）。「導入前」にはしない
 - preflight-gate を呼ぶ job の `uses` が `nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml`
   と完全一致しない（大文字小文字は区別しない）。別の owner・別名のリポ・手元の写しも赤
+  （例外は repo-preflight 本体だけ: `--self-repository` が本体のときに限り、自分の
+  `./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼ぶ定義を通す）
 - `uses` の @ か `preflight-ref` が 40桁の commit SHA でない、欠けている、二つが違う
 - 比較元に呼び出しが無い（`--allow-absent` のときだけ導入前として見送る）
 - PR 側で呼び出しが消えた
@@ -30,6 +32,10 @@ from pathlib import Path
 SCHEMA = "repo-preflight.base-guard/v2"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 EXPECTED_TARGET = "nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml"
+# repo-preflight 本体は PR の版の gate で自分を検査する。本体の中だけ、この形を写しではなく本物として扱う。
+SELF_REPOSITORY = "nexus-ai-2045/repo-preflight"
+SELF_TARGET = "./.github/workflows/preflight-gate.yml"
+SELF_PREFLIGHT_REF = "${{ github.sha }}"
 PROTECTED_PATHS = (
     Path(__file__).resolve().parent.parent / "references" / "protected-paths.json"
 )
@@ -101,8 +107,17 @@ def _mentions_gate(uses: str) -> bool:
     return "repo-preflight" in lowered or "preflight-gate" in lowered
 
 
-def find_callers(data: dict) -> tuple[list[dict], list[dict]]:
-    """jobs の中から preflight-gate を呼ぶ job を返す。(呼び出し, 赤の種類) の組。"""
+def is_self_repository(name: str | None) -> bool:
+    return (name or "").strip().casefold() == SELF_REPOSITORY.casefold()
+
+
+def find_callers(data: dict, self_repo: bool = False) -> tuple[list[dict], list[dict]]:
+    """jobs の中から preflight-gate を呼ぶ job を返す。(呼び出し, 赤の種類) の組。
+
+    self_repo は検査する repo が repo-preflight 本体のときだけ True。そのときに限り、
+    `uses` が SELF_TARGET と完全一致（@ なし）し、`preflight-ref` が SELF_PREFLIGHT_REF と
+    完全一致する job を本体の自己検査として通す。それ以外の形は従来どおり赤。
+    """
     jobs = data.get("jobs")
     callers: list[dict] = []
     findings: list[dict] = []
@@ -121,6 +136,21 @@ def find_callers(data: dict) -> tuple[list[dict], list[dict]]:
         if not _mentions_gate(uses):
             continue
         target, _, ref = uses.strip().partition("@")
+        if self_repo and uses == SELF_TARGET:
+            with_ = job.get("with")
+            if (
+                isinstance(with_, dict)
+                and with_.get("preflight-ref") == SELF_PREFLIGHT_REF
+            ):
+                callers.append(
+                    {
+                        "job": str(job_id),
+                        "uses_ref": "",
+                        "preflight_ref": None,
+                        "self": True,
+                    }
+                )
+                continue
         if target.casefold() != EXPECTED_TARGET.casefold():
             findings.append({"kind": "foreign_caller", "job": str(job_id)})
             continue
@@ -135,6 +165,8 @@ def find_callers(data: dict) -> tuple[list[dict], list[dict]]:
 
 
 def check_caller(caller: dict) -> list[str]:
+    if caller.get("self"):
+        return []
     uses_ref = caller["uses_ref"]
     preflight_ref = caller["preflight_ref"]
     found: list[str] = []
@@ -191,14 +223,16 @@ def read_workflows(repo: Path, commit: str) -> dict[str, str | None]:
     return files
 
 
-def evaluate_definitions(files: dict[str, str | None]) -> tuple[int, list[dict]]:
+def evaluate_definitions(
+    files: dict[str, str | None], self_repo: bool = False
+) -> tuple[int, list[dict]]:
     findings: list[dict] = []
     total = 0
     for path, text in sorted(files.items()):
         try:
             if text is None:
                 raise ValueError("unreadable")
-            callers, foreign = find_callers(load_yaml(text))
+            callers, foreign = find_callers(load_yaml(text), self_repo)
         except ValueError:
             findings.append({"kind": "unreadable", "file": path, "job": ""})
             continue
@@ -267,9 +301,11 @@ def evaluate(
     head_ref: str | None = None,
     allow_absent: bool = False,
     trusted_tool: Path | None = None,
+    self_repository: str | None = None,
 ) -> dict:
+    self_repo = is_self_repository(self_repository)
     base = resolve(repo, base_ref)
-    base_total, findings = evaluate_definitions(read_workflows(repo, base))
+    base_total, findings = evaluate_definitions(read_workflows(repo, base), self_repo)
     for item in findings:
         item["side"] = "base"
     unreadable = any(f["kind"] == "unreadable" for f in findings)
@@ -277,7 +313,9 @@ def evaluate(
         findings.append({"kind": "no_caller", "file": "", "job": "", "side": "base"})
     if head_ref is not None:
         head = resolve(repo, head_ref)
-        head_total, head_findings = evaluate_definitions(read_workflows(repo, head))
+        head_total, head_findings = evaluate_definitions(
+            read_workflows(repo, head), self_repo
+        )
         for item in head_findings:
             item["side"] = "head"
         findings += head_findings
@@ -351,6 +389,10 @@ def main(argv: list[str] | None = None) -> int:
         "--trusted-tool",
         help="repo-preflight 本体の clone（全履歴とタグ）。PR 側の SHA が版のタグから辿れるかを見る",
     )
+    parser.add_argument(
+        "--self-repository",
+        help="検査する repo の owner/名前（CI の github.repository）。repo-preflight 本体のときだけ自己検査の呼び出しを通す",
+    )
     parser.add_argument("--json", action="store_true", help="結果を JSON で出す")
     args = parser.parse_args(argv)
     try:
@@ -360,6 +402,7 @@ def main(argv: list[str] | None = None) -> int:
             args.head_ref,
             args.allow_absent,
             Path(args.trusted_tool) if args.trusted_tool else None,
+            args.self_repository,
         )
     except GuardError as exc:
         reason = (

@@ -162,4 +162,7 @@ jobs:
       # これは補助。必須チェックは pull_request_target の別ワークフロー（templates/github-actions/preflight-guard.yml）。
       - name: Check base workflow pins
         if: ${{ !(github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000') }}
-        run: python tool/scripts/base_guard.py --repo target --base-ref refs/remotes/origin/preflight-event-base --allow-absent
+        # repo-preflight 本体だけは PR の版の gate を ./ で呼ぶ。その形を本体の中でだけ通すため、repo 名を渡す。
+        env:
+          SELF_REPOSITORY: ${{ github.repository }}
+        run: python tool/scripts/base_guard.py --repo target --base-ref refs/remotes/origin/preflight-event-base --allow-absent --self-repository "$SELF_REPOSITORY"

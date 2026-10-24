@@ -192,3 +192,88 @@ def test_reusable_workflow_runs_base_guard_on_event_base():
     )
     step = text.split("name: Check base workflow pins", 1)[1].split("- name:", 1)[0]
     assert "github.event.before" in step  # 初回 push だけ見送る
+
+
+# --- repo-preflight 本体の自己検査（./ で PR の版の gate を呼ぶ形） ---
+
+SELF_REPO = "nexus-ai-2045/repo-preflight"
+
+
+def self_caller(uses="./.github/workflows/preflight-gate.yml", ref="${{ github.sha }}"):
+    return (
+        "name: self\n"
+        "on: [pull_request]\n"
+        "jobs:\n"
+        "  preflight:\n"
+        f"    uses: {uses}\n"
+        "    with:\n"
+        f"      preflight-ref: {ref}\n"
+        "      baseline: .repo-preflight/ratchet-baseline.json\n"
+    )
+
+
+def test_self_caller_passes_only_in_repo_preflight_itself(repo):
+    base = _commit(repo, {".github/workflows/rp.yml": self_caller()}, "base")
+    result = run(repo, base, "--self-repository", SELF_REPO)
+    assert result.returncode == 0, result.stderr
+    assert "1 件" in result.stdout
+
+
+def test_self_repository_match_ignores_case(repo):
+    base = _commit(repo, {".github/workflows/rp.yml": self_caller()}, "base")
+    assert run(repo, base, "--self-repository", SELF_REPO.upper()).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        None,
+        "someone/repo-preflight",
+        "nexus-ai-2045/repo-preflight-fork",
+        "nexus-ai-2045/other",
+    ],
+)
+def test_self_caller_is_foreign_outside_repo_preflight(repo, name):
+    base = _commit(repo, {".github/workflows/rp.yml": self_caller()}, "base")
+    extra = () if name is None else ("--self-repository", name)
+    result = run(repo, base, *extra)
+    assert result.returncode == 1
+    assert "完全一致しない" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "uses,ref",
+    [
+        ("./.github/workflows/preflight-gate.yml", "main"),
+        ("./.github/workflows/preflight-gate.yml", "a" * 40),
+        ("./.github/workflows/preflight-gate.yml@main", "${{ github.sha }}"),
+        ("./.github/workflows/Preflight-Gate.yml", "${{ github.sha }}"),
+        ("./.github/workflows/other/preflight-gate.yml", "${{ github.sha }}"),
+    ],
+)
+def test_self_caller_other_shapes_still_blocked_in_repo_preflight(repo, uses, ref):
+    base = _commit(repo, {".github/workflows/rp.yml": self_caller(uses, ref)}, "base")
+    result = run(repo, base, "--self-repository", SELF_REPO)
+    assert result.returncode == 1, result.stdout
+
+
+def test_self_repository_does_not_relax_pinned_callers(repo):
+    base = _commit(repo, {".github/workflows/ci.yml": caller(A, B)}, "base")
+    result = run(repo, base, "--self-repository", SELF_REPO)
+    assert result.returncode == 1
+    assert "違う SHA" in result.stderr
+
+
+def test_repo_preflight_own_caller_passes_base_guard():
+    if subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True
+    ).returncode:
+        pytest.skip("git の作業木ではない")
+    result = run(ROOT, "HEAD", "--allow-absent", "--self-repository", SELF_REPO)
+    assert result.returncode == 0, result.stderr
+
+
+def test_reusable_workflow_passes_github_repository_to_base_guard():
+    text = (ROOT / ".github/workflows/preflight-gate.yml").read_text(encoding="utf-8")
+    assert "SELF_REPOSITORY: ${{ github.repository }}" in text
+    assert '--self-repository "$SELF_REPOSITORY"' in text
