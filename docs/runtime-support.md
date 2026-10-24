@@ -287,3 +287,6 @@ CAFF v0.0.0 / format `----` のファイル表と各ファイル固有のXORキ�
 入力128MiB、展開したentryの合計256MiB、main_xml 64MiB、entry 1万件、XML要素10万件が上限です。XMLはUTF-8のみで、DTD・外部entityを読みません。補助デコーダのSHA-256を検査キャッシュ鍵へ含めます。埋込み画像の再検査の控えも検査方針へ束縛します。旧来のCMO3パス検査も同じ読取りを再利用します。
 
 形式を確認した一次実装は [stretchystudioのCAFF読み取り](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/cmo3_decrypt.py) と [書き込み](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/caff_packer.py) です。独自のZIP圧縮器や暗号処理を作り直さず、標準のZIP・zlib・CRCを再利用します。`rewrite_main_xml` は全entryの再読取りを行い、XML以外の内容がbyte単位で同じことを確認してから結果を返します。本人情報の削除を自動で承認する機能ではありません。
+
+
+Git履歴の通常batch予算16,000,000 byteは維持します。現在の作業treeで同一byteをCAFFデコーダの上限内で完全に形式検査したblobだけ、SHA-1/SHA-256のGit object IDへ証拠を束縛し、予算超過分を単独batchで読み直します。読み直した本文のOID・private/secret/path検査は省略しません。同じデコーダ・方針hashのclean cacheも同一byteの証拠を引き継ぎます。未検証の大容量objectや、現在treeにない過去の大容量blobは従来どおりunknownです。

@@ -708,6 +708,7 @@ class PrivateIdentityScan:
         self.findings = 0
         self.objects = 0
         self.skipped = 0
+        self._verified_caff_blobs = set()
         self.report = {"status": "not_configured", "required": required}
         self.checker = None
         self.path_normalizer = None
@@ -983,10 +984,30 @@ class PrivateIdentityScan:
             self.report.update(status="tool_error", reason=reason)
             self.checker = None
             return
+        if (
+            not repository_name
+            and data.startswith(b"CAFF")
+            and callable(getattr(self, "caff_checker", None))
+        ):
+            self._remember_verified_caff(data)
         self.objects += 1
         self.findings += int(found)
         if not found and not reviewed_raw_paths:
             self.last_clean_pass_digests = tuple(sorted(seen_normalizer_digests))
+
+    def _remember_verified_caff(self, data: bytes):
+        """形式検査済みの同一byteをGit blob IDへ束縛する。"""
+        if (
+            not callable(getattr(self, "caff_checker", None))
+            or data[:14] != b"CAFF\0\0\0----\0\0\0"
+        ):
+            return
+        header = f"blob {len(data)}\0".encode("ascii")
+        for algorithm in ("sha1", "sha256"):
+            digest = hashlib.new(algorithm, usedforsecurity=False)
+            digest.update(header)
+            digest.update(data)
+            self._verified_caff_blobs.add(digest.hexdigest())
 
     def reuse_clean_pass(self, normalizer_digests: tuple[str, ...]) -> bool:
         """控えた合格を、本文検査と同じ数え方・正規化器の一致確認で反映する。"""
@@ -1342,8 +1363,8 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
         raise RuntimeError("git_worktree_inventory_failed") from exc
 
 
-# 履歴objectの読取上限は、直下のbatch読取予算と同一の既存値。別の上限は持たない。
-# この予算以内は本文を読み、超過だけを未検査として残す。
+# 通常objectのbatch予算。超過は原則として未検査に残す。
+# 同じbyteを既にCAFF形式の上限内で検証したblobだけ、単独batchで読み直す。
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
 
 
@@ -1359,6 +1380,7 @@ def history_hits(
             "\n".join(revisions).encode("ascii")
         ).hexdigest()
         private_identity.report["replacement_objects_disabled"] = True
+        private_identity.report["verified_large_caff_objects_read"] = 0
     objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *revisions],
         cwd=repo,
@@ -1413,7 +1435,14 @@ def history_hits(
             if size <= _HISTORY_BATCH_BUDGET_BYTES:
                 eligible.append((object_id, name, size, fields[1]))
             elif private_identity is not None:
-                private_identity.skipped += 1
+                if (
+                    fields[1] == "blob"
+                    and object_id in private_identity._verified_caff_blobs
+                ):
+                    eligible.append((object_id, name, size, fields[1]))
+                    private_identity.report["verified_large_caff_objects_read"] += 1
+                else:
+                    private_identity.skipped += 1
     aliases: dict[str, set[str]] = {}
     if reviewed_exceptions is not None:
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
@@ -2488,6 +2517,8 @@ def scan(
                 content_sha256 = hashlib.sha256(data).hexdigest()
                 cached = identity_cache.lookup(content_sha256)
                 if cached is not None and private_identity.reuse_clean_pass(cached):
+                    # 同じhash・デコーダ・方針を確認した控えから形式証拠も引き継ぐ。
+                    private_identity._remember_verified_caff(data)
                     private_worktree_scanned_count += 1
                     private_worktree_cache_reused += 1
                     continue

@@ -4062,3 +4062,38 @@ def test_bundled_scanner_preserves_source_role_and_private_rejections(
     scanner = MODULE.PrivateIdentityScan(repo, True)
     scanner.check(source.encode())
     assert scanner.result()["status"] == ("pass" if kind == "template" else "fail")
+
+
+def test_large_caff_history_requires_prior_exact_body_verification(
+    tmp_path, monkeypatch
+):
+    from test_caff_identity import archive
+
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 10000)
+    repo = make_repo(tmp_path)
+    data = archive(xml=b"<r>" + b" " * 20000 + b"</r>", compression=16)
+    add_model(repo, data)
+    unchecked = MODULE.PrivateIdentityScan(repo, True)
+    MODULE.history_hits(repo, ("HEAD",), private_identity=unchecked)
+    assert unchecked.result()["oversize_objects_unscanned"] == 1
+    assert unchecked.result()["status"] == "unknown"
+    checked = MODULE.PrivateIdentityScan(repo, True)
+    checked.check(data)
+    assert checked.result()["status"] == "pass"
+    MODULE.history_hits(repo, ("HEAD",), private_identity=checked)
+    assert checked.result()["oversize_objects_unscanned"] == 0
+    assert checked.result()["verified_large_caff_objects_read"] == 1
+    assert checked.result()["status"] == "pass"
+
+
+def test_cached_caff_body_keeps_large_history_verification(tmp_path, monkeypatch):
+    from test_caff_identity import archive
+
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 10000)
+    repo = make_repo(tmp_path)
+    add_model(repo, archive(xml=b"<r>" + b" " * 20000 + b"</r>", compression=16))
+    first = MODULE.scan(repo)["checks"]["private_identity_scan"]
+    second = MODULE.scan(repo)["checks"]["private_identity_scan"]
+    assert first["status"] == second["status"] == "pass"
+    assert second["verified_large_caff_objects_read"] == 1
+    assert second["worktree_files_cache_reused"] > 0
