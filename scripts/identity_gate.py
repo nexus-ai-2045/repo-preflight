@@ -268,6 +268,16 @@ EXTRA_PATH_RES = (
 # HTTP の動詞の直後（GET のすぐ後ろの feed などの経路）は実ホームとして見ない。
 _PLACEHOLDER_USER_START = ("<", "$", "{", ":")
 _HTTP_VERB_BEFORE = re.compile(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[ \t]+$")
+# Web の経路（2026-10-24 15:29 人承認）: 経路を書く呼び出し・属性の引用符の中で、/home/ のあとに
+# 経路の名前が1つだけ続いて引用符が閉じる形（app.get の中の index の経路など）は実ホームとして見ない。
+# /home/ の下に続きがある形と、経路の文脈でない引用符の中は止めたまま。ubuntu も止めたまま。
+_ROUTE_BEFORE = re.compile(
+    r"(?:[.](?:get|post|put|patch|delete|all|use|route|navigate|push|redirect)\s*\(\s*"
+    r"|\b(?:href|to|path|route|redirect|url|action)\s*[=:]\s*\{?\s*)[\"'`]$",
+    re.I,
+)
+_ROUTE_HOME_RE = re.compile(r"/ho" r"me/(?P<name>[a-z0-9_-]+)[\"'`?#]")
+_ROUTE_NEVER = frozenset({"ubuntu"})
 
 
 def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
@@ -278,7 +288,21 @@ def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
         or user.startswith(_PLACEHOLDER_USER_START)
     ):
         return True
-    return _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]) is not None
+    if _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]):
+        return True
+    return _web_route(candidate, start)
+
+
+def _web_route(candidate: str, start: int) -> bool:
+    slash = candidate.find("/", start)
+    if slash < 0 or slash - start > 1:
+        return False
+    route = _ROUTE_HOME_RE.match(candidate, slash)
+    return (
+        route is not None
+        and route.group("name") not in _ROUTE_NEVER
+        and _ROUTE_BEFORE.search(candidate[max(0, slash - 40) : slash]) is not None
+    )
 
 
 def shape_findings(text: str, allow_home_users=DEFAULT_ALLOWED_HOME_USERS) -> list[str]:
