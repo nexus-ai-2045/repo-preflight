@@ -188,8 +188,11 @@ jobs:
           import subprocess
           import sys
 
-          PREFIXES = (b"version https://git-lfs.github.com/spec/", b"version https://hawser.github.com/spec/")
+          PREFIXES = ("version https://git-lfs.github.com/spec/", "version https://hawser.github.com/spec/")
           MAX_POINTER = 1024
+          # git-lfs は前後の空白を落としてから読む（Go の bytes.TrimSpace）。先頭に空白・タブ・改行があっても
+          # 中身を展開するので、同じ空白（Go の unicode.IsSpace と同じ集合）を落としてから形を見る。
+          SPACES = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
           repo = sys.argv[1]
 
 
@@ -224,7 +227,8 @@ jobs:
                   size = int(header[2])
                   body = out[end + 1 : end + 1 + size]
                   pos = end + 1 + size + 1
-                  if body.startswith(PREFIXES) and b"\noid sha256:" in body:
+                  text = body.decode("utf-8", "replace").lstrip(SPACES)
+                  if text.startswith(PREFIXES) and "\noid sha256:" in text:
                       count += 1
           print(count)
           PY

@@ -704,6 +704,77 @@ def test_lfs_pointer_added_then_removed_is_red_without_name_and_rest_is_scanned(
 
 
 @needs_tools
+@pytest.mark.parametrize(
+    ("prefix", "kind"),
+    [
+        (" ", "none"),
+        ("\t", "none"),
+        ("\n", "none"),
+        (" \t\r\n", "none"),
+        ("\u3000", "none"),
+        (" \t", "git-lfs"),
+    ],
+    ids=["space", "tab", "newline", "mixed", "ideographic-space", "tab-git-lfs"],
+)
+def test_lfs_pointer_with_leading_whitespace_added_then_removed_is_red(
+    tmp_path, origin, prefix, kind
+):
+    """先頭に空白・タブ・改行が付いたポインタ。git-lfs は前後の空白を落として展開するので、検査も数える。
+
+    足してから消した枝で、履歴にだけ残る形。件数だけ赤で、名前・ハッシュは出さない。"""
+    if kind == "git-lfs" and shutil.which("git-lfs") is None:
+        pytest.skip("git-lfs が無い（ubuntu-latest には入っている）")
+    secret = add_secret_branch(origin)
+    git(origin, "checkout", "-q", "-b", f"{PERSONAL}/lfs-indented", "main")
+    (origin / ".gitattributes").write_text(
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8"
+    )
+    added = commit_file(origin, f"{PERSONAL}-indented.bin", prefix + LFS_POINTER)
+    git(origin, "rm", "-q", f"{PERSONAL}-indented.bin")
+    git(origin, "commit", "-qm", "remove pointer")
+    removed = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-q", "main")
+    extra_env = lfs_config(tmp_path, kind) if kind != "none" else None
+    result = run_scan(tmp_path, origin, extra_env=extra_env)
+    assert result.returncode == 1
+    assert any(re.fullmatch(LFS_RED, line) for line in red_lines(result)), red_lines(
+        result
+    )
+    assert "Downloading" not in result.stdout + result.stderr
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, added, removed, secret)
+
+
+@needs_tools
+def test_small_plain_texts_with_leading_whitespace_are_not_counted(tmp_path, origin):
+    """普通の小さなテキストは数えない。先頭が空白でも、ポインタの形（版の行で始まり oid の行がある）でなければ緑。"""
+    oid = hashlib.sha256(b"all-refs-scan plain fixture").hexdigest()
+    texts = {
+        "indented.md": "  indented memo\n",
+        "tabbed.md": "\tversion 1.2\n\tnotes\n",
+        "blank-lines.md": "\n\n\nmemo\n",
+        "only-spaces.md": " \t\r\n",
+        "middle.md": (
+            "memo\nversion https://git-lfs.github.com/spec/v1\n"
+            f"oid sha256:{oid}\nsize 1\n"
+        ),
+        "other-spec.md": (
+            f"  version https://example.invalid/spec/v1\noid sha256:{oid}\nsize 1\n"
+        ),
+        "no-oid.md": "  version https://git-lfs.github.com/spec/v1\nsize 1\n",
+    }
+    git(origin, "checkout", "-q", "-b", f"{PERSONAL}/plain", "main")
+    for name, text in texts.items():
+        commit_file(origin, name, text)
+    git(origin, "checkout", "-q", "main")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 0, red_lines(result)
+    assert not red_lines(result)
+    assert "緑: 全 ref" in result.stdout
+    assert_nothing_personal(result)
+
+
+@needs_tools
 def test_invalid_path_is_red_without_name(tmp_path, origin):
     """git が作業ツリーに置くのを拒むパス（invalid path '<名前>'）。"""
     secret = add_secret_branch(origin)
