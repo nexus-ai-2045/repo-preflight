@@ -1167,7 +1167,7 @@ def test_overwritten_compressed_metadata_inspects_all_revisions(marker):
     old = PdfWriter()
     old.add_blank_page(72, 72)
     stream = DecodedStreamObject()
-    stream.set_data(marker.encode())
+    stream.set_data(("<x>" + marker + "</x>").encode())
     stream[NameObject("/Type")] = NameObject("/Metadata")
     ref = old._add_object(stream.flate_encode())
     old.root_object[NameObject("/Probe")] = ref
@@ -1175,7 +1175,7 @@ def test_overwritten_compressed_metadata_inspects_all_revisions(marker):
     old.write(original)
     new = PdfWriter(io.BytesIO(original.getvalue()), incremental=True)
     replacement = DecodedStreamObject()
-    replacement.set_data(b"Public replacement")
+    replacement.set_data(b"<x>Public replacement</x>")
     replacement[NameObject("/Type")] = NameObject("/Metadata")
     replacement = replacement.flate_encode()
     replacement.indirect_reference = IndirectObject(ref.idnum, ref.generation, new)

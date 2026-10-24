@@ -921,7 +921,21 @@ class PrivateIdentityScan:
                             raise ValueError(
                                 "private_identity_media_callback_unavailable"
                             )
-                        return checker(value, patterns)
+                        secret_hits = Counter()
+
+                        def observe_metadata(text):
+                            nonlocal secret_hits
+                            secret_hits |= secret_matches(text.encode("utf-8"))
+
+                        result = dict(
+                            checker(value, patterns, metadata_observer=observe_metadata)
+                        )
+                        if result.pop("metadata_observer_complete", None) is not True:
+                            raise ValueError(
+                                "private_identity_media_callback_unavailable"
+                            )
+                        result["secret_match_count"] = sum(secret_hits.values())
+                        return result
 
                     def media_text_check(value, patterns):
                         result = dict(self.checker(value, patterns))

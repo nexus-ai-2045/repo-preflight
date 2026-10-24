@@ -188,6 +188,18 @@ def _verify_font_reader_sources():
             raise MediaError("dependency_unavailable")
 
 
+def _cff_metadata(font, output):
+    """CFF Name/String INDEX entries remain metadata even when unused."""
+    names = font.fontNames
+    strings = font.strings.getStrings() if font.strings is not None else []
+    if len(names) + len(strings) > OBJECT_LIMIT:
+        raise MediaError("object_limit")
+    for value in names:
+        output.text(value)
+    for value in strings:
+        output.text(value)
+
+
 def _font(data, subtype, output, lengths=None):
     from fontTools import version
     from fontTools.cffLib import CFFFontSet
@@ -252,6 +264,9 @@ def _font(data, subtype, output, lengths=None):
                 table = font[tag]
                 if type(table).__name__ == "DefaultTable":
                     raise MediaError("unsupported_font_table")
+            for tag in ("CFF ", "CFF2"):
+                if tag in font:
+                    _cff_metadata(font[tag].cff, output)
             from fontTools.pens.basePen import NullPen
 
             glyphs = font.getGlyphSet()
@@ -275,15 +290,21 @@ def _font(data, subtype, output, lengths=None):
             font.close()
     elif subtype == "/Type1C" or subtype == "/CIDFontType0C":
         font = CFFFontSet()
-        font.decompile(io.BytesIO(data), None)
+        font.decompile(io.BytesIO(data), None, isCFF2=False)
+        _cff_metadata(font, output)
+        glyph_count = 0
         for name in font.fontNames:
             output.text(name)
             top = font[name]
             for value in top.rawDict.values():
                 if isinstance(value, str):
                     output.text(value)
-            for charstring in top.CharStrings.values():
-                charstring.decompile()
+            glyph_count += len(top.CharStrings.charStrings)
+            if glyph_count > OBJECT_LIMIT:
+                raise MediaError("object_limit")
+            for glyph_name in top.CharStrings.keys():
+                output.text(glyph_name)
+                top.CharStrings[glyph_name].decompile()
     else:
         raise MediaError("unsupported_font")
 
@@ -316,6 +337,81 @@ def _pdf_text_bytes(data, output):
     for codec in ("utf-8", "latin-1", "utf-16-le", "utf-16-be"):
         for offset in ((0, 1) if codec.startswith("utf-16") else (0,)):
             output.text(data[offset:].decode(codec, errors="replace"))
+
+
+def _pdf_xml_metadata(data, output):
+    """Inspect raw XML and decoded values with bounded, DTD-free Expat events."""
+    from xml.parsers import expat
+
+    if len(data) > TEXT_LIMIT:
+        raise MediaError("text_limit")
+    output.text(
+        data.decode(
+            "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8"
+        )
+    )
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
+    deadline = time.monotonic() + DECODE_TIMEOUT
+    depth = events = decoded_bytes = 0
+    text = []
+
+    def tick():
+        nonlocal events
+        events += 1
+        if events > OBJECT_LIMIT:
+            raise MediaError("object_limit")
+        if time.monotonic() > deadline:
+            raise MediaError("timeout")
+
+    def refuse(*args):
+        raise MediaError("unsupported_metadata")
+
+    def start(name, attributes):
+        nonlocal depth
+        tick()
+        depth += 1
+        if depth > 64:
+            raise MediaError("object_limit")
+        output.text(name)
+        for key, value in attributes.items():
+            tick()
+            output.text(key)
+            output.text(value)
+
+    def end(name):
+        nonlocal depth
+        tick()
+        depth -= 1
+
+    def characters(value):
+        nonlocal decoded_bytes
+        tick()
+        decoded_bytes += len(value.encode("utf-8"))
+        if decoded_bytes > TEXT_LIMIT:
+            raise MediaError("text_limit")
+        text.append(value)
+
+    def namespace(prefix, uri):
+        tick()
+        output.text(prefix or "")
+        output.text(uri or "")
+
+    parser.StartNamespaceDeclHandler = namespace
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.ExternalEntityRefHandler = refuse
+    parser.SkippedEntityHandler = refuse
+    parser.StartElementHandler = start
+    parser.EndElementHandler = end
+    parser.CharacterDataHandler = characters
+    # Join callbacks so numeric references, CDATA and parser chunking cannot
+    # fragment a value before it reaches the existing identity/secret callback.
+    try:
+        parser.Parse(data, True)
+    except expat.ExpatError:
+        raise MediaError("unsupported_metadata") from None
+    output.text("".join(text))
 
 
 def _pdf_metadata(data, output, *, inspect_raw=True):
@@ -1030,11 +1126,7 @@ def _pdf_context(reader, output, budget):
             elif id(stream) not in image_objects:
                 raise MediaError("unsupported_image")
         elif kind == "/Metadata" or stream.get("/Subtype") == "/XML":
-            output.text(
-                data.decode(
-                    "utf-16" if data.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8"
-                )
-            )
+            _pdf_xml_metadata(data, output)
         elif id(stream) in cmap_objects:
             _pdf_metadata(data, output)
         elif (kind == "/Pattern" and stream.get("/PatternType") == 1) or stream.get(

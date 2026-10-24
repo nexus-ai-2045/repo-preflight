@@ -306,3 +306,5 @@ Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3
 埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。Python3.10のPDF字句・原本検査は維持し、font decoderがない入力はdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
 
 媒体依存のPython 3.9互換版はMutagen 1.47.0（上流Requires-Python >=3.7）、3.10+は1.48系（>=3.10）を使う。FFmpeg/FFprobe不足は検査成功ではなくdependency unavailableで停止する。fontTools 4.67.0のsource pinは既存LF SHAを維持し、配布SHAを照合した公式Windows wheelの完全一致CRLF SHAだけを追加する。任意の改行正規化・混在改行・コード変更は受理しない。
+
+媒体coverのPNG/JPEGは、既存parserのmetadata observer完了を確認し、復号した文字をidentityとsecretの両検査へ渡す。observer未対応、PNG iCCP、宣言済みXMP、分割・重複・不正なJPEG ICC宣言はこのcover経路では停止する。検証済みの画素・codewordを文字検査へ戻さない。PDFのXMLは上限付きExpatで文字参照・本文・属性・namespaceを検査し、DTD・外部entity・不正XMLを拒否する。CFFは未使用glyph名を含むName/String INDEXもmetadataとして検査する。

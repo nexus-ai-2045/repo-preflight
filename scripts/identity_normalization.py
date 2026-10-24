@@ -904,7 +904,9 @@ PNG_TEXT_LIMIT = 2_000_000
 PNG_IMAGE_LIMIT = 64_000_000
 
 
-def scan_private_png(data: bytes, patterns: list[str]) -> dict:
+def scan_private_png(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """PNG containerのraw照合とmetadata照合。圧縮画素をsource codeと解釈しない。"""
     import struct
     import zlib
@@ -913,6 +915,8 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
     if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(PNG_SIGNATURE):
+        raise ValueError("private_identity_png_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
         raise ValueError("private_identity_png_unverified")
     hits = set()
     path_match = reconstructed = metadata_path_match = False
@@ -939,6 +943,8 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         if metadata_size > PNG_TEXT_LIMIT:
             raise ValueError("private_identity_png_text_limit")
         for candidate in {value, unquote(value)}:
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             views = static_string_views(candidate)
             variants = [
                 candidate,
@@ -1134,6 +1140,11 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
                 "local_path_match": bool(path_match),
                 "reconstructed_path_match": bool(reconstructed),
                 "metadata_path_match": bool(metadata_path_match),
+                **(
+                    {"metadata_observer_complete": True}
+                    if metadata_observer is not None
+                    else {}
+                ),
             }
         elif kind == b"PLTE":
             if (
@@ -1153,6 +1164,12 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
             try:
                 key, rest = payload.split(b"\0", 1)
                 keyword(key)
+                if (
+                    metadata_observer is not None
+                    and key.lower() == b"xml:com.adobe.xmp"
+                ):
+                    # This image path has no bounded XML semantics decoder.
+                    raise ValueError("private_identity_png_unverified")
                 if kind == b"tEXt":
                     text = rest.decode("latin-1")
                 elif kind == b"zTXt":
@@ -1184,6 +1201,10 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         elif kind in (b"acTL", b"fcTL", b"fdAT"):
             # frame毎の復号を検証していないAPNGを、静止画の画素免除へ入れない。
             raise ValueError("private_identity_png_animation_unverified")
+        elif kind == b"iCCP" and metadata_observer is not None:
+            # Compressed ICC text is not inspected by the ancillary raw views.
+            # Do not certify full cover metadata without an adopted ICC decoder.
+            raise ValueError("private_identity_png_unverified")
         else:
             if not kind[0] & 32:
                 raise ValueError("private_identity_png_unverified")
@@ -1218,7 +1239,9 @@ except Exception:
 """
 
 
-def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
+def scan_private_jpeg(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """JPEGの復号を分離processで検証し、画素以外の全segmentを文字検査する。"""
     import os
     import subprocess
@@ -1229,10 +1252,13 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(JPEG_SIGNATURE):
         raise ValueError("private_identity_jpeg_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
+        raise ValueError("private_identity_jpeg_unverified")
     if len(data) > JPEG_DATA_LIMIT:
         raise ValueError("private_identity_jpeg_image_limit")
     hits = set()
     path_match = reconstructed = metadata_match = False
+    icc_seen = False
 
     def views(raw, metadata=False):
         values = {raw.decode("utf-8", errors="replace")}
@@ -1298,6 +1324,18 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         total += len(payload)
         if total > JPEG_METADATA_LIMIT:
             raise ValueError("private_identity_jpeg_text_limit")
+        if metadata_observer is not None:
+            if kind == 0xE1 and payload.lower().startswith(
+                (xmp_header, b"http://ns.adobe.com/xmp/extension/\x00")
+            ):
+                # Raw XML is insufficient for numeric/entity reference values.
+                raise ValueError("private_identity_jpeg_unverified")
+            if kind == 0xE2 and payload.startswith(b"ICC_PROFILE\x00"):
+                # Split ICC text can cross APP2 boundaries. Only the complete
+                # single-segment metadata reaches the existing raw text views.
+                if icc_seen or payload[12:14] != b"\x01\x01":
+                    raise ValueError("private_identity_jpeg_unverified")
+                icc_seen = True
         if kind == 0xE0 and payload.startswith(b"JFIF\0"):
             if (
                 len(payload) < 14
@@ -1341,12 +1379,16 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         raise ValueError("private_identity_jpeg_unverified")
     for raw in raw_segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             hits.update(hit_patterns(candidate, patterns))
             if hit_local_absolute_path(candidate):
                 metadata_match = True
                 path_match = True
     for raw in segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             result = scan_private_text(candidate, patterns)
             if result["literal_match_count"]:
                 literals = static_string_views(candidate)
@@ -1365,6 +1407,11 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         "local_path_match": bool(path_match),
         "reconstructed_path_match": bool(reconstructed),
         "metadata_path_match": bool(metadata_match),
+        **(
+            {"metadata_observer_complete": True}
+            if metadata_observer is not None
+            else {}
+        ),
     }
 
 
