@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 import re
+from urllib.parse import unquote
 
 # 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
 # CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
@@ -328,7 +329,177 @@ def _source_line_utf8(line: str) -> bytes:
     return line.encode()
 
 
-def static_string_views(text: str) -> list[tuple[str, str]]:
+def _standard_regex_arguments(tree) -> set[int]:
+    """Recognize syntax roles, never import or execute the inspected source."""
+    import ast
+
+    if not any(
+        isinstance(node, ast.Import)
+        and any(alias.name == "re" and alias.asname is None for alias in node.names)
+        for node in tree.body
+    ):
+        return set()
+    parents = {
+        id(child): node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "re":
+            parent = parents.get(id(node))
+            if not isinstance(node.ctx, ast.Load) or not isinstance(
+                parent, ast.Attribute
+            ):
+                return set()
+        if isinstance(node, ast.arg) and node.arg == "re":
+            return set()
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and "re" in node.names:
+            return set()
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == "re"
+        ):
+            return set()
+        if isinstance(node, ast.ExceptHandler) and node.name == "re":
+            return set()
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*" or (
+                    isinstance(node, ast.Import)
+                    and alias.name == "re"
+                    and alias.asname is not None
+                ):
+                    return set()
+                bound = alias.asname or alias.name.split(".")[0]
+                if bound == "re" and not (
+                    isinstance(node, ast.Import)
+                    and alias.name == "re"
+                    and alias.asname is None
+                ):
+                    return set()
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            root = node
+            while isinstance(root, (ast.Attribute, ast.Subscript)):
+                root = root.value
+            if (
+                isinstance(root, ast.Name)
+                and root.id == "re"
+                and (
+                    not isinstance(node.ctx, ast.Load)
+                    or isinstance(node, ast.Attribute)
+                    and node.attr.startswith("__")
+                )
+            ):
+                return set()
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"exec", "eval", "globals", "locals", "vars"}
+        ):
+            return set()
+        # Pattern captures are bindings too; these node classes do not exist on 3.9.
+        if type(node).__name__ in {"MatchAs", "MatchStar", "MatchMapping"} and (
+            getattr(node, "name", None) == "re" or getattr(node, "rest", None) == "re"
+        ):
+            return set()
+    return {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "re"
+        and node.func.attr == "compile"
+        and len(node.args) == 1
+        and not node.keywords
+    }
+
+
+_REGEX_HOME_ROOT = re.compile(r"(?:[A-Za-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)")
+_REGEX_USERNAME_CLASSES = (r"[^/\s]+", r"[^\\\s]+", r"[A-Za-z0-9._-]+")
+_REGEX_USERNAME_LOOKAHEAD = r"(?!USER\b|<)"
+
+
+def _generic_regex_path_spans(
+    value: str, *, source_token: bool = False
+) -> list[tuple[int, int]]:
+    """Only supported generic username atoms, never a concrete username prefix."""
+    spans = []
+    forms = (False, True) if source_token else (False,)
+    for match in LOCAL_ABSOLUTE_PATH_PATTERN.finditer(value):
+        root = _REGEX_HOME_ROOT.match(value, match.start())
+        if root is None:
+            continue
+        for escaped in forms:
+
+            def spelling(token):
+                return token.replace("\\", "\\\\") if escaped else token
+
+            start = root.end()
+            lookahead = spelling(_REGEX_USERNAME_LOOKAHEAD)
+            if value.startswith(lookahead, start):
+                start += len(lookahead)
+            for generic in _REGEX_USERNAME_CLASSES:
+                token = spelling(generic)
+                if not value.startswith(token, start):
+                    continue
+                end = start + len(token)
+                tail = value[end:]
+                boundary = not tail or tail[0] in "/\\|)$" or tail.startswith(r"\Z")
+                if source_token and tail[:1] in {"'", '"'}:
+                    boundary = True
+                if boundary:
+                    spans.append((match.start(), end))
+    return spans
+
+
+def _mask_path_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
+        return text
+    # Preserve boundaries: deleting a template must not join unrelated path pieces.
+    chars = list(text)
+    for first, last in spans:
+        chars[first:last] = " " * (last - first)
+    return "".join(chars)
+
+
+def _regex_source_token_spans(
+    original: str, source_start: int
+) -> list[tuple[int, int]]:
+    """Mask template syntax inside string tokens, preserving intervening comments."""
+    import ast
+    import io
+    import tokenize
+
+    lines = tuple(io.StringIO(original, newline=""))
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    spans = []
+    try:
+        for token in tokenize.generate_tokens(
+            io.StringIO(original, newline="").readline
+        ):
+            if token.type != tokenize.STRING:
+                continue
+            decoded = ast.literal_eval(token.string)
+            if not isinstance(decoded, str) or not _generic_regex_path_spans(decoded):
+                continue
+            offset = source_start + offsets[token.start[0] - 1] + token.start[1]
+            spans.extend(
+                (offset + first, offset + last)
+                for first, last in _generic_regex_path_spans(
+                    token.string, source_token=True
+                )
+            )
+    except (SyntaxError, ValueError, tokenize.TokenError, IndentationError):
+        return []
+    return spans
+
+
+def _static_string_views(
+    text: str, regex_roles: list[dict] | None = None
+) -> list[tuple[str, str]]:
     """静的に解釈できる最大のstring式と原文だけを返す。対象コードは実行しない。"""
     import ast
     import copy
@@ -355,19 +526,27 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
     if fence is not None:
         fragments.append("\n".join(block))
 
-    def string_list(node):
-        if isinstance(node, (ast.List, ast.Tuple)) and all(
-            isinstance(item, ast.Constant) and isinstance(item.value, str)
-            for item in node.elts
-        ):
-            return [item.value for item in node.elts]
+    def string_list(node, *, regex_expression=False):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            if regex_expression:
+                values = [
+                    static_string(item, regex_expression=True) for item in node.elts
+                ]
+                return values if all(value is not None for value in values) else None
+            if all(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                for item in node.elts
+            ):
+                return [item.value for item in node.elts]
         return None
 
-    def static_string(node):
+    def static_string(node, *, regex_expression=False):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left, right = static_string(node.left), static_string(node.right)
+            left, right = static_string(
+                node.left, regex_expression=regex_expression
+            ), static_string(node.right, regex_expression=regex_expression)
             if left is not None and right is not None:
                 return left + right
         if (
@@ -378,20 +557,20 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
             and len(node.args) == 1
         ):
             # Python string.join(list) / JS list.join(string) の静的literalだけ。
-            separator, values = static_string(node.func.value), string_list(
-                node.args[0]
-            )
+            separator, values = static_string(
+                node.func.value, regex_expression=regex_expression
+            ), string_list(node.args[0], regex_expression=regex_expression)
             if separator is not None and values is not None:
                 return separator.join(values)
-            values, separator = string_list(node.func.value), static_string(
-                node.args[0]
-            )
+            values, separator = string_list(
+                node.func.value, regex_expression=regex_expression
+            ), static_string(node.args[0], regex_expression=regex_expression)
             if values is not None and separator is not None:
                 return separator.join(values)
         return None
 
     views = []
-    for fragment in fragments:
+    for fragment_index, fragment in enumerate(fragments):
         fragment = textwrap.dedent(fragment)
         try:
             tree = ast.parse(fragment)
@@ -414,11 +593,49 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
 
+        regex_arguments = (
+            _standard_regex_arguments(tree)
+            if regex_roles is not None and fragment_index == 0 and fragment == text
+            else set()
+        )
+
+        regex_nodes = set()
+        for argument in ast.walk(tree) if regex_arguments else ():
+            if id(argument) not in regex_arguments:
+                continue
+            try:
+                pattern = static_string(argument, regex_expression=True)
+            except RecursionError:
+                continue
+            if pattern is None or len(pattern) > 65536:
+                continue
+            try:
+                re.compile(pattern)
+            except (re.error, ValueError, RecursionError, OverflowError):
+                continue
+            # The role validator may reconstruct across join items that the public
+            # tuple API intentionally keeps separate. Scan that complete value too.
+            for normalized in dict.fromkeys((pattern, unquote(pattern))):
+                try:
+                    re.compile(normalized)
+                except (re.error, ValueError, RecursionError, OverflowError):
+                    spans = []
+                else:
+                    spans = _generic_regex_path_spans(normalized)
+                regex_roles.append(
+                    {"pattern": normalized, "pattern_spans": spans, "source_spans": []}
+                )
+            regex_nodes.update(id(node) for node in ast.walk(argument))
+
         # 単一行はUTF-8を行ごとに一度だけ作り、stdlibと同じbyte offsetで切る。
         # 複数行・位置が欠けたnodeは従来どおり対象行だけを標準APIへ渡す。
         # newline="" はCR/CRLFを保持し、form feed等を行区切りへ変えない。
         source_lines = tuple(io.StringIO(fragment, newline=""))
         line_utf8_cache: list[bytes | None] = [None] * len(source_lines)
+        source_offsets = [0]
+        if regex_nodes:
+            for line in source_lines:
+                source_offsets.append(source_offsets[-1] + len(line))
 
         def encoded_line(index: int) -> bytes:
             cached = line_utf8_cache[index]
@@ -454,6 +671,22 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
                     )
                 if original is None:
                     raise ValueError("private_identity_normalization_incomplete")
+                if id(node) in regex_nodes:
+                    path_spans = _generic_regex_path_spans(value)
+                    if path_spans:
+                        source_start = source_offsets[node.lineno - 1]
+                        source_start += len(
+                            encoded_line(node.lineno - 1)[: node.col_offset].decode()
+                        )
+                        regex_roles.append(
+                            {
+                                "index": len(views),
+                                "value_spans": path_spans,
+                                "source_spans": _regex_source_token_spans(
+                                    original, source_start
+                                ),
+                            }
+                        )
                 views.append((value, original))
             else:
                 for child in ast.iter_child_nodes(node):
@@ -464,6 +697,11 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
     return views
+
+
+def static_string_views(text: str) -> list[tuple[str, str]]:
+    """Keep the public value/source tuple API; syntax-role metadata stays internal."""
+    return _static_string_views(text)
 
 
 # 一文字区切りの引用の必要条件。後段は literal_eval の値を split() し、1 文字の欠片が
@@ -524,20 +762,40 @@ def scan_private_text(text: str, patterns: list[str]) -> dict:
         isinstance(pattern, str) and pattern.strip() for pattern in patterns
     ):
         raise ValueError("private_identity_policy_empty")
-    views = static_string_views(text)
+    regex_roles: list[dict] = []
+    views = _static_string_views(text, regex_roles)
     # bare arrayの連結・空白除去は既知policy照合だけに使い、任意pathの意味まで推測しない。
     variants = [
         text,
         *(value for value, _ in views),
         *_reconstruct_literal_candidates(text, views),
+        *(role["pattern"] for role in regex_roles if "pattern" in role),
     ]
     hits = {pattern for value in variants for pattern in hit_patterns(value, patterns)}
-    path_match = hit_local_absolute_path(text) or any(
-        hit_local_absolute_path(value) for value, _ in views
+    source_spans = [span for role in regex_roles for span in role["source_spans"]]
+    value_spans = {
+        role["index"]: role["value_spans"] for role in regex_roles if "index" in role
+    }
+    regex_path_views = [
+        (_mask_path_spans(role["pattern"], role["pattern_spans"]), role["pattern"])
+        for role in regex_roles
+        if "pattern" in role
+    ]
+    path_views = [
+        _mask_path_spans(value, value_spans.get(index, []))
+        for index, (value, _) in enumerate(views)
+    ]
+    path_match = (
+        hit_local_absolute_path(_mask_path_spans(text, source_spans))
+        or any(hit_local_absolute_path(value) for value in path_views)
+        or any(hit_local_absolute_path(value) for value, _ in regex_path_views)
     )
     reconstructed_path = any(
-        hit_local_absolute_path(value) and value not in original
-        for value, original in views
+        hit_local_absolute_path(path_value) and value not in original
+        for path_value, (value, original) in zip(path_views, views)
+    ) or any(
+        hit_local_absolute_path(value) and original not in text
+        for value, original in regex_path_views
     )
     return {
         "status": "fail" if hits or path_match else "pass",
@@ -545,6 +803,27 @@ def scan_private_text(text: str, patterns: list[str]) -> dict:
         "local_path_match": path_match,
         "reconstructed_path_match": reconstructed_path,
     }
+
+
+_REPOSITORY_COMPONENT = re.compile(r"(?:[\w@+.\-]+|\([\w.\-]+\)|\[[\w.\-]+\])")
+
+
+def scan_private_repository_name(text: str, patterns: list[str]) -> dict:
+    """Git在庫の相対名だけを区別する。本文/URI/host埋込みには適用しない。"""
+    result = scan_private_text(text, patterns)
+    parts = text.split("/")
+    relative = len(parts) > 1 and all(
+        part not in {"", ".", ".."}
+        and not part.startswith("-")
+        and _REPOSITORY_COMPONENT.fullmatch(part)
+        for part in parts
+    )
+    if relative:
+        # 名前に含まれるdenylist literalはそのまま残す。安全な相対名はsource式ではない。
+        result["local_path_match"] = False
+        result["reconstructed_path_match"] = False
+        result["status"] = "fail" if result["literal_match_count"] else "pass"
+    return result
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -571,18 +850,16 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
     palette_seen = False
 
     def text_views(raw):
-        values = {raw.decode("utf-8", errors="replace")}
-        try:
-            values.add(raw.decode("utf-16"))
-        except UnicodeDecodeError:
-            pass
+        values = {raw.decode("utf-8", errors="replace"), raw.decode("latin-1")}
+        # chunk payloads need both alignments: the former whole-container view
+        # could expose UTF-16 text whose code units start at either payload offset.
+        for codec in ("utf-16-le", "utf-16-be"):
+            for start in (0, 1):
+                values.add(raw[start:].decode(codec, errors="replace"))
         return {candidate for value in values for candidate in (value, unquote(value))}
 
-    # 全byteを従来と同じ文字viewで照合する。画素内のliteralも除外しない。
-    for value in text_views(data):
-        hits.update(hit_patterns(value, patterns))
-        path_match |= hit_local_absolute_path(value)
-
+    # Validated coding/pixel/CRC bytes are not text. Their structural checks below
+    # must complete before any result can pass; ancillary metadata is still scanned.
     def inspect_text(value):
         nonlocal path_match, reconstructed, metadata_path_match, metadata_size
         metadata_size += len(value.encode("utf-8"))
@@ -648,6 +925,12 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         if zlib.crc32(kind + payload) != crc:
             raise ValueError("private_identity_png_unverified")
         position = end
+        if kind not in {b"IHDR", b"PLTE", b"IDAT", b"IEND"}:
+            for value in text_views(payload):
+                hits.update(hit_patterns(value, patterns))
+                raw_path = hit_local_absolute_path(value)
+                path_match |= raw_path
+                metadata_path_match |= raw_path
         if not seen_header and kind != b"IHDR":
             raise ValueError("private_identity_png_unverified")
         if seen_pixels and kind != b"IDAT":
@@ -892,9 +1175,7 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
                 pass
         return {v for text in values for v in (text, unquote(text))}
 
-    for value in views(data):
-        hits.update(hit_patterns(value, patterns))
-        path_match |= hit_local_absolute_path(value)
+    # Validated coding and entropy bytes are binary, not identity text.
     # Marker boundaries expose all non-pixel bytes, including between progressive scans.
     position = 2
     in_scan = seen_scan = False
