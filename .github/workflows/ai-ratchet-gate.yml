@@ -6,10 +6,12 @@ name: ai-ratchet-gate
 
 on:
   pull_request:
-    branches: ["main"]
+    branches:
+      - "main"
   merge_group:
   push:
-    branches: ["main"]
+    branches:
+      - "main"
   workflow_dispatch:
 
 permissions:

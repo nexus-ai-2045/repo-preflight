@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- CI を全 OS で緑にした。CI の全ジョブで、`references/gitleaks-pins.json` の gitleaks を配布物と本体の両方の SHA-256 を確かめて入れる（`scripts/install_pinned_gitleaks.py`）。Windows では `ai_command_guard.py` の stderr を UTF-8 に固定し、試験の偽 gitleaks を `.cmd` にし、WSL の入口ではなく動く bash を使う。
+- Dependabot の PR が止まらないようにした。`readiness_scan` の名義検査を役割ごとの完全一致にし（`committer_only` は記録者だけ）、自前の workflow を Action 参照の読み取り器で読める block 形式にした。ci.yml の規則に `allow_github_action_ref_updates` を足した。pip の更新は path 依存だけの `requirements-tools.txt` を `exclude-paths` で外した。
+- base-guard（`scripts/base_guard.py`）は、repo-preflight 本体（`--self-repository` が `nexus-ai-2045/repo-preflight`）に限って、`./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼ぶ自己検査の定義を通す。ほかの repo と、ほかの形はこれまでどおり赤。
+
 ## 0.10.0 - 2026-10-24
 
 - 新しいリポとして作り直した初版（履歴は1コミット）。

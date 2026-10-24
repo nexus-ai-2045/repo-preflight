@@ -68,6 +68,8 @@ def fixture(tmp_path, monkeypatch):
     git(origin, "checkout", "--orphan", "unrelated")
     git(origin, "commit", "-qm", "unrelated root")
     unrelated = git(origin, "rev-parse", "HEAD")
+    # 別の PR の枝とタグ。runner の手元に取れても、この event の判定には使わない
+    git(origin, "tag", "other-pr-tag", unrelated)
     git(origin, "checkout", "master")
     target = tmp_path / "target"
     git(tmp_path, "clone", "--quiet", str(origin), str(target))
@@ -167,7 +169,9 @@ def test_event_base_is_immutable_even_when_master_has_advanced(fixture, event):
     ref = args[args.index("--consistency-base-ref") + 1]
     assert ref == "refs/remotes/origin/preflight-event-base"
     assert git(target, "rev-parse", ref) == base
-    assert git(target, "rev-parse", "origin/master") == tip != head
+    # master は event のあとに進んでいる（リモート側）。runner の手元からは、event の履歴以外の ref を消す
+    assert git(cwd / "origin", "rev-parse", "master") == tip != head
+    assert git(target, "for-each-ref", "--format=%(refname)") == ref
     assert "origin/main" not in args and "origin/master" not in args
     assert "--allowed-identities" in args
     # 敵対的レビュー H6: PR だけでなく push・merge_group でも足した範囲の名義と本文を見る
