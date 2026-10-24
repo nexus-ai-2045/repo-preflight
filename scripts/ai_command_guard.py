@@ -121,7 +121,17 @@ def extract_command(data: object) -> str | None:
     return None
 
 
+def _utf8_stderr() -> None:
+    # フックは `python -I` で呼ばれ PYTHONUTF8 が効かない。Windows ではコンソール外の
+    # stderr が既定で cp1252 などになり、日本語が \uXXXX に化けて読めなくなる。
+    # 呼び出し側（AI のフック）は UTF-8 で読むので、出力を UTF-8 に固定する。
+    reconfigure = getattr(sys.stderr, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def main() -> int:
+    _utf8_stderr()
     try:
         command = extract_command(json.loads(sys.stdin.read()))
     except (ValueError, UnicodeDecodeError):

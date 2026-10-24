@@ -659,6 +659,19 @@ def load_allowed_identities(path: Path):
         raise RuntimeError("allowed_identities_invalid") from exc
 
 
+def _identity_line_allowed(policy, line: str) -> bool:
+    """名義の1行を役割ごとに完全一致で見る（identity_gate.check_public_range と同じ規則）。
+
+    `作者|記録者` の行は、作者を「作者」、記録者を「コミッター」として判定する。
+    `|` の無い行は Co-authored-by の署名行なので「作者」として判定する。
+    committer_only の名義（GitHub の Web 操作の記録者など）は記録者の位置でだけ通る。
+    """
+    if "|" not in line:
+        return policy.allows(line, "作者")
+    parts = line.split("|")
+    return policy.allows(parts[0], "作者") and policy.allows(parts[-1], "コミッター")
+
+
 def effective_identity(value: str) -> str:
     return re.sub(r"\s+\d+\s+[+-]\d{4}$", "", value).strip()
 
@@ -2508,8 +2521,7 @@ def scan(
         identity_mismatches |= {
             line
             for line in identity_lines
-            if line.split("|")[0] not in allowed_identity_set
-            or line.split("|")[-1] not in allowed_identity_set
+            if not _identity_line_allowed(allowed_identity_set, line)
         }
     historical_identity_lines = {
         line

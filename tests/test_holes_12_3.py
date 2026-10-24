@@ -239,11 +239,45 @@ def _sha_guard():
     return m.group(1)
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="workflow の段は bash で動く")
+def _working_bash():
+    """実際に動く bash を返す。
+
+    Windows の PATH では C:\\Windows\\System32\\bash.exe（WSL の入口）が先に見つかり、
+    Linux 配布物が無い runner では何を渡しても exit 1 で終わる。それでは「止まる」側の
+    試験が理由違いで通ってしまうので、`exit 0` が通る bash だけを使う。
+    Windows では Git for Windows の bash（GitHub Actions の bash シェルと同じもの）も候補にする。
+    """
+    candidates = [shutil.which("bash")]
+    if os.name == "nt":
+        git = shutil.which("git")
+        if git:
+            root = Path(git).resolve().parent.parent
+            candidates += [
+                str(root / "bin" / "bash.exe"),
+                str(root / "usr" / "bin" / "bash.exe"),
+            ]
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        try:
+            probe = subprocess.run(
+                [candidate, "-c", "exit 0"], capture_output=True, timeout=30
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return candidate
+    return None
+
+
+BASH = _working_bash()
+
+
+@pytest.mark.skipif(BASH is None, reason="workflow の段は bash で動く")
 @pytest.mark.parametrize("ref", ["main", "v1.0.0", "abc1234", "0" * 39, "G" * 40, ""])
 def test_hole4_枝名やタグや短いSHAは止まる(ref):
     result = subprocess.run(
-        ["bash", "-e", "-c", _sha_guard()],
+        [BASH, "-e", "-c", _sha_guard()],
         env={**os.environ, "PREFLIGHT_REF": ref},
         capture_output=True,
         text=True,
@@ -251,10 +285,10 @@ def test_hole4_枝名やタグや短いSHAは止まる(ref):
     assert result.returncode != 0
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason="workflow の段は bash で動く")
+@pytest.mark.skipif(BASH is None, reason="workflow の段は bash で動く")
 def test_hole4_対照_40桁SHAは通る():
     result = subprocess.run(
-        ["bash", "-e", "-c", _sha_guard()],
+        [BASH, "-e", "-c", _sha_guard()],
         env={**os.environ, "PREFLIGHT_REF": "0123456789abcdef0123456789abcdef01234567"},
     )
     assert result.returncode == 0

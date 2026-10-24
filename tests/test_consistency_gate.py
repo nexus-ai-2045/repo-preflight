@@ -1044,3 +1044,37 @@ def test_cli_output_is_utf8_even_when_stdio_encoding_is_ascii():
     from test_cli_utf8_stdio import assert_utf8_help
 
     assert_utf8_help("consistency_gate.py")
+
+
+REPO_ROOT = Path(__file__).parents[1]
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    sorted(
+        path.name
+        for path in (REPO_ROOT / ".github" / "workflows").glob("*.yml")
+        if path.name != "repository-preflight.yml"
+    ),
+)
+def test_own_workflows_are_readable_by_action_ref_scanner(workflow: str):
+    """Dependabot の Action SHA 更新を免除できるよう、自前の workflow は読み取り器が読める形を保つ。
+
+    流れ形式（`[main]` など）や jobs 内のスカラー列があると読み取り器は None を返し、
+    allow_github_action_ref_updates があっても免除されず、Dependabot PR が止まる。
+    repository-preflight.yml はどの impact 規則の対象でもないので除く。
+    """
+    source = (REPO_ROOT / ".github" / "workflows" / workflow).read_bytes()
+    assert MODULE._action_uses_lines(source), workflow
+
+
+def test_ci_workflow_rule_allows_action_ref_updates():
+    config = json.loads(
+        (REPO_ROOT / ".repo-preflight-consistency.json").read_text(encoding="utf-8")
+    )
+    rules = [
+        r for r in config["impact_map"] if ".github/workflows/ci.yml" in r["change"]
+    ]
+    assert rules and all(
+        r.get("allow_github_action_ref_updates") is True for r in rules
+    )
