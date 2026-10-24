@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 pytest.importorskip(
-    "psd_tools", minversion="1.26", reason="PSD検査の追加依存はPython 3.10以降で提供"
+    "psd_tools", minversion="1.26", reason="PSD検査の追加依存はPython 3.11以降で提供"
 )
 from psd_tools import PSDImage
 from psd_tools.psd.image_resources import ImageResource
