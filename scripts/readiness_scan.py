@@ -773,6 +773,11 @@ class PrivateIdentityScan:
             self.path_normalizer_sha256 = hashlib.sha256(path_source_bytes).hexdigest()
             self.patterns = patterns
             self.checker = provider.scan_private_text
+            self.repository_name_checker = (
+                getattr(provider, "scan_private_repository_name", None)
+                if bundled
+                else None
+            )
             self.gif_checker = (
                 getattr(provider, "scan_private_gif", None) if bundled else None
             )
@@ -825,6 +830,7 @@ class PrivateIdentityScan:
         data: bytes,
         *,
         literal_only: bool = False,
+        repository_name: bool = False,
         reviewed_raw_paths: bool = False,
         defer_unverified_jpeg: bool = False,
     ):
@@ -868,7 +874,12 @@ class PrivateIdentityScan:
                     results = [self.jpeg_checker(data, self.patterns)]
                 else:
                     results = [
-                        self.checker(candidate, self.patterns)
+                        (
+                            self.repository_name_checker
+                            if repository_name
+                            and callable(getattr(self, "repository_name_checker", None))
+                            else self.checker
+                        )(candidate, self.patterns)
                         for text in texts
                         for candidate in {text, unquote(text)}
                     ]
@@ -2445,7 +2456,7 @@ def scan(
                 name_views.append(stem)
             before_name_findings = private_identity.findings
             for name_view in name_views:
-                private_identity.check(name_view.encode("utf-8"))
+                private_identity.check(name_view.encode("utf-8"), repository_name=True)
                 if private_identity.checker is None:
                     break
             if private_identity.findings > before_name_findings:

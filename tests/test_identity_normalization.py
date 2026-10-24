@@ -1033,3 +1033,286 @@ def test_quote_only_iteration_preserves_literals_inside_comments():
         ]
         actual = [(m.span(), m.group()) for m in ENGINE._quoted_literals(text)]
         assert actual == expected
+
+
+@pytest.mark.parametrize("group", ["(group)", "[slug]"])
+@pytest.mark.parametrize("filename", ["page.tsx", "daily-quests.tsx"])
+def test_repository_name_context_distinguishes_relative_route_groups(group, filename):
+    from path_input_fixture import fixture_relative
+
+    name = fixture_relative("web", "app", group, "home", filename)
+    assert ENGINE.scan_private_text(name, [DENIED])["local_path_match"]
+    assert ENGINE.scan_private_repository_name(name, [DENIED])["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "prefix", ["", "prefix ", "artifacts/file://", "prefix(", "--include"]
+)
+def test_repository_name_context_keeps_absolute_and_embedded_host_paths(prefix):
+    from path_input_fixture import fixture_path
+
+    name = prefix + fixture_path("linux", "fixture-host", "work")
+    assert ENGINE.scan_private_repository_name(name, [DENIED])["status"] == "fail"
+
+
+def test_repository_name_context_keeps_embedded_windows_host_path():
+    from path_input_fixture import fixture_path
+
+    name = "artifacts/" + fixture_path("windows", "fixture-host", "work")
+    assert ENGINE.scan_private_repository_name(name, [DENIED])["status"] == "fail"
+
+
+def test_repository_name_context_keeps_identity_literals():
+    from path_input_fixture import fixture_relative
+
+    name = fixture_relative("web", "app", "(group)", "home", DENIED)
+    result = ENGINE.scan_private_repository_name(name, [DENIED])
+    assert result["status"] == "fail" and result["literal_match_count"] == 1
+
+
+def regex_source(expression, *, before="", after=""):
+    return "import re\n" + before + "PATTERN = re.compile(" + expression + ")\n" + after
+
+
+def regex_home_root():
+    return "/".join(("", "Users", ""))
+
+
+@pytest.mark.parametrize("separator", ["/", "\\"])
+def test_compiled_generic_username_class_has_source_role(separator):
+    root = (
+        ("C:" + separator + "Users" + separator)
+        if separator == "\\"
+        else regex_home_root()
+    )
+    # Backslashes represent regex escapes, not a concrete host account.
+    pattern = root.replace("\\", "\\\\") + (
+        r"[^\\\s]+" if separator == "\\" else r"[^/\s]+"
+    )
+    source = regex_source(repr(pattern))
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
+    assert ENGINE.static_string_views(source)[0][0] == pattern
+
+
+def test_compiled_static_join_of_original_operating_regex_templates_passes():
+    roots = [
+        "C:" + "\\\\" + "Users" + "\\\\",
+        "C:" + regex_home_root(),
+        regex_home_root(),
+    ]
+    patterns = [
+        root + (r"[^\\\s]+" if index == 0 else r"[^/\s]+")
+        for index, root in enumerate(roots)
+    ]
+    expression = repr("(") + ' + "|".join(' + repr(patterns) + ") + " + repr(")")
+    assert (
+        ENGINE.scan_private_text(regex_source(expression), [DENIED])["status"] == "pass"
+    )
+
+
+def test_note_compiled_username_class_with_placeholder_lookahead_passes():
+    pattern = regex_home_root() + r"(?!USER\b|<)[A-Za-z0-9._-]+/"
+    assert (
+        ENGINE.scan_private_text(regex_source(repr(pattern)), [DENIED])["status"]
+        == "pass"
+    )
+
+
+@pytest.mark.parametrize("placement", ["branch", "source", "comment"])
+def test_regex_role_keeps_separate_concrete_host_paths(placement):
+    from path_input_fixture import fixture_path
+
+    path = fixture_path("macos", "regex-fixture-host", "work")
+    pattern = regex_home_root() + r"[^/\s]+"
+    source = regex_source(repr(pattern))
+    if placement == "branch":
+        source = regex_source(repr(pattern + "|" + path))
+    elif placement == "source":
+        source += "ACTUAL = " + repr(path)
+    else:
+        source = regex_source("(" + repr(pattern) + "\n# " + path + "\n)")
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize("suffix", ["", "[0-9]+"])
+def test_compiled_regex_concrete_username_is_still_detected(suffix):
+    from path_input_fixture import fixture_path
+
+    pattern = fixture_path("macos", "regex-fixture-host", "work") + suffix
+    assert (
+        ENGINE.scan_private_text(regex_source(repr(pattern)), [DENIED])["status"]
+        == "fail"
+    )
+
+
+def test_regex_role_keeps_all_original_and_reconstructed_private_literals():
+    pattern = regex_home_root() + r"[^/\s]+"
+    expression = (
+        repr(pattern + "|") + " + " + repr(DENIED[:12]) + " + " + repr(DENIED[12:])
+    )
+    result = ENGINE.scan_private_text(regex_source(expression), [DENIED])
+    assert result["status"] == "fail" and result["literal_match_count"] == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "no-import",
+        "other-call",
+        "name-shadow",
+        "argument-shadow",
+        "attribute-replacement",
+        "dictionary-replacement",
+        "setattr",
+        "alias",
+        "dynamic",
+        "invalid-regex",
+        "invalid-source",
+    ],
+)
+def test_ambiguous_or_nonregex_context_preserves_original_path_checks(mutation):
+    pattern = regex_home_root() + r"[^/\s]+"
+    source = regex_source(repr(pattern))
+    if mutation == "no-import":
+        source = source.replace("import re\n", "")
+    elif mutation == "other-call":
+        source = source.replace("re.compile", "other.compile")
+    elif mutation == "name-shadow":
+        source = regex_source(repr(pattern), before="re = other\n")
+    elif mutation == "argument-shadow":
+        source = (
+            "import re\ndef function(re):\n    return re.compile("
+            + repr(pattern)
+            + ")\n"
+        )
+    elif mutation == "attribute-replacement":
+        source = regex_source(repr(pattern), before="re.compile = other\n")
+    elif mutation == "dictionary-replacement":
+        source = regex_source(repr(pattern), before='re.__dict__["compile"] = other\n')
+    elif mutation == "setattr":
+        source = regex_source(repr(pattern), before='setattr(re, "compile", other)\n')
+    elif mutation == "alias":
+        source = regex_source(
+            repr(pattern), before="alias = re\nalias.compile = other\n"
+        )
+    elif mutation == "dynamic":
+        source = regex_source(repr(pattern) + " + unknown")
+    elif mutation == "invalid-regex":
+        source = regex_source(repr(pattern + "("))
+    else:
+        source += "if (\n"
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize("use_private_branch", [False, True])
+def test_regex_join_evaluates_static_expression_items_without_changing_public_views(
+    use_private_branch,
+):
+    from path_input_fixture import fixture_path
+
+    expression_items = [
+        repr("C:")
+        + " + "
+        + repr("\\\\")
+        + " + "
+        + repr("Users")
+        + " + "
+        + repr(r"\\[^\\\s]+"),
+        repr("/") + " + " + repr("Users") + " + " + repr(r"/[^/\s]+"),
+    ]
+    if use_private_branch:
+        expression_items.append(
+            repr(fixture_path("macos", "regex-fixture-host", "work"))
+        )
+    expression = (
+        repr("(") + ' + "|".join([' + ", ".join(expression_items) + "]) + " + repr(")")
+    )
+    source = regex_source(expression)
+    before = ENGINE.static_string_views(source)
+    result = ENGINE.scan_private_text(source, [DENIED])
+    assert result["status"] == ("fail" if use_private_branch else "pass")
+    assert ENGINE.static_string_views(source) == before
+
+
+def test_regex_dunder_attribute_mutation_preserves_original_path_checks():
+    pattern = regex_home_root() + r"[^/\s]+"
+    source = regex_source(repr(pattern), before='re.__setattr__("compile", other)\n')
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "from unknown import *\n",
+        "import re as other_re\nother_re.compile = other\n",
+        'globals()["re"] = other\n',
+    ],
+)
+def test_regex_ambiguous_module_bindings_are_not_a_template_role(prefix):
+    pattern = regex_home_root() + r"[^/\s]+"
+    assert (
+        ENGINE.scan_private_text(regex_source(repr(pattern), before=prefix), [DENIED])[
+            "status"
+        ]
+        == "fail"
+    )
+
+
+@pytest.mark.parametrize("suffix", ["actual-name", "(?:actual-name)"])
+def test_regex_generic_class_followed_by_username_literal_is_not_exempted(suffix):
+    pattern = regex_home_root() + r"[^/\s]+" + suffix + "/work"
+    assert (
+        ENGINE.scan_private_text(regex_source(repr(pattern)), [DENIED])["status"]
+        == "fail"
+    )
+
+
+def test_regex_source_spans_do_not_hide_identical_nonregex_literal():
+    pattern = regex_home_root() + r"[^/\s]+"
+    source = regex_source(repr(pattern), after="TEXT = " + repr(pattern))
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize("line_break", ["\n", "\r\n", "\r"])
+def test_regex_source_offsets_preserve_non_ascii_prefix_and_actual_comment(line_break):
+    from path_input_fixture import fixture_path
+
+    pattern = regex_home_root() + r"[^/\s]+"
+    path = fixture_path("macos", "regex-fixture-host", "work")
+    source = regex_source(
+        repr(pattern), before="説明 = '本文'; ", after="# " + path + "\n"
+    )
+    source = source.replace("\n", line_break)
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+    clean = regex_source(repr(pattern), before="説明 = '本文'; ").replace(
+        "\n", line_break
+    )
+    assert ENGINE.scan_private_text(clean, [DENIED])["status"] == "pass"
+
+
+def test_regex_source_role_preserves_nonregex_synthetic_home_fixture():
+    from path_input_fixture import fixture_path
+
+    source = "HOME = " + repr(fixture_path("macos", "fixture-host", "work"))
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "kind", ["private-literal", "encoded-private-literal", "concrete-path"]
+)
+def test_complete_regex_expression_keeps_detections_across_join_item_boundaries(kind):
+    pattern = regex_home_root() + r"[^/\s]+"
+    items = [repr(pattern) + " + " + repr("|")]
+    if kind == "concrete-path":
+        items.extend([repr(regex_home_root()), repr("fixture-host/work")])
+    elif kind == "encoded-private-literal":
+        encoded = DENIED.replace("@", "%40")
+        middle = encoded.index("%") + 1
+        items.extend([repr(encoded[:middle]), repr(encoded[middle:])])
+    else:
+        items.extend([repr(DENIED[:12]), repr(DENIED[12:])])
+    source = regex_source('"".join([' + ", ".join(items) + "])")
+    result = ENGINE.scan_private_text(source, [DENIED])
+    assert result["status"] == "fail"
+    if kind != "concrete-path":
+        assert result["literal_match_count"] == 1

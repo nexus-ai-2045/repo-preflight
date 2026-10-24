@@ -4011,3 +4011,54 @@ def test_failed_identity_load_is_not_cached(tmp_path, monkeypatch):
         sys.modules.pop("identity_gate", None)
         if saved is not None:
             sys.modules["identity_gate"] = saved
+
+
+def test_git_inventory_route_group_name_is_relative_without_body_path_exemption(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    policy = tmp_path / "private-policy.txt"
+    policy.write_text("synthetic-route-private@example.invalid", encoding="utf-8")
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.setenv("REPO_PREFLIGHT_IDENTITY_SCAN_CACHE", "off")
+    route = repo / fixture_relative("web", "app", "(group)", "home", "page.tsx")
+    route.parent.mkdir(parents=True)
+    route.write_text("export const value = 1;\n", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "relative route")
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "pass"
+    assert report["checks"]["private_identity_scan"]["finding_count"] == 0
+    # The same text is still a path finding inside a source body.
+    route.write_text(
+        "const text = "
+        + json.dumps("prefix " + fixture_path("linux", "fixture-host", "work"))
+        + ";\n",
+        encoding="utf-8",
+    )
+    report = MODULE.scan(repo, require_private_identity=True)
+    assert report["checks"]["private_identity_scan"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("kind", ["template", "concrete", "private-literal"])
+def test_bundled_scanner_preserves_source_role_and_private_rejections(
+    tmp_path, monkeypatch, kind
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = tmp_path / "policy.txt"
+    denied = "source-role-fixture-private@example.invalid"
+    policy.write_text(denied)
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(policy))
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    root = "/".join(("", "Users", ""))
+    pattern = root + r"[^/\s]+"
+    if kind == "concrete":
+        pattern = fixture_path("macos", "regex-fixture-host", "work")
+    elif kind == "private-literal":
+        pattern += "|" + denied
+    source = "import re\nPATTERN = re.compile(" + repr(pattern) + ")\n"
+    scanner = MODULE.PrivateIdentityScan(repo, True)
+    scanner.check(source.encode())
+    assert scanner.result()["status"] == ("pass" if kind == "template" else "fail")
