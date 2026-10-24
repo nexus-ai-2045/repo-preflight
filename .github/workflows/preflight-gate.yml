@@ -75,6 +75,15 @@ jobs:
           unset EVENT_FETCH_TOKEN
           unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE
           unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_TRACE2_CONFIG_PARAMS GIT_TRACE2_ENV_VARS
+          # 全履歴の検査（--all）は、このイベントの commit から辿れる履歴だけを見る。
+          # checkout は他の枝やタグの ref も取るので、そのままだと別の PR の枝の中身で、この PR が赤や緑になる。
+          # 他の枝は、それぞれの PR と push の CI で見る。消すのはこの runner の手元の ref だけで、リモートは変えない。
+          # checkout は sha を指定するので HEAD は切り離し済みだが、念のため切り離してから消す。
+          git -C target checkout -q --detach
+          git -C target for-each-ref --format='%(refname)' refs/remotes refs/tags refs/heads | while read -r ref; do
+            git -C target update-ref -d "$ref"
+          done
+          test -z "$(git -C target for-each-ref --format='%(refname)')"
           test "$(git -C target rev-parse HEAD)" = "$EVENT_HEAD_SHA"
           case "$GITHUB_EVENT_NAME" in
             pull_request) BASE_SHA="$PR_BASE_SHA" ;;
