@@ -19,6 +19,11 @@ _UNIX_PATH_START = (
 # rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
 _QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
 _QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
+from pathlib import PurePosixPath
+
+MACOS_SHARED_DIRECTORY = PurePosixPath("/", "Users", "Shared").as_posix()
+_MACOS_SHARED_COMPONENT = MACOS_SHARED_DIRECTORY.rsplit("/", 1)[-1]
+
 PATH_PATTERNS = (
     re.compile(
         r"[A-Za-z]:[/\\]+Us"
@@ -29,7 +34,9 @@ PATH_PATTERNS = (
     re.compile(
         _UNIX_PATH_START
         + r"(?P<personal_path>/Us"
-        + r"ers/(?:[^/\s'\"]+|"
+        + r"ers/"
+        + rf"(?!{re.escape(_MACOS_SHARED_COMPONENT)}(?:/|$))"
+        + r"(?:[^/\s'\"]+|"
         + _QUOTED_UNIX_USER
         + r"))"
     ),
@@ -51,6 +58,70 @@ LOCAL_ABSOLUTE_PATH_PATTERN = re.compile(
         for pattern in PATH_PATTERNS
     )
 )
+
+
+_SHARED_REFERENCE_PATTERN = re.compile(
+    _UNIX_PATH_START
+    + "(?P<personal_path>"
+    + re.escape(MACOS_SHARED_DIRECTORY)
+    + ")(?=/|$)"
+)
+_PARENT_COMPONENT_PATTERN = re.compile(r"[/\\]\.\.(?=[/\\]|$)")
+
+
+def macos_shared_parent_matches(value, *, entire_path=False):
+    """同じ参照の正規化結果だけでSharedの外へ戻るか判定する。"""
+    import posixpath
+
+    binary = isinstance(value, bytes)
+    shared = (
+        re.compile(_SHARED_REFERENCE_PATTERN.pattern.encode("ascii"))
+        if binary
+        else _SHARED_REFERENCE_PATTERN
+    )
+    text = value.decode("latin-1") if binary else value
+    results = []
+    consumed = 0
+    for match in shared.finditer(value):
+        start = match.start("personal_path")
+        if start < consumed:
+            continue
+        whole = entire_path and (start == 0 or text[:start] in ("file:", "file://"))
+        end = start
+        quote_char = text[start - 1] if start and text[start - 1] in "\"'`" else None
+        if whole:
+            end = len(text)
+        elif quote_char:
+            end = start
+            while end < len(text):
+                if text[end] == quote_char and (end == 0 or text[end - 1] != "\\"):
+                    break
+                end += 1
+        else:
+            while (
+                end < len(text)
+                and not text[end].isspace()
+                and text[end] not in "\"'`<>"
+            ):
+                end += 1
+        consumed = max(end, match.end())
+        reference = text[start:end]
+        normalized = posixpath.normpath(reference)
+        if normalized != MACOS_SHARED_DIRECTORY and not normalized.startswith(
+            MACOS_SHARED_DIRECTORY + "/"
+        ):
+            results.append(match)
+    return results
+
+
+def iter_private_path_matches(value):
+    for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS):
+        if isinstance(value, bytes):
+            pattern = re.compile(pattern.pattern.encode("ascii"))
+        for match in pattern.finditer(value):
+            yield rule, match
+    for match in macos_shared_parent_matches(value):
+        yield "macos_user_path", match
 
 
 def parse_denylist_text(text: str) -> list[str]:
@@ -122,7 +193,9 @@ def hit_patterns(
 
 def hit_local_absolute_path(text: str) -> bool:
 
-    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None
+    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None or bool(
+        macos_shared_parent_matches(text)
+    )
 
 
 # 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。
@@ -1709,3 +1782,149 @@ def scan_private_gif(data: bytes, patterns: list[str]) -> dict:
         "metadata_path_match": metadata_match,
         "reconstructed_path_match": reconstructed,
     }
+
+
+def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dict:
+    """CAFFの表・XML・全埋込み画像を、圧縮画素を式として評価せず検査する。"""
+    import hashlib
+    import json
+    from urllib.parse import unquote
+    import xml.etree.ElementTree as ET
+
+    if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise ValueError("private_identity_policy_empty")
+    archive = _CAFF_MODULE.Archive(data)
+    hits = set()
+    path_match = metadata_match = reconstructed = False
+
+    def record(result, metadata=False):
+        nonlocal path_match, metadata_match, reconstructed
+        if result["literal_match_count"]:
+            hits.add("match")
+        path_match |= result["local_path_match"]
+        metadata_match |= metadata and result["local_path_match"]
+        reconstructed |= result.get("reconstructed_path_match", False)
+
+    def metadata_text(value, *, path_value=False):
+        nonlocal path_match, metadata_match
+        # XML sourceとscalarは同じ正規化を使う。scalarのpathは制御文字も含めて判定する。
+        for view in {value, unquote(value)}:
+            record(scan_private_text(view, patterns), True)
+            if path_value and macos_shared_parent_matches(view, entire_path=True):
+                path_match = metadata_match = True
+
+    def literal(raw):
+        nonlocal path_match
+        for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+            text = raw.decode(encoding, errors="replace")
+            for value in (text, unquote(text)):
+                hits.update(hit_patterns(value, patterns))
+                path_match |= hit_local_absolute_path(value)
+
+    # ファイル表を検証した後は、PNGの画素を外側で再び文字列扱いしない。
+    if archive.preview_size:
+        preview = data[
+            archive.preview_start : archive.preview_start + archive.preview_size
+        ]
+        record(scan_private_png(preview, patterns), True)
+    main_count = 0
+    for entry, content in archive.contents():
+        for value in (entry.name, entry.tag):
+            metadata_text(value, path_value=True)
+        if entry.tag == "main_xml":
+            main_count += 1
+            try:
+                xml_text = content.decode("utf-8", "strict")
+            except UnicodeError:
+                raise ValueError("private_identity_caff_unverified") from None
+            # UTF-16/32のASCII列はUTF-8 decodeに成功する場合がある。NULと別encoding宣言を拒否する。
+            declared_encoding = re.match(
+                r"^\ufeff?<\?xml\s+[^?]*?encoding\s*=\s*['\"]([^'\"]+)['\"]", xml_text
+            )
+            if "\0" in xml_text or (
+                declared_encoding
+                and declared_encoding.group(1).casefold().replace("-", "") != "utf8"
+            ):
+                raise ValueError("private_identity_caff_unverified")
+            if "<!DOCTYPE" in xml_text or "<!ENTITY" in xml_text:
+                raise ValueError("private_identity_caff_unverified")
+
+            class BoundedBuilder(ET.TreeBuilder):
+                count = 0
+
+                def start(self, tag, attrs):
+                    self.count += 1
+                    if self.count > _CAFF_MODULE.MAX_XML_NODES:
+                        raise ValueError("private_identity_caff_size_limit")
+                    return super().start(tag, attrs)
+
+            try:
+                root = ET.fromstring(
+                    xml_text, parser=ET.XMLParser(target=BoundedBuilder())
+                )
+            except ET.ParseError:
+                raise ValueError("private_identity_caff_unverified") from None
+            literal(content)
+            metadata_text(xml_text)
+            count = 0
+            for node in root.iter():
+                count += 1
+                if count > 100000:
+                    raise ValueError("private_identity_caff_size_limit")
+                for value in (
+                    node.tag,
+                    node.text,
+                    node.tail,
+                    *node.attrib.keys(),
+                    *node.attrib.values(),
+                ):
+                    if value:
+                        metadata_text(value, path_value=True)
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            digest = (
+                hashlib.sha256(content).hexdigest(),
+                hashlib.sha256(
+                    json.dumps(
+                        patterns, ensure_ascii=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+            )
+            result = image_cache.get(digest) if image_cache is not None else None
+            if result is None:
+                result = scan_private_png(content, patterns)
+                if image_cache is not None:
+                    if len(image_cache) >= 4096:
+                        image_cache.clear()
+                    image_cache[digest] = result
+            record(result, True)
+        else:
+            raise ValueError("private_identity_caff_unverified")
+    if main_count != 1:
+        raise ValueError("private_identity_caff_unverified")
+    return {
+        "status": "fail" if hits or path_match else "pass",
+        "literal_match_count": len(hits),
+        "local_path_match": path_match,
+        "metadata_path_match": metadata_match,
+        "reconstructed_path_match": reconstructed,
+    }
+
+
+import importlib.util as _caff_importlib
+import hashlib as _caff_hashlib
+from pathlib import Path as _CaffPath
+
+_CAFF_PATH = _CaffPath(__file__).with_name("caff_archive.py")
+_CAFF_SOURCE = _CAFF_PATH.read_bytes()
+CAFF_DECODER_SHA256 = _caff_hashlib.sha256(_CAFF_SOURCE).hexdigest()
+_CAFF_SPEC = _caff_importlib.spec_from_file_location(
+    "_identity_caff_archive", _CAFF_PATH
+)
+_CAFF_MODULE = _caff_importlib.module_from_spec(_CAFF_SPEC)
+import sys as _caff_sys
+
+_caff_sys.modules[_CAFF_SPEC.name] = _CAFF_MODULE
+exec(compile(_CAFF_SOURCE, str(_CAFF_PATH), "exec"), _CAFF_MODULE.__dict__)
+
+# 消費側は別のCAFFパーサを持たず、これを利用する。
+CaffArchive = _CAFF_MODULE.Archive

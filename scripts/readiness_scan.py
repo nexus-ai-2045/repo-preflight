@@ -420,8 +420,7 @@ def personal_path_matches(data: bytes) -> Counter:
                         ).encode("utf-8")
                     ).hexdigest(),
                 )
-                for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-                for match in pattern.finditer(candidate)
+                for rule, match in _PATH_GRAMMAR.iter_private_path_matches(candidate)
             )
     matches |= Counter(
         (
@@ -430,8 +429,7 @@ def personal_path_matches(data: bytes) -> Counter:
                 match.groupdict().get("personal_path") or match.group()
             ).hexdigest(),
         )
-        for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+        for rule, match in _PATH_GRAMMAR.iter_private_path_matches(data)
     )
     return matches
 
@@ -529,6 +527,11 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
         except UnicodeDecodeError:
             continue
         decoded_text = unquote(text)
+        if PATH_PATTERNS[1] in patterns and any(
+            _PATH_GRAMMAR.macos_shared_parent_matches(value)
+            for value in (text, decoded_text)
+        ):
+            return True
         if any(
             pattern.search(candidate)
             for candidate in (text, decoded_text)
@@ -708,6 +711,7 @@ class PrivateIdentityScan:
         self.findings = 0
         self.objects = 0
         self.skipped = 0
+        self._verified_caff_blobs = set()
         self.report = {"status": "not_configured", "required": required}
         self.checker = None
         self.path_normalizer = None
@@ -794,6 +798,13 @@ class PrivateIdentityScan:
             except ImportError:
                 self.report["gif_decoder_settings"] = None
 
+            self.caff_checker = (
+                getattr(provider, "scan_private_caff", None) if bundled else None
+            )
+            self.caff_image_cache = {}
+            self.report["caff_decoder_sha256"] = getattr(
+                provider, "CAFF_DECODER_SHA256", None
+            )
             self.psd_checker = (
                 getattr(provider, "scan_private_psd", None) if bundled else None
             )
@@ -843,7 +854,15 @@ class PrivateIdentityScan:
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                if data.startswith(b"8BPS") and callable(
+                if (
+                    not repository_name
+                    and data.startswith(b"CAFF")
+                    and callable(getattr(self, "caff_checker", None))
+                ):
+                    results = [
+                        self.caff_checker(data, self.patterns, self.caff_image_cache)
+                    ]
+                elif data.startswith(b"8BPS") and callable(
                     getattr(self, "psd_checker", None)
                 ):
                     results = [self.psd_checker(data, self.patterns)]
@@ -945,6 +964,8 @@ class PrivateIdentityScan:
                 "private_identity_jpeg_image_limit",
                 "private_identity_jpeg_text_limit",
                 "private_identity_jpeg_decoder_unavailable",
+                "private_identity_caff_unverified",
+                "private_identity_caff_size_limit",
                 "private_identity_gif_unverified",
                 "private_identity_gif_size_limit",
                 "private_identity_gif_decoder_unavailable",
@@ -966,10 +987,30 @@ class PrivateIdentityScan:
             self.report.update(status="tool_error", reason=reason)
             self.checker = None
             return
+        if (
+            not repository_name
+            and data.startswith(b"CAFF")
+            and callable(getattr(self, "caff_checker", None))
+        ):
+            self._remember_verified_caff(data)
         self.objects += 1
         self.findings += int(found)
         if not found and not reviewed_raw_paths:
             self.last_clean_pass_digests = tuple(sorted(seen_normalizer_digests))
+
+    def _remember_verified_caff(self, data: bytes):
+        """形式検査済みの同一byteをGit blob IDへ束縛する。"""
+        if (
+            not callable(getattr(self, "caff_checker", None))
+            or data[:14] != b"CAFF\0\0\0----\0\0\0"
+        ):
+            return
+        header = f"blob {len(data)}\0".encode("ascii")
+        for algorithm in ("sha1", "sha256"):
+            digest = hashlib.new(algorithm, usedforsecurity=False)
+            digest.update(header)
+            digest.update(data)
+            self._verified_caff_blobs.add(digest.hexdigest())
 
     def reuse_clean_pass(self, normalizer_digests: tuple[str, ...]) -> bool:
         """控えた合格を、本文検査と同じ数え方・正規化器の一致確認で反映する。"""
@@ -1084,6 +1125,8 @@ class IdentityScanCache:
                 "policy_sha256": scan.report["policy_sha256"],
                 "provider_kind": scan.report["provider_kind"],
                 "normalized_path_provider_sha256": scan.path_normalizer_sha256,
+                "caff_checker": callable(getattr(scan, "caff_checker", None)),
+                "caff_decoder_sha256": scan.report.get("caff_decoder_sha256"),
                 "gif_checker": callable(getattr(scan, "gif_checker", None)),
                 "gif_decoder_version": scan.report.get("gif_decoder_version"),
                 "gif_decoder_settings": scan.report.get("gif_decoder_settings"),
@@ -1323,8 +1366,8 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
         raise RuntimeError("git_worktree_inventory_failed") from exc
 
 
-# 履歴objectの読取上限は、直下のbatch読取予算と同一の既存値。別の上限は持たない。
-# この予算以内は本文を読み、超過だけを未検査として残す。
+# 通常objectのbatch予算。超過は原則として未検査に残す。
+# 同じbyteを既にCAFF形式の上限内で検証したblobだけ、単独batchで読み直す。
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
 
 
@@ -1340,6 +1383,7 @@ def history_hits(
             "\n".join(revisions).encode("ascii")
         ).hexdigest()
         private_identity.report["replacement_objects_disabled"] = True
+        private_identity.report["verified_large_caff_objects_read"] = 0
     objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *revisions],
         cwd=repo,
@@ -1394,7 +1438,14 @@ def history_hits(
             if size <= _HISTORY_BATCH_BUDGET_BYTES:
                 eligible.append((object_id, name, size, fields[1]))
             elif private_identity is not None:
-                private_identity.skipped += 1
+                if (
+                    fields[1] == "blob"
+                    and object_id in private_identity._verified_caff_blobs
+                ):
+                    eligible.append((object_id, name, size, fields[1]))
+                    private_identity.report["verified_large_caff_objects_read"] += 1
+                else:
+                    private_identity.skipped += 1
     aliases: dict[str, set[str]] = {}
     if reviewed_exceptions is not None:
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
@@ -1718,6 +1769,8 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     so matching their pattern text against raw bytes finds embedded hits
     without needing the surrounding noise to decode at all.
     """
+    if PATH_PATTERNS[1] in patterns and _PATH_GRAMMAR.macos_shared_parent_matches(data):
+        return True
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
@@ -1733,6 +1786,22 @@ def cmo3_contents_xml(data: bytes) -> bytes | None:
     entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
     the whole file unreadable rather than partly clean.
     """
+    if data[:14] == b"CAFF\0\0\0----\0\0\0":
+        # 実際のCAFFはヘッダにentry用キーを持つ。旧固定キーheuristicと混ぜない。
+        import runpy
+
+        try:
+            decoder = runpy.run_path(str(Path(__file__).with_name("caff_archive.py")))
+            documents = [
+                content
+                for entry, content in decoder["Archive"](data).contents()
+                if entry.tag == "main_xml"
+            ]
+            if len(documents) != 1 or len(documents[0]) > CMO3_MAX_XML_BYTES:
+                return None
+            return documents[0]
+        except Exception:
+            return None
     plain = data.translate(_CMO3_XOR_TABLE)
     documents: list[bytes] = []
     for match in _ZIP_LOCAL_HEADER.finditer(plain):
@@ -2453,6 +2522,8 @@ def scan(
                 content_sha256 = hashlib.sha256(data).hexdigest()
                 cached = identity_cache.lookup(content_sha256)
                 if cached is not None and private_identity.reuse_clean_pass(cached):
+                    # 同じhash・デコーダ・方針を確認した控えから形式証拠も引き継ぐ。
+                    private_identity._remember_verified_caff(data)
                     private_worktree_scanned_count += 1
                     private_worktree_cache_reused += 1
                     continue
