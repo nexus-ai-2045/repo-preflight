@@ -7,15 +7,15 @@ fb797488094d06086df9c89bc9542b5530be53f3bc9500ce91c7123cf000cded  tests/test_git
 9032998aea5651efb061d570e13d451c3b60e889a1cff7b5d19d5ada36d78ea9  tests/test_identity_gate.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 7d003ed506a54de24168fd795a36f9b7cd38381bb37a856ccd51cd235a5de4cc  tests/test_identity_normalization.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 071e842235547978cff420618df15b7a9e811aebb3b30751ad153362f2ab0da6  tests/test_identity_recurrence.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-5524a172423ebdb1eaf75fe22f78dc65e12877f3de233995c3ad9832cfb48847  tests/test_local_identity_guard.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+5524a172423ebdb1eaf75fe22f78dc65e12877f3de233995c3ad9832cfb48847  tests/test_local_identity_guard.py  # 試験の仮データ。中身は例示で、2026-10-24 に品質係が試験で確認（#10 で差し替え。人の確認はまだ）
 17b8b57083c519f4419f76ce53bf87828f9b54bc7874ccdd4ec6ea88ff6a7c9e  tests/test_preflight_enforcement.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-8e688b9b0867cfa795c627a3d48d55211648e413c67eea30df84d75c66d60836  tests/test_public_identity_policy.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+8e688b9b0867cfa795c627a3d48d55211648e413c67eea30df84d75c66d60836  tests/test_public_identity_policy.py  # 試験の仮データ。中身は例示で、2026-10-24 に品質係が試験で確認（#10 で差し替え。人の確認はまだ）
 edf935d4ddd893781f8af043542523d3eab6bd220b2677cebe41a8454d463bb4  tests/test_public_synthetic_path_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 02e3ff328da8f6b88b0df2376a6a64ff0bdfcfbc6d3cf659246c7cc63c67e44a  tests/test_publish_gate.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fc46b6bcd76f08c4c0176133ac787f4ef94c215e11425e8be5e465c9dfdc8ea3  tests/test_readiness_scan.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 d6635c68c2a7f466cc5d2320b4deb9b082fc4a287578b77ada3bfcd8b6d206c9  tests/test_reviewed_secret_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 81d7b23d094693a37272a57801c2ea874d53cdc8448aec5b527de28d3a90a067  tests/test_session_trace_deny.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認。レビュー3C 高7 で1行を直し、例示だけなのを手で確かめた
-e2a0ee967f455b632305bbe9d55b1a89f7325ed7b5d2cf04d801f9f16720378c  tests/test_commit_hook_templates.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+e2a0ee967f455b632305bbe9d55b1a89f7325ed7b5d2cf04d801f9f16720378c  tests/test_commit_hook_templates.py  # 試験の仮データ。中身は例示で、2026-10-24 に品質係が試験で確認（#10 で差し替え。人の確認はまだ）
 d2c238373ead4be3c2b80b8d76e512d4777b3afe07e01026c9a338bf0b11e8e4  tests/test_holes_12_3.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fd019624242bf72bb45e96c7742ee10a957f24616c53320f1b7fcec0406a9f71  templates/canary/local-canary.sh  # カナリア脚本の仮データ。中身は例示で、2026-10-24 に人が確認
 b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7  vendor/ai_ratchet_gate-0.1.1-py3-none-any.whl  # 保全した ai-ratchet-gate v0.1.1 の原本 wheel（requirements-tools.txt と同じ SHA256）。2026-10-24 に人が確認
