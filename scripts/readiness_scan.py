@@ -773,6 +773,33 @@ class PrivateIdentityScan:
             self.path_normalizer_sha256 = hashlib.sha256(path_source_bytes).hexdigest()
             self.patterns = patterns
             self.checker = provider.scan_private_text
+            self.gif_checker = (
+                getattr(provider, "scan_private_gif", None) if bundled else None
+            )
+            self.report["gif_decoder_version"] = _optional_distribution_version(
+                "Pillow"
+            )
+            try:
+                from PIL import ImageFile, GifImagePlugin
+
+                self.report["gif_decoder_settings"] = {
+                    "truncated_images": bool(ImageFile.LOAD_TRUNCATED_IMAGES),
+                    "palette_strategy": int(GifImagePlugin.LOADING_STRATEGY),
+                }
+            except ImportError:
+                self.report["gif_decoder_settings"] = None
+
+            self.psd_checker = (
+                getattr(provider, "scan_private_psd", None) if bundled else None
+            )
+            if self.psd_checker is not None:
+                from importlib.metadata import PackageNotFoundError, version
+
+                try:
+                    self.report["psd_decoder_version"] = version("psd-tools")
+                except PackageNotFoundError:
+                    self.report["psd_decoder_version"] = "unavailable"
+
             self.png_checker = (
                 getattr(provider, "scan_private_png", None) if bundled else None
             )
@@ -810,7 +837,15 @@ class PrivateIdentityScan:
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                if data.startswith(b"\x89PNG") and callable(
+                if data.startswith(b"8BPS") and callable(
+                    getattr(self, "psd_checker", None)
+                ):
+                    results = [self.psd_checker(data, self.patterns)]
+                elif data.startswith((b"GIF87a", b"GIF89a")) and callable(
+                    getattr(self, "gif_checker", None)
+                ):
+                    results = [self.gif_checker(data, self.patterns)]
+                elif data.startswith(b"\x89PNG") and callable(
                     getattr(self, "png_checker", None)
                 ):
                     results = [self.png_checker(data, self.patterns)]
@@ -899,6 +934,13 @@ class PrivateIdentityScan:
                 "private_identity_jpeg_image_limit",
                 "private_identity_jpeg_text_limit",
                 "private_identity_jpeg_decoder_unavailable",
+                "private_identity_gif_unverified",
+                "private_identity_gif_size_limit",
+                "private_identity_gif_decoder_unavailable",
+                "private_identity_psd_unverified",
+                "private_identity_psd_decoder_unavailable",
+                "private_identity_psd_size_limit",
+                "private_identity_psd_text_limit",
                 "private_identity_png_unverified",
                 "private_identity_png_text_limit",
                 "private_identity_png_image_limit",
@@ -1031,6 +1073,11 @@ class IdentityScanCache:
                 "policy_sha256": scan.report["policy_sha256"],
                 "provider_kind": scan.report["provider_kind"],
                 "normalized_path_provider_sha256": scan.path_normalizer_sha256,
+                "gif_checker": callable(getattr(scan, "gif_checker", None)),
+                "gif_decoder_version": scan.report.get("gif_decoder_version"),
+                "gif_decoder_settings": scan.report.get("gif_decoder_settings"),
+                "psd_checker": callable(getattr(scan, "psd_checker", None)),
+                "psd_decoder_version": scan.report.get("psd_decoder_version"),
                 "png_checker": callable(getattr(scan, "png_checker", None)),
                 "jpeg_checker": callable(getattr(scan, "jpeg_checker", None)),
                 "reviewed_exceptions_sha256": reviewed_digest,
