@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from path_input_fixture import fixture_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -17,7 +18,7 @@ import identity_gate as g  # noqa: E402
 import preflight_ratchet as ratchet  # noqa: E402
 
 NEXUS = "nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>"
-FAKE_HOME = "/" + "home/" + "zz0000/" + "work"
+FAKE_HOME = fixture_path("linux", "zz0000", "work")
 FAKE_MAIL = "zz0000" + "@" + "gmail.com"
 FAKE_SESSION = (
     "Claude-" + "Session: " + "https://" + "claude.ai/code/" + "session_" + "0" * 24
@@ -74,7 +75,7 @@ def test_shape_findings_block(text, kind):
 @pytest.mark.parametrize(
     "text",
     [
-        "/" + "home/" + "runner/work/x",
+        fixture_path("linux", "runner", "work", "x"),
         "a@example.invalid",
         "Claude と相談した",
         "README の更新",

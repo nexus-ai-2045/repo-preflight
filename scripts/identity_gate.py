@@ -285,7 +285,9 @@ _ROUTE_BEFORE = re.compile(
     r"(?:[.]get\s*\(\s*|(?<![A-Za-z0-9_-])href\s*=\s*\{?\s*)[\"'`]$",
     re.I,
 )
-_ROUTE_HOME_RE = re.compile(r"/ho" r"me/(?P<name>[a-z0-9_-]+)[\"'`?#]")
+_ROUTE_HOME_RE = re.compile(
+    rf"/{LINUX_DIRECTORY_COMPONENT}/(?P<name>[a-z0-9_-]+)[\"'`?#]"
+)
 _ROUTE_NEVER = frozenset({"ubuntu"})
 
 
@@ -302,7 +304,7 @@ def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
 
 # macOS の共有フォルダは、前にドライブも逆斜線も無い、斜線で区切った Users の下の Shared だけ外す。
 # Windows のドライブ付き・逆斜線の形と、Linux の home の下の Shared は利用者名として止めたまま。
-_MAC_SHARED_DIR_RE = re.compile(r"/Us" r"ers/Shared(?![^/\\\s'\"])")
+_MAC_SHARED_DIR_RE = re.compile(rf"/{USER_DIRECTORY_COMPONENT}/Shared(?![^/\\\s'\"])")
 _DRIVE_OR_BACKSLASH_BEFORE = re.compile(r"(?:[A-Za-z]:|\\)$")
 
 
