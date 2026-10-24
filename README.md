@@ -70,6 +70,8 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 対話の状態・全intent・非公開設定・PRレビュー確認は[CLI・AI連携の詳細](docs/cli-reference.md)にまとめています。skillを配置したことと、実際に呼ばれて操作を止めたことは別です。
 
+GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・merge queueの検査を保持します。古いPRとbranch pushの実行整理、およびreusable workflowとの責務分離は[既存のCI接続説明](docs/repository-consistency-gate.md#github-actions-接続例)に記します。ローカルの成功でhosted CIや人間レビューを省略しません。
+
 ## 制約
 
 - 既知の形式による検出であり、個人情報の最終判断、権利確認、依存ライブラリの脆弱性検査は行いません。
