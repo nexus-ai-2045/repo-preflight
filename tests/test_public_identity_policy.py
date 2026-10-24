@@ -317,5 +317,6 @@ def test_pr_japanese_gate_is_absorbed(title, body, ok):
 
 def test_linux_extra_pattern_reuses_existing_directory_component():
     from path_input_fixture import fixture_root
+
     expected = r"(?<![\w./\\-])" + fixture_root("linux") + r"(?P<user>[^/\s'\"\\]+)"
     assert g.EXTRA_PATH_RES[1].pattern == expected

@@ -153,7 +153,12 @@ def test_pre_commitが名簿にない作者で止める(repo):
 
 
 def test_pre_commitがステージしたホームパスで止める(repo):
-    result, _ = _commit(repo, "-m", "試験", files={"d.txt": "p=" + fixture_path("linux", "zzzz", "x") + "\n"})
+    result, _ = _commit(
+        repo,
+        "-m",
+        "試験",
+        files={"d.txt": "p=" + fixture_path("linux", "zzzz", "x") + "\n"},
+    )
     assert result.returncode != 0
     assert "ステージした差分に実ホームパスの形" in result.stderr
 

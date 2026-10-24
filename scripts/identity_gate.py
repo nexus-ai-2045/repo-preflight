@@ -192,7 +192,10 @@ def _home_user(match: re.Match) -> str:
 # 前が英数字・点・ハイフン・スラッシュなら URL の一部（api.example.com/users/... など）として見ない。
 EXTRA_PATH_RES = (
     re.compile(r"(?<![\w./\\-])/us" r"ers/(?P<user>[^/\s'\"\\]+)", re.I),
-    re.compile(r"(?<![\w./\\-])/" + LINUX_DIRECTORY_COMPONENT + r"/(?P<user>[^/\s'\"\\]+)", re.I),
+    re.compile(
+        r"(?<![\w./\\-])/" + LINUX_DIRECTORY_COMPONENT + r"/(?P<user>[^/\s'\"\\]+)",
+        re.I,
+    ),
     re.compile(r"/mnt/[a-z]/us" r"ers/(?P<user>[^/\s'\"\\]+)", re.I),
     re.compile(r"(?<![a-z])[a-z]:[/\\]+us" r"ers[/\\]+(?P<user>[^/\\\s'\"]+)", re.I),
 )
