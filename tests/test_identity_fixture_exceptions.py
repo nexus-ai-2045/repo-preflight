@@ -13,13 +13,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from path_input_fixture import fixture_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import identity_gate as g  # noqa: E402
 
 NEXUS = "nexus-ai-2045 <273569186+nexus-ai-2045@users.noreply.github.com>"
-FAKE_HOME = "/".join(["", "home", "zz0000-fixture", "work"])
+FAKE_HOME = fixture_path("linux", "zz0000-fixture", "work")
 FAKE_MAIL = "@".join(["zz0000", "zz-dummy-corp.co.jp"])
 FIXTURE_TEXT = f"HOME = {FAKE_HOME!r}\nMAIL = {FAKE_MAIL!r}\n"
 

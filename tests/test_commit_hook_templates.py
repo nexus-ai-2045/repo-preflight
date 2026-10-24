@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
+from path_input_fixture import fixture_path
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "nexus_ai"
@@ -122,7 +123,7 @@ def test_対照_commit_aの一時索引でも通る(repo):
     [
         "連絡先 taro@" "zz-dummy-corp.co.jp",
         "Claude-" "Session: 00000000-0000-0000-0000-000000000000",
-        "p=/" "home/zzzz/x",
+        "p=" + fixture_path("linux", "zzzz", "x"),
         "Co-authored-by: unlisted <unlisted@example.invalid>",
     ],
     ids=["会社メール", "セッション行", "ホームパス", "名簿にない共著行"],
@@ -152,7 +153,7 @@ def test_pre_commitが名簿にない作者で止める(repo):
 
 
 def test_pre_commitがステージしたホームパスで止める(repo):
-    result, _ = _commit(repo, "-m", "試験", files={"d.txt": "p=/" "home/zzzz/x\n"})
+    result, _ = _commit(repo, "-m", "試験", files={"d.txt": "p=" + fixture_path("linux", "zzzz", "x") + "\n"})
     assert result.returncode != 0
     assert "ステージした差分に実ホームパスの形" in result.stderr
 

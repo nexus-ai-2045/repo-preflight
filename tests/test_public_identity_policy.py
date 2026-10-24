@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from path_input_fixture import fixture_path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -17,7 +18,7 @@ import identity_gate as g  # noqa: E402
 import preflight_ratchet as ratchet  # noqa: E402
 
 NEXUS = "nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>"
-FAKE_HOME = "/" + "home/" + "zz0000/" + "work"
+FAKE_HOME = fixture_path("linux", "zz0000", "work")
 FAKE_MAIL = "zz0000" + "@" + "gmail.com"
 FAKE_SESSION = (
     "Claude-" + "Session: " + "https://" + "claude.ai/code/" + "session_" + "0" * 24
@@ -74,7 +75,7 @@ def test_shape_findings_block(text, kind):
 @pytest.mark.parametrize(
     "text",
     [
-        "/" + "home/" + "runner/work/x",
+        fixture_path("linux", "runner", "work", "x"),
         "a@example.invalid",
         "Claude と相談した",
         "README の更新",
@@ -312,3 +313,9 @@ def test_pr_body_shapes_turn_red_on_edited(tmp_path, secret):
 )
 def test_pr_japanese_gate_is_absorbed(title, body, ok):
     assert (g.japanese_findings(title, body) == []) is ok
+
+
+def test_linux_extra_pattern_reuses_existing_directory_component():
+    from path_input_fixture import fixture_root
+    expected = r"(?<![\w./\\-])" + fixture_root("linux") + r"(?P<user>[^/\s'\"\\]+)"
+    assert g.EXTRA_PATH_RES[1].pattern == expected

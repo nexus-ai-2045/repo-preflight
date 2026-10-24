@@ -9,13 +9,13 @@ fb797488094d06086df9c89bc9542b5530be53f3bc9500ce91c7123cf000cded  tests/test_git
 071e842235547978cff420618df15b7a9e811aebb3b30751ad153362f2ab0da6  tests/test_identity_recurrence.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 5524a172423ebdb1eaf75fe22f78dc65e12877f3de233995c3ad9832cfb48847  tests/test_local_identity_guard.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 17b8b57083c519f4419f76ce53bf87828f9b54bc7874ccdd4ec6ea88ff6a7c9e  tests/test_preflight_enforcement.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-0149b93fec4b1c582479254eb33cdb93a389b2b93f3ffabc138f35082fd15526  tests/test_public_identity_policy.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+75f65906e3a01ece8633d8f7f0d809fd6382c87c96a9918c53030924e9efcdff  tests/test_public_identity_policy.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 edf935d4ddd893781f8af043542523d3eab6bd220b2677cebe41a8454d463bb4  tests/test_public_synthetic_path_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 02e3ff328da8f6b88b0df2376a6a64ff0bdfcfbc6d3cf659246c7cc63c67e44a  tests/test_publish_gate.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fc46b6bcd76f08c4c0176133ac787f4ef94c215e11425e8be5e465c9dfdc8ea3  tests/test_readiness_scan.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 d6635c68c2a7f466cc5d2320b4deb9b082fc4a287578b77ada3bfcd8b6d206c9  tests/test_reviewed_secret_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 1ca7b5c9a89c0dbbb2548b9e9d06e2d021c5483537f49915cb81f0a8934f1d4f  tests/test_session_trace_deny.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-d430d8e0f9e91d27f637fecf1fb5afc3d1e66732bdd0f6a73202531f169c36d7  tests/test_commit_hook_templates.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
+794ca8e80a54834fca8a2ce56da43bf7539274adcc4ef8e2dc4a46293cfdb382  tests/test_commit_hook_templates.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 d2c238373ead4be3c2b80b8d76e512d4777b3afe07e01026c9a338bf0b11e8e4  tests/test_holes_12_3.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fd019624242bf72bb45e96c7742ee10a957f24616c53320f1b7fcec0406a9f71  templates/canary/local-canary.sh  # カナリア脚本の仮データ。中身は例示で、2026-10-24 に人が確認
 b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7  vendor/ai_ratchet_gate-0.1.1-py3-none-any.whl  # 保全した ai-ratchet-gate v0.1.1 の原本 wheel（requirements-tools.txt と同じ SHA256）。2026-10-24 に人が確認
