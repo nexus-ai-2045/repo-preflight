@@ -1255,16 +1255,25 @@ def _raw_new_blobs(raw: bytes) -> list[tuple[str, str]]:
 
 def _gif_inputs(repo: str, blobs: list[tuple[str, str]], keep_index: bool):
     """GIF（中身の先頭か名前で判定）ごとに、gitleaks へ渡すバイト列を返す。"""
-    seen: set[str] = set()
+    # 見た印は gitleaks に渡したときだけ付ける。同じ中身が GIF でない名前で先に出ても、
+    # 後の `.gif` の名前の分を飛ばさない（中身の判定は oid ごと、名前の判定はパスごと）。
+    scanned: set[str] = set()
+    not_gif: set[str] = set()
     for path, oid in blobs:
-        if oid in seen:
+        if oid in scanned:
             continue
-        seen.add(oid)
+        named_gif = path.lower().endswith(".gif")
+        if oid in not_gif and not named_gif:
+            continue
         data = _git_bytes(repo, ["cat-file", "blob", oid], keep_index=keep_index)
         if data[:6] in GIF_MAGIC:
+            scanned.add(oid)
             yield path, b"\n".join(gif_extension_texts(data))
-        elif path.lower().endswith(".gif"):
+        elif named_gif:
+            scanned.add(oid)
             yield path, data
+        else:
+            not_gif.add(oid)
 
 
 def _gitleaks_stdin(data: bytes) -> bool:

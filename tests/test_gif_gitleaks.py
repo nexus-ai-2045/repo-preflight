@@ -170,6 +170,11 @@ RED_FORMS = {
     "名前を変えた GIF": {"art/icon.bin": gif(f"token = {KEY}".encode())},
     "名前を大文字にした GIF": {"art/ICON.GIF": gif(f"token = {KEY}".encode())},
     "文字だけの .gif": {"art/note.gif": f"token = {KEY}\n".encode()},
+    # 同じ中身が GIF でない名前（先に並ぶ a.png）にもあっても、.gif の分を飛ばさない。
+    "同じ中身の .png と .gif": {
+        "a.png": f"token = {KEY}\n".encode(),
+        "art/note.gif": f"token = {KEY}\n".encode(),
+    },
 }
 
 
