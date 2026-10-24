@@ -363,8 +363,14 @@ def test_h4_pre_push_runs_gitleaks_on_the_range(policy, repo, pushed):
 def test_h4_unpinned_gitleaks_is_refused(policy, repo, pushed, tmp_path):
     fake = tmp_path / "fakebin"
     fake.mkdir()
-    (fake / "gitleaks").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    (fake / "gitleaks").chmod(0o755)
+    # Windows の shutil.which は PATHEXT の拡張子が付いた名前しか拾わないので、
+    # 拡張子無しの偽物は素通りされ、後ろの本物（固定版）が見つかってしまう。
+    # 各 OS で「PATH の先頭で見つかる偽物」になる形で置く。
+    if os.name == "nt":
+        (fake / "gitleaks.cmd").write_text("@exit /b 0\r\n", encoding="utf-8")
+    else:
+        (fake / "gitleaks").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        (fake / "gitleaks").chmod(0o755)
     env = _env(PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
     base = _git(repo, "rev-parse", "HEAD")
     head = _commit(repo, {"a.txt": "a\n"})
