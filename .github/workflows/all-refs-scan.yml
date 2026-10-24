@@ -1,8 +1,10 @@
 name: all-refs-scan
 
 # PR・push の CI（preflight-gate.yml）は、そのイベントの commit から辿れる履歴だけを見る。
-# その穴埋めとして、PR の無い枝・タグ・PR の head（refs/pull/*/head）も含めたリモートの全 ref を、
-# 日に1回と手動で検査する。新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
+# その穴埋めとして、PR の無い枝・タグ・PR の head（refs/pull/*/head）も含めたリモートの ref を、
+# 日に1回と手動で検査する。取得するのは refs/heads・refs/tags・refs/pull/*/head だけで、
+# refs/notes やそれ以外の名前空間（任意の refs/*、refs/pull/*/merge など）は取得せず、検査の対象外。
+# 新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
 # - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
 # - 秘密・個人パス・名義の件数：scripts/preflight_ratchet.py（基準値はデフォルト枝の版より緩められない）
 # - 鍵：固定した gitleaks（全履歴）
@@ -17,7 +19,8 @@ name: all-refs-scan
 # 下の summarize.py が種類と件数に直したものだけを出す。どの ref かは、手元で同じ検査を回して確かめる。
 # checkout はフィルタ（LFS を含む。外のコマンドを動かさない）とシンボリックリンクを切った専用の作業場で行い、
 # git が何か出力した・失敗した ref は「checkout できない ref」として赤にし、残りの ref の検査は続ける。
-# LFS のポインタは中身（LFS 側の大きいファイル）を検査できないので、その件数を赤として出す。
+# LFS のポインタは中身（LFS 側の大きいファイル）を検査できないので、ref の履歴（git rev-list --objects）にある
+# ポインタの形をした小さい blob を数え、1件でもあれば赤として件数を出す（足してから消したものも数える）。
 
 on:
   schedule:
@@ -178,29 +181,40 @@ jobs:
                   kind = "種類を伏せた指摘"
               print(f"赤: {where}: {kind} {count} 件", file=sys.stderr)
           PY
-          # LFS のポインタ（1024 バイト未満で、決まった版の行から始まるファイル）を数える。件数だけを出す。
+          # LFS のポインタの形をした blob を、その ref の履歴全体（git rev-list --objects）から数える。
+          # 足してから消したポインタも数える。ポインタの大きさ（1024 バイト）以下の blob だけ中身を読む。
+          # git の出力は捨てるか、この中で受けるだけ。出すのは件数だけ（名前・ハッシュは出さない）。
           cat > "$work/lfs_pointers.py" <<'PY'
           import subprocess
           import sys
 
           PREFIXES = (b"version https://git-lfs.github.com/spec/", b"version https://hawser.github.com/spec/")
+          MAX_POINTER = 1024
           repo = sys.argv[1]
-          listing = subprocess.run(
-              ["git", "-C", repo, "ls-tree", "-r", "-z", "-l", "HEAD"], capture_output=True, check=True
-          ).stdout
-          oids = []
-          for record in listing.split(b"\0"):
-              meta = record.partition(b"\t")[0].split()
-              if len(meta) == 4 and meta[1] == b"blob" and meta[3].isdigit() and int(meta[3]) < 1024:
-                  oids.append(meta[2])
-          count = 0
-          if oids:
-              out = subprocess.run(
-                  ["git", "-C", repo, "cat-file", "--batch"],
-                  input=b"\n".join(oids) + b"\n",
-                  capture_output=True,
-                  check=True,
+
+
+          def git(args, data=None):
+              return subprocess.run(
+                  ["git", "-C", repo, *args], input=data, capture_output=True, check=True
               ).stdout
+
+
+          oids = git(["rev-list", "--objects", "--no-object-names", "HEAD"]).split()
+          small = []
+          if oids:
+              listing = git(
+                  ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+                  b"\n".join(oids) + b"\n",
+              )
+              for line in listing.splitlines():
+                  fields = line.split()
+                  if len(fields) != 3:
+                      raise SystemExit(1)
+                  if fields[1] == b"blob" and int(fields[2]) <= MAX_POINTER:
+                      small.append(fields[0])
+          count = 0
+          if small:
+              out = git(["cat-file", "--batch"], b"\n".join(small) + b"\n")
               pos = 0
               while pos < len(out):
                   end = out.index(b"\n", pos)
@@ -319,10 +333,10 @@ jobs:
               checked_out=0
               quiet git -C "$scan" update-ref --no-deref HEAD "$sha" || true
             fi
-            # LFS のポインタ。中身は検査できないので赤（取り出しでは LFS を動かさない）。
+            # LFS のポインタ（履歴にあるものも）。中身は検査できないので1件でも赤（取り出しでは LFS を動かさない）。
             if lfs_count="$(python "$work/lfs_pointers.py" "$scan" 2>> "$gitlog")"; then
               if [ "$lfs_count" -gt 0 ]; then
-                echo "赤: ${where}: LFS の中身を検査できないファイル ${lfs_count} 件" >&2
+                echo "赤: ${where}: LFS のポインタの形をした blob（履歴を含む）${lfs_count} 件" >&2
                 failed=1
               fi
             else

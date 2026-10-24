@@ -611,6 +611,10 @@ def test_unencodable_working_tree_encoding_is_red_without_name(tmp_path, origin)
     assert_nothing_personal(result, bad, secret)
 
 
+LFS_RED = (
+    r"赤: 検査 \d+/\d+（ref \d+ 件）: LFS のポインタの形をした blob（履歴を含む）1 件"
+)
+
 LFS_POINTER = (
     "version https://git-lfs.github.com/spec/v1\n"
     f"oid sha256:{hashlib.sha256(b'all-refs-scan lfs fixture').hexdigest()}\n"
@@ -658,7 +662,7 @@ def test_lfs_pointer_is_red_without_name_and_rest_is_scanned(tmp_path, origin, k
     assert result.returncode == 1
     assert any(
         re.fullmatch(
-            r"赤: 検査 \d+/\d+（ref \d+ 件）: LFS の中身を検査できないファイル 1 件",
+            LFS_RED,
             line,
         )
         for line in red_lines(result)
@@ -666,6 +670,37 @@ def test_lfs_pointer_is_red_without_name_and_rest_is_scanned(tmp_path, origin, k
     assert "Downloading" not in result.stdout + result.stderr
     assert_all_refs_scanned(result)
     assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+@pytest.mark.parametrize("kind", ["none", "git-lfs"])
+def test_lfs_pointer_added_then_removed_is_red_without_name_and_rest_is_scanned(
+    tmp_path, origin, kind
+):
+    """ポインタを足してから消した枝。checkout した木には無いが、履歴に残るので赤（件数だけ）。
+
+    LFS の設定が無い runner と、ubuntu-latest と同じく filter.lfs を必須にした runner の両方で確かめる。"""
+    if kind == "git-lfs" and shutil.which("git-lfs") is None:
+        pytest.skip("git-lfs が無い（ubuntu-latest には入っている）")
+    secret = add_secret_branch(origin)
+    git(origin, "checkout", "-q", "-b", f"{PERSONAL}/lfs-removed", "main")
+    (origin / ".gitattributes").write_text(
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8"
+    )
+    added = commit_file(origin, f"{PERSONAL}-old-scan.bin", LFS_POINTER)
+    git(origin, "rm", "-q", f"{PERSONAL}-old-scan.bin")
+    git(origin, "commit", "-qm", "remove pointer")
+    removed = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-q", "main")
+    extra_env = lfs_config(tmp_path, kind) if kind != "none" else None
+    result = run_scan(tmp_path, origin, extra_env=extra_env)
+    assert result.returncode == 1
+    assert any(re.fullmatch(LFS_RED, line) for line in red_lines(result)), red_lines(
+        result
+    )
+    assert not any("checkout できない" in line for line in red_lines(result))
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, added, removed, secret)
 
 
 @needs_tools
