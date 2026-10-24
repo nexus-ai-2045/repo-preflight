@@ -14,7 +14,7 @@ edf935d4ddd893781f8af043542523d3eab6bd220b2677cebe41a8454d463bb4  tests/test_pub
 02e3ff328da8f6b88b0df2376a6a64ff0bdfcfbc6d3cf659246c7cc63c67e44a  tests/test_publish_gate.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fc46b6bcd76f08c4c0176133ac787f4ef94c215e11425e8be5e465c9dfdc8ea3  tests/test_readiness_scan.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 d6635c68c2a7f466cc5d2320b4deb9b082fc4a287578b77ada3bfcd8b6d206c9  tests/test_reviewed_secret_exceptions.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
-4ce133c8a6c6c55bfba2b1b8c80bf48cdc3b90f2f298b05537a756ae29e569d7  tests/test_session_trace_deny.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認。レビュー3C 高7 で1行を直し、例示だけなのを手で確かめた
+81d7b23d094693a37272a57801c2ea874d53cdc8448aec5b527de28d3a90a067  tests/test_session_trace_deny.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認。レビュー3C 高7 で1行を直し、例示だけなのを手で確かめた
 d430d8e0f9e91d27f637fecf1fb5afc3d1e66732bdd0f6a73202531f169c36d7  tests/test_commit_hook_templates.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 d2c238373ead4be3c2b80b8d76e512d4777b3afe07e01026c9a338bf0b11e8e4  tests/test_holes_12_3.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fd019624242bf72bb45e96c7742ee10a957f24616c53320f1b7fcec0406a9f71  templates/canary/local-canary.sh  # カナリア脚本の仮データ。中身は例示で、2026-10-24 に人が確認
