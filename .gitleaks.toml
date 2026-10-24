@@ -7,12 +7,14 @@ useDefault = true
 [[rules]]
 id = "claude-session-trailer"
 description = "開発道具のセッション行"
-regex = '''(?i)(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*(?::|：)'''
+# レビュー3C 高7: 「:」の後ろが ID の形（数字を含む英数字の塊）のときだけ（identity_gate.SESSION_TRACE_RES と同じ形）
+regex = '''(?i)(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*(?::|：)[\s*`'"]*[A-Za-z_-]*[0-9][A-Za-z0-9_-]*'''
 
 [[rules]]
 id = "claude-session-url"
 description = "開発道具のセッションURL"
-regex = '''(?i)claude[.]ai/code/(?:session_|projects?/)'''
+# レビュー3C 高2: claude.ai と claude.com の project・chat・share・code（ファイル名に写した形も）
+regex = '''(?i)claude[.](?:ai|com)[/_](?:code[/_](?:session_|projects?[/_])|(?:projects?|chat|share|code)/[A-Za-z0-9_-])'''
 
 [[rules]]
 id = "ai-work-url"
