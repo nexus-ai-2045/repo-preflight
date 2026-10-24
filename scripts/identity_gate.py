@@ -43,14 +43,20 @@ GENERIC_PATH_RES = [
 # 個人の型（非公開設定）とは別に常に止める。値は出さず種類だけ返す。
 # readiness_scan.py の claude_session 規則と同じ型にそろえる。
 # 敵対的レビュー H1: 行頭に限らず、箇条書き・強調・空白区切り・全角コロン（NFKC で半角へ）も見る。
+# レビュー3C 高7: 「:」の後ろが ID の形（数字を含む英数字の塊）のときだけ。英語の文（Start a Claude session: run …）は通す。
 SESSION_TRACE_RES = (
     re.compile(
-        r"(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*:",
+        r"(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*:"
+        r"[\s*`'\"]*(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{4,}",
         re.I,
     ),
-    # Claude Code の作業 URL（session_… とプロジェクトの code/project/…。品質判定 H1）
-    re.compile(r"claude[.]ai/code/(?:session_|projects?/)", re.I),
-    re.compile(r"claude[.]ai/(?:chat|share)/[0-9a-f]{8}", re.I),
+    # Claude の作業 URL。レビュー3C 高2: claude.ai と claude.com の project・chat・share・code を見る。
+    # ファイル名に写した形（/ を _ に置き換えた名前。高1）も同じ型で止める。
+    re.compile(
+        r"claude[.](?:ai|com)[/_](?:code[/_](?:session_|projects?[/_])"
+        r"|(?:projects?|chat|share|code)/[A-Za-z0-9_-])",
+        re.I,
+    ),
     re.compile(
         r"(?:chatgpt[.]com|chat[.]openai[.]com)/(?:codex/tasks|c|share|g)/", re.I
     ),
@@ -167,10 +173,16 @@ def personal_mail_domain(domain: str) -> bool:
     )
 
 
-MAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9-]+(?:[.][A-Za-z0-9-]+)+)")
+# レビュー3C 高5: ドメインの末尾は英字2文字以上（@v4.1.0・lodash@4.17.21・x@W.T を外す）。
+# 画像の倍率（icon@2x.png）もメールとして見ない。
+MAIL_RE = re.compile(
+    r"[A-Za-z0-9._%+-]+@(?!\d+x[.])"
+    r"([A-Za-z0-9-]+(?:[.][A-Za-z0-9-]+)*[.][A-Za-z]{2,})(?![A-Za-z0-9-])"
+)
 # 鍵の形。readiness_scan.py の SECRET_PATTERNS（claude_session 以外）と同じ型。
 KEY_SHAPE_RES = (
-    re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
+    # レビュー3C 高6: 単語の途中（risk-・desk-）では当てず、本体に数字を1つ以上求める
+    re.compile(r"(?<![A-Za-z0-9])sk-(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -190,12 +202,47 @@ def _home_user(match: re.Match) -> str:
 
 # 敵対的レビュー H3: 大文字小文字を問わない形と WSL のドライブ配下のユーザー置き場。
 # 前が英数字・点・ハイフン・スラッシュなら URL の一部（api.example.com/users/... など）として見ない。
+# レビュー3C 重大1: 前を見る条件は ASCII だけ（かな漢字の直後のパスも止める）。
+_ASCII_PATH_BEFORE = r"(?<![A-Za-z0-9_./\\-])"
+_PATH_USER = r"(?P<user>[^/\\\s'\"]+)"
 EXTRA_PATH_RES = (
-    re.compile(r"(?<![\w./\\-])/us" r"ers/(?P<user>[^/\s'\"\\]+)", re.I),
-    re.compile(r"(?<![\w./\\-])/ho" r"me/(?P<user>[^/\s'\"\\]+)", re.I),
-    re.compile(r"/mnt/[a-z]/us" r"ers/(?P<user>[^/\s'\"\\]+)", re.I),
-    re.compile(r"(?<![a-z])[a-z]:[/\\]+us" r"ers[/\\]+(?P<user>[^/\\\s'\"]+)", re.I),
+    re.compile(_ASCII_PATH_BEFORE + r"/us" r"ers/" + _PATH_USER, re.I),
+    # 大文字の /Users/ は macOS のホームだけなので、点・下線の直後（1./・_/）も止める
+    re.compile(r"(?<![A-Za-z0-9])/Us" r"ers/" + _PATH_USER),
+    # 高4: 逆斜線で区切ったホームも見る
+    re.compile(_ASCII_PATH_BEFORE + r"[/\\]+ho" r"me[/\\]+" + _PATH_USER, re.I),
+    re.compile(r"/mnt/[a-z]/us" r"ers/" + _PATH_USER, re.I),
+    re.compile(r"(?<![a-z])[a-z]:[/\\]+us" r"ers[/\\]+" + _PATH_USER, re.I),
+    # 高3: 道具のリンク（vscode://file/…・cursor://file/…・file://localhost/…）
+    re.compile(
+        r"(?:[a-z][a-z0-9+.-]*://file|file://localhost)/+(?:us" r"ers|ho" r"me)/"
+        + _PATH_USER,
+        re.I,
+    ),
+    # 高4: WSL の UNC パス（wsl$ と wsl.localhost の下のホーム）
+    re.compile(
+        r"[/\\]{2}wsl(?:\$|[.]localhost)[/\\]+[^/\\\s]+[/\\]+ho" r"me[/\\]+" + _PATH_USER,
+        re.I,
+    ),
+    # 高3: 道具が / を - に置き換えて符号化したホーム（Claude のプロジェクト置き場の名前など）
+    re.compile(
+        r"(?<![^/\\\s'\"=:(\[])(?:[A-Za-z]-)?-Us" r"ers-(?P<user>[A-Za-z0-9._]+)"
+        r"(?=[-/\\\s'\"]|$)",
+        re.M,
+    ),
+    re.compile(r"(?<![^/\\\s'\"=:(\[])-ho" r"me-(?P<user>[A-Za-z0-9._]+)-"),
 )
+# 高7・高8: 例示の記号（<user>・$USER・${USER}・{id}・:id）で始まる利用者名と、
+# HTTP の動詞の直後（GET のすぐ後ろの feed などの経路）は実ホームとして見ない。
+_PLACEHOLDER_USER_START = ("<", "$", "{", ":")
+_HTTP_VERB_BEFORE = re.compile(r"(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)[ \t]+$")
+
+
+def _path_user_exempt(candidate: str, start: int, user: str, allowed) -> bool:
+    user = user.strip("\"'")
+    if user.casefold() in allowed or user.startswith(_PLACEHOLDER_USER_START):
+        return True
+    return _HTTP_VERB_BEFORE.search(candidate[max(0, start - 10) : start]) is not None
 
 
 def shape_findings(text: str, allow_home_users=DEFAULT_ALLOWED_HOME_USERS) -> list[str]:
@@ -204,12 +251,12 @@ def shape_findings(text: str, allow_home_users=DEFAULT_ALLOWED_HOME_USERS) -> li
     allowed = {u.casefold() for u in allow_home_users}
     candidates = text_variants(text)
     if any(
-        _home_user(m).casefold() not in allowed
+        not _path_user_exempt(c, m.start(), _home_user(m), allowed)
         for c in candidates
         for r in _PATH_GRAMMAR.PATH_PATTERNS
         for m in r.finditer(c)
     ) or any(
-        m.group("user").strip("\"'").casefold() not in allowed
+        not _path_user_exempt(c, m.start(), m.group("user"), allowed)
         for c in candidates
         for r in EXTRA_PATH_RES
         for m in r.finditer(c)
@@ -582,8 +629,10 @@ def _public_policy(allowed_identities) -> PublicPolicy:
 
 # 例示用に予約されたドメイン（RFC 2606 / 6761）。実在の人に届かないので本文に出てよい。
 RESERVED_MAIL_DOMAIN_RE = re.compile(
-    r"(?:^|[.])(?:example(?:[.](?:com|net|org))?|invalid|test|localhost)$", re.I
+    r"(?:^|[.])(?:example(?:[.](?:com|net|org))?|invalid|test|localhost|local)$", re.I
 )
+# ssh の git 利用者（clone 手順のホスト名の前の git）。個人メールの形は別に見る。
+SSH_GIT_LOCAL = "git"
 
 
 def unlisted_mail_found(text: str, policy: "PublicPolicy") -> bool:
@@ -595,6 +644,8 @@ def unlisted_mail_found(text: str, policy: "PublicPolicy") -> bool:
             if personal_mail_domain(domain):
                 continue  # 「個人メールの形」として別に数える
             if RESERVED_MAIL_DOMAIN_RE.search(domain):
+                continue
+            if m.group(0).split("@", 1)[0] == SSH_GIT_LOCAL:
                 continue
             if m.group(0).casefold().rstrip(".") not in allowed:
                 return True
@@ -656,6 +707,9 @@ def check_public_range(
             skip = _exception_skipper(repo, oid, fixture_exceptions)
             issues += diff_findings(
                 policy, added_lines(repo, oid, run_git, skip), f"{oid[:8]}: 差分に"
+            )
+            issues += diff_findings(
+                policy, changed_paths(repo, oid, run_git), f"{oid[:8]}: ファイル名に"
             )
             numstat = run_git(
                 repo,
@@ -881,6 +935,21 @@ def added_lines(repo: str, oid: str, run_git, skip=None) -> str:
     return _added_from_diff(diff, skip)
 
 
+# レビュー3C 高1: 足した・変えた・改名したファイルのパス名（改名先も）。-z で読み、改行で並べ直す。
+_PATH_NAME_ARGS = ("--name-only", "-z", "--no-renames", "--diff-filter=ACMRT")
+
+
+def _joined_paths(out) -> str:
+    return "\n".join(filter(None, out.split("\0"))) if isinstance(out, str) else ""
+
+
+def changed_paths(repo: str, oid: str, run_git) -> str:
+    """そのコミットで足した・変えたパス名（改名は新しい名前）を返す。"""
+    return _joined_paths(
+        run_git(repo, "show", "--format=", *_PATH_NAME_ARGS, "--first-parent", oid)
+    )
+
+
 def _hook_git(repo: str, *args: str) -> str:
     """フックの中の git。GIT_INDEX_FILE はそのまま使う（`commit -a` や一部だけの commit は一時の索引を渡す）。"""
     return subprocess.run(
@@ -925,6 +994,11 @@ def check_public_staged(allowed_identities, repo: str, exceptions=None) -> list[
     skip = _exception_skipper(repo, "", load_fixture_exceptions(exceptions), hook=True)
     added = _added_from_diff(diff, skip)
     issues += diff_findings(policy, added, "ステージした差分に")
+    issues += diff_findings(
+        policy,
+        _joined_paths(_hook_git(repo, "diff", "--cached", *_PATH_NAME_ARGS)),
+        "ステージしたファイル名に",
+    )
     numstat = _hook_git(
         repo, "diff", "--cached", "--numstat", "-z", "--no-renames", "--diff-filter=AM"
     )
