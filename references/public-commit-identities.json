@@ -1,0 +1,13 @@
+{
+  "schema": "public-commit-identities/v1",
+  "identities": [
+    "nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>",
+    "nexus-ai-2045 <273569186+nexus-ai-2045@users.noreply.github.com>",
+    "nexus-ai-2045 <nexus-ai-2045@users.noreply.github.com>",
+    "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+    "dependabot[bot] <support@github.com>"
+  ],
+  "committer_only": [
+    "GitHub <noreply@github.com>"
+  ]
+}

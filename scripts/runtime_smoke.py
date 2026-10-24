@@ -1,0 +1,356 @@
+"""Claude Code / Grok / CLI 向けの最小保証 smoke。
+
+依存ゼロ。exit 0 ならこのマシンで CLI 契約と skill 入口が揃っている。
+ホームへ install 済みの skill コピーがあれば、正本から drift していないことも検査する
+(install_runtime_skills --check と同じ check_one。未 install は pass)。
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REQUIRED_RELATIVE = (
+    "SKILL.md",
+    "runtime/claude-code/SKILL.md",
+    "runtime/grok/SKILL.md",
+    "runtime/agents/openai.yaml",
+    "docs/runtime-support.md",
+    "scripts/ai_entry_contract.py",
+)
+TRIGGER_TOKENS = (
+    "PR",
+    "push",
+    "公開",
+    "preflight",
+    "create",
+    "intent",
+)
+
+
+def run_scan(
+    root: Path, *args: str, env: dict | None = None
+) -> tuple[int, dict | None, str]:
+    scan = root / "scripts" / "readiness_scan.py"
+    if not scan.is_file():
+        return 2, None, "readiness_scan_missing"
+    result = subprocess.run(
+        [sys.executable, str(scan), *args],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+        env=env,
+    )
+    stdout = result.stdout.strip()
+    report = None
+    if stdout:
+        try:
+            report = json.loads(stdout)
+        except json.JSONDecodeError:
+            report = None
+    return result.returncode, report, result.stderr
+
+
+def sample_policy_environment(base: Path) -> dict:
+    """一時サンプル専用の架空設定。実運用のpolicyやhomeは変更しない。"""
+    denylist = base / "sample-denylist.txt"
+    denylist.write_text("synthetic-runtime-deny-marker\n", encoding="utf-8")
+    policy = base / "sample-policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "allow_emails": ["smoke@example.invalid"],
+                "allow_names": ["Smoke Author"],
+                "reject_all_coauthors": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env.pop("PREFLIGHT_PRIVATE_PATTERNS", None)
+    env.pop("PUBLIC_IDENTITY_GUARD_SCRIPT", None)
+    env["PREFLIGHT_PRIVATE_PATTERNS_FILE"] = str(policy)
+    env["PUBLIC_IDENTITY_DENYLIST"] = str(denylist)
+    return env
+
+
+def tool_failed(code: int, report: dict | None) -> bool:
+    """CLI が検査を完了できなかったか。所見 (blocked, rc=1) は失敗ではない。
+
+    dialogue は埋め込み scan の tool_error を外側 blocked / rc=1 に写すので
+    (dialogue_gate.dialogue_status)、埋め込み scan の status も見る。
+    """
+    if code == 2 or report is None:
+        return code == 2
+    if report.get("status") == "tool_error":
+        return True
+    scan = report.get("scan")
+    return isinstance(scan, dict) and scan.get("status") == "tool_error"
+
+
+def load_installer(root: Path):
+    """検査対象 checkout の install_runtime_skills を import する。
+
+    smoke と同じ --repo の正本で突き合わせるため、sys.path ではなく file から読む。
+    """
+    path = root / "scripts" / "install_runtime_skills.py"
+    if not path.is_file():
+        raise FileNotFoundError("install_runtime_skills_missing")
+    spec = importlib.util.spec_from_file_location(
+        "repo_preflight_install_runtime_skills", path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("install_runtime_skills_unloadable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _remediation(installer, root: Path) -> str:
+    """drift 時の再配布コマンド。--check の `next` と同じ文字列を使う。"""
+    build = getattr(installer, "_apply_remediation", None)
+    if callable(build):
+        try:
+            return str(build(root))
+        except Exception:
+            pass
+    return (
+        f"python scripts/install_runtime_skills.py --repo {root} --apply で再配布する"
+    )
+
+
+def check_runtime_skills(
+    root: Path, home: Path
+) -> tuple[list[str], list[dict], list[str]]:
+    """install 済み skill コピーの drift を install_runtime_skills --check と同じ
+    check_one で検査し、smoke の errors へ写す。
+
+    status の写像 (未知の status も含め、pass に丸めるのは ok / not_installed だけ):
+      ok            -> pass
+      not_installed -> pass (CI やホームへ配布していないマシン)
+      drift         -> fail  runtime_skills_drift:<runtime>:<findings>
+      missing_adapter / 未知の status / 例外 / SystemExit
+                    -> fail  runtime_skills_tool_error:...
+    drift のときは --check の `next` と同じ再配布コマンドを notes に載せる。
+    """
+    try:
+        installer = load_installer(root)
+        results = [
+            installer.check_one(repo=root, runtime=runtime, dest=dest)
+            for runtime, dest in installer.default_targets(home)
+        ]
+    # 検査できなかった run を pass にしない。installer が import / 検査中に
+    # sys.exit しても smoke ごと黙って終わらせない (SystemExit は Exception 外)
+    except (Exception, SystemExit) as exc:
+        return [f"runtime_skills_tool_error:{type(exc).__name__}:{exc}"], [], []
+
+    errors: list[str] = []
+    for item in results:
+        runtime = item.get("runtime", "?")
+        status = item.get("status")
+        if status in ("ok", "not_installed"):
+            continue
+        if status == "drift":
+            findings = ",".join(item.get("findings") or []) or "unspecified"
+            errors.append(f"runtime_skills_drift:{runtime}:{findings}")
+        else:
+            errors.append(f"runtime_skills_tool_error:{runtime}:{status}")
+    notes: list[str] = []
+    if any(item.get("status") == "drift" for item in results):
+        notes.append(f"runtime_skills_next={_remediation(installer, root)}")
+    return errors, results, notes
+
+
+def check_skill_file(path: Path, *, rel: str) -> list[str]:
+    errors: list[str] = []
+    if not path.is_file():
+        return [f"missing:{rel}"]
+    text = path.read_text(encoding="utf-8")
+    if path.name == "SKILL.md":
+        if not re.search(r"(?m)^name:\s*repo-preflight\s*$", text):
+            errors.append(f"skill_name_missing:{rel}")
+        if "description:" not in text:
+            errors.append(f"description_missing:{rel}")
+        missing = [
+            token
+            for token in TRIGGER_TOKENS
+            if token not in text and token.lower() not in text.lower()
+        ]
+        if len(missing) > 3:
+            errors.append(f"trigger_coverage_low:{rel}:{','.join(missing)}")
+    return errors
+
+
+def make_min_repo(base: Path) -> Path:
+    repo = base / "sample"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    # グローバル commit.gpgsign=true でも smoke が壊れないようにする
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Smoke Author"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "smoke@example.invalid"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    for name in (
+        "README.md",
+        "LICENSE",
+        "SECURITY.md",
+        "CONTRIBUTING.md",
+        "PREFLIGHT.md",
+    ):
+        body = f"# {name}\n"
+        if name == "PREFLIGHT.md":
+            body = "<!-- repo-preflight:review-record -->\n" + body
+        (repo / name).write_text(body, encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "smoke"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    parser = argparse.ArgumentParser(description="repo-preflight runtime smoke")
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+        help="repo-preflight root (default: this checkout)",
+    )
+    parser.add_argument(
+        "--home",
+        type=Path,
+        default=Path(os.path.expanduser("~")),
+        help="home directory whose installed skill copies are checked (tests)",
+    )
+    args = parser.parse_args()
+    root = args.repo.resolve()
+    errors: list[str] = []
+    notes: list[str] = []
+
+    notes.append(f"platform={platform.system()} {platform.release()}")
+    notes.append(f"python={sys.version.split()[0]}")
+    notes.append(f"root={root}")
+
+    if not (root / "scripts" / "readiness_scan.py").is_file():
+        errors.append("readiness_scan_missing")
+
+    for rel in REQUIRED_RELATIVE:
+        candidate = root / rel
+        if candidate.suffix == ".md":
+            errors.extend(check_skill_file(candidate, rel=rel))
+        elif not candidate.is_file():
+            errors.append(f"missing:{rel}")
+
+    code, report, _ = run_scan(root, "--intent", "create_repo")
+    if report is None:
+        errors.append("create_repo_not_json")
+    else:
+        if report.get("schema") != "repo-preflight.dialogue/v3":
+            errors.append("create_repo_schema")
+        if report.get("intent") != "create_repo":
+            errors.append("create_repo_intent")
+        if "guarantees" not in report or "non_guarantees" not in report:
+            errors.append("create_repo_boundaries")
+        if not report.get("proposals"):
+            errors.append("create_repo_proposals_empty")
+        notes.append(f"create_repo_status={report.get('status')} exit={code}")
+    if tool_failed(code, report):
+        errors.append("create_repo_tool_error")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sample = make_min_repo(Path(tmp))
+        sample_env = sample_policy_environment(Path(tmp))
+        notes.append("sample_policy=synthetic")
+        code, report, _ = run_scan(
+            root,
+            "--repo",
+            str(sample),
+            "--intent",
+            "open_pr",
+            "--human",
+            env=sample_env,
+        )
+        if report is None:
+            errors.append("open_pr_not_json")
+        else:
+            if report.get("schema") != "repo-preflight.dialogue/v3":
+                errors.append("open_pr_schema")
+            if report.get("scan") is None:
+                errors.append("open_pr_missing_scan")
+            notes.append(f"open_pr_status={report.get('status')} exit={code}")
+        if tool_failed(code, report):
+            errors.append("open_pr_tool_error")
+
+        code, report, _ = run_scan(root, "--repo", str(sample), env=sample_env)
+        if report is None or report.get("schema") != "repo-preflight.scan/v3":
+            errors.append("scan_schema")
+        else:
+            notes.append(f"scan_status={report.get('status')} exit={code}")
+        if tool_failed(code, report):
+            errors.append("scan_tool_error")
+
+    skill_errors, skill_results, skill_notes = check_runtime_skills(
+        root, args.home.resolve()
+    )
+    errors.extend(skill_errors)
+    for item in skill_results:
+        notes.append(f"runtime_skills_{item.get('runtime')}={item.get('status')}")
+    notes.extend(skill_notes)
+
+    payload = {
+        "schema": "repo-preflight.runtime-smoke/v1",
+        "status": "pass" if not errors else "fail",
+        "platform": platform.platform(),
+        "python": sys.version.split()[0],
+        "notes": notes,
+        "errors": errors,
+        "supported_runtimes": ["cli", "claude-code", "grok", "codex"],
+        "runtime_skills": skill_results,
+        "guarantee": (
+            "CLI dialogue/scan contracts and skill adapter files exist on this machine; "
+            "installed runtime skill copies (if any) have SKILL.md / run_preflight.py / "
+            "README.md / checkout link matching the repo sources"
+        ),
+        "non_guarantee": (
+            "Model will always load the skill; product auto-install; remote sandbox without git; "
+            "extra files added to an installed skill copy (directories are not listed)"
+            "; 実運用の非公開policyの妥当性（一時sampleは合成設定で確認）"
+        ),
+    }
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if not errors else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

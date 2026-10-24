@@ -1,0 +1,32 @@
+# 呼び出し側の公開前検査（ひな形）。置き場所は .github/workflows/public-privacy-preflight.yml。
+# __REPO_PREFLIGHT_SHA__ は承認済みの repo-preflight の 40桁 SHA に置き換える（uses の @ と preflight-ref は同じ値）。
+# 必須チェックは all-green と base-guard（preflight-guard.yml。比較元の定義で動く別ファイル）の2つ。
+name: 個人情報保護の公開前検査
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  preflight:
+    uses: nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml@__REPO_PREFLIGHT_SHA__
+    with:
+      preflight-ref: __REPO_PREFLIGHT_SHA__
+      baseline: .repo-preflight/ratchet-baseline.json
+  all-green:
+    name: all-green
+    needs: [preflight]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every gate job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          python3 -c 'import json, os, sys; r = json.loads(os.environ["RESULTS"]); sys.exit(0 if r and all(x == "success" for x in r) else 1)'

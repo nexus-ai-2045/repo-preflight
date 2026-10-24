@@ -1,0 +1,892 @@
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SMOKE = ROOT / "scripts" / "runtime_smoke.py"
+INSTALL = ROOT / "scripts" / "install_runtime_skills.py"
+RUN = ROOT / "runtime" / "shared" / "run_preflight.py"
+
+
+def test_runtime_adapters_exist_and_name_repo_preflight():
+    for rel in (
+        "SKILL.md",
+        "runtime/claude-code/SKILL.md",
+        "runtime/grok/SKILL.md",
+        "runtime/agents/openai.yaml",
+        "runtime/shared/run_preflight.py",
+        "docs/runtime-support.md",
+        "scripts/ai_entry_contract.py",
+        "schemas/ai-entry-contract.schema.json",
+        "assets/ai-entry-contract.example.json",
+        "docs/ai-constitution-entry-contract.md",
+    ):
+        path = ROOT / rel
+        assert path.is_file(), rel
+        text = path.read_text(encoding="utf-8")
+        assert "repo-preflight" in text or "readiness_scan" in text
+
+
+def test_claude_and_grok_adapters_are_portable():
+    for rel in ("runtime/claude-code/SKILL.md", "runtime/grok/SKILL.md"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "--intent" in text
+        assert "open_pr" in text
+        assert "run_preflight.py" in text
+        assert "REPO_PREFLIGHT_ROOT=" not in text or "REPO_PREFLIGHT_ROOT=\n" in text
+        # 絶対 path を skill に焼かない。検査文字列は連結で保持する
+        # (連続 literal だと自分自身の personal path scan に検出される)
+        assert "C:\\Us" + "ers\\" not in text
+        assert "/Us" + "ers/" not in text or "Use before" in text  # English prose ok
+        assert "guarantees" in text.lower() or "保証" in text or "MUST" in text
+
+
+def test_runtime_adapters_expose_configure_settings():
+    # root SKILL.md が configure_settings を intent 対話として保証する以上、
+    # 各 runtime adapter も description / intent 列挙 / trigger 語で同じ intent を
+    # 明示しないと乖離する (adapter だけ古いままだと agent が intent を発火しない)。
+    for rel in (
+        "runtime/claude-code/SKILL.md",
+        "runtime/grok/SKILL.md",
+        "runtime/agents/openai.yaml",
+    ):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "configure_settings" in text, rel
+
+
+def test_github_adoption_documents_intent_dialogue_contract():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "(docs/cli-reference.md)" in readme
+    reference = (ROOT / "docs/cli-reference.md").read_text(encoding="utf-8")
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    runtime = (ROOT / "docs/runtime-support.md").read_text(encoding="utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    for text, label in (
+        (readme, "README.md"),
+        (reference, "docs/cli-reference.md"),
+        (skill, "SKILL.md"),
+        (runtime, "docs/runtime-support.md"),
+        (changelog, "CHANGELOG.md"),
+    ):
+        assert "dialogue" in text.lower() or "対話" in text, label
+        assert "--intent" in text, label
+    for intent in ("create_repo", "push", "open_pr", "merge"):
+        assert intent in skill, intent
+        assert intent in reference, intent
+    assert "repo-preflight.dialogue/v3" in reference
+    assert "GitHub を採用" in reference
+    assert "github.com のページが対話 UI" in runtime or "ページが対話 UI" in runtime
+
+
+def test_run_preflight_discovers_root_from_clone(tmp_path: Path):
+    result = subprocess.run(
+        [sys.executable, str(RUN), "--intent", "create_repo"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert payload["schema"] == "repo-preflight.dialogue/v3"
+    assert payload["intent"] == "create_repo"
+
+
+def test_runtime_smoke_passes(tmp_path: Path):
+    # 実ユーザーの HOME に install 済みコピーがあると結果が変わるので切り離す
+    result = subprocess.run(
+        [sys.executable, str(SMOKE), "--repo", str(ROOT), "--home", str(tmp_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert payload["status"] == "pass"
+    assert "cli" in payload["supported_runtimes"]
+    assert "claude-code" in payload["supported_runtimes"]
+    assert "grok" in payload["supported_runtimes"]
+
+
+def test_runtime_smoke_sample_does_not_require_operator_private_policy(tmp_path):
+    env = dict(os.environ)
+    for key in list(env):
+        if key.startswith(("PREFLIGHT_PRIVATE_", "PUBLIC_IDENTITY_")):
+            env.pop(key)
+    result = subprocess.run(
+        [sys.executable, str(SMOKE), "--repo", str(ROOT), "--home", str(tmp_path)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 0, payload
+    assert "sample_policy=synthetic" in payload["notes"]
+
+
+def test_install_runtime_skills_portable_layout(tmp_path: Path):
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (home / ".grok").mkdir()
+
+    dry = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    dry_payload = json.loads(dry.stdout)
+    assert dry.returncode == 0
+    assert dry_payload["apply"] is False
+    assert dry_payload.get("portable") is True
+
+    applied = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+    skill_dir = home / ".claude" / "skills" / "repo-preflight"
+    assert (skill_dir / "SKILL.md").is_file()
+    assert (skill_dir / "run_preflight.py").is_file()
+    assert (skill_dir / "checkout").exists()
+    body = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert str(ROOT.resolve()) not in body
+    assert "run_preflight.py" in body
+
+    # install 先の launcher から create_repo が動く
+    launched = subprocess.run(
+        [
+            sys.executable,
+            str(skill_dir / "run_preflight.py"),
+            "--intent",
+            "create_repo",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    report = json.loads(launched.stdout)
+    assert report["schema"] == "repo-preflight.dialogue/v3"
+    assert report["intent"] == "create_repo"
+
+
+def _install(home: Path) -> None:
+    applied = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert applied.returncode == 0, applied.stdout + applied.stderr
+
+
+def _check(home: Path) -> tuple[int, dict]:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.returncode, json.loads(result.stdout)
+
+
+def _fresh_home(tmp_path: Path) -> Path:
+    home = tmp_path / "home"
+    (home / ".claude" / "skills").mkdir(parents=True)
+    (home / ".agents" / "skills").mkdir(parents=True)
+    return home
+
+
+def test_check_reports_not_installed_without_copies(tmp_path: Path):
+    code, payload = _check(_fresh_home(tmp_path))
+    assert code == 0
+    assert payload["schema"] == "repo-preflight.check-runtime-skills/v1"
+    assert payload["status"] == "pass"
+    assert payload["read_only"] is True
+    assert {item["status"] for item in payload["results"]} == {"not_installed"}
+
+
+def test_check_passes_right_after_install(tmp_path: Path):
+    """射影 (REPO_PREFLIGHT_ROOT= 行の除去) を通さないと必ず誤検知する回帰."""
+    home = _fresh_home(tmp_path)
+    _install(home)
+    code, payload = _check(home)
+    assert code == 0, payload
+    assert payload["status"] == "pass"
+    for item in payload["results"]:
+        assert item["status"] == "ok", item
+        assert item["findings"] == []
+
+
+def test_check_detects_skill_md_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    assert payload["status"] == "drift"
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    assert len(drifted) == 1
+    assert drifted[0]["runtime"] == "claude-code"
+    assert drifted[0]["findings"] == ["skill_md_drift"]
+
+
+def test_check_detects_run_preflight_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    run = home / ".agents" / "skills" / "repo-preflight" / "run_preflight.py"
+    run.write_text(run.read_text(encoding="utf-8") + "# drift\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    assert [i["runtime"] for i in drifted] == ["agents"]
+    assert drifted[0]["findings"] == ["run_preflight_drift"]
+
+
+def test_check_detects_missing_and_dangling_checkout(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    checkout = dest / "checkout"
+    if checkout.is_symlink() or checkout.exists():
+        if checkout.is_symlink():
+            checkout.unlink()
+        elif checkout.is_dir():
+            shutil.rmtree(checkout)
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["link"] == "missing"
+    assert "checkout_missing" in entry["findings"]
+
+
+def test_check_detects_readme_drift(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    readme = home / ".claude" / "skills" / "repo-preflight" / "README.md"
+    readme.write_text("# tampered\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["findings"] == ["readme_drift"]
+
+
+def test_check_is_read_only(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    before = {
+        p: p.read_bytes()
+        for p in sorted(home.rglob("*"))
+        if p.is_file() and not p.is_symlink()
+    }
+    _check(home)
+    after = {
+        p: p.read_bytes()
+        for p in sorted(home.rglob("*"))
+        if p.is_file() and not p.is_symlink()
+    }
+    assert before == after
+
+
+def test_check_and_apply_are_mutually_exclusive(tmp_path: Path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(_fresh_home(tmp_path)),
+            "--check",
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+
+
+# --- 2026-08-29 セルフレビューで見つかった 3 件の回帰 --------------------------
+
+
+def test_readme_is_still_checked_when_checkout_is_gone(tmp_path: Path):
+    """checkout を消しただけで README の検査が消えないこと。
+
+    README の期待値を「今 checkout から検出した link mode」で作ると、
+    checkout 不在時に mode が missing になり README を一切見なくなる。
+    docs は README を 4 つの検査対象の 1 つと書いているので契約違反。
+    """
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill_dir = home / ".claude" / "skills" / "repo-preflight"
+    (skill_dir / "checkout").unlink()  # install は symlink を張る
+    readme = skill_dir / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "改竄\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    findings = drifted[0]["findings"]
+    assert "checkout_missing" in findings
+    assert "readme_drift" in findings, findings
+
+
+def test_untouched_readme_is_not_flagged_when_checkout_is_replaced(tmp_path: Path):
+    """checkout を実ディレクトリに置き換えても README を drift 扱いにしないこと。
+
+    検出 mode で README を作り直すと、Linux では起こりえない junction 判定に
+    引きずられて無傷の README が drift になる。
+    """
+    home = _fresh_home(tmp_path)
+    _install(home)
+    checkout = home / ".claude" / "skills" / "repo-preflight" / "checkout"
+    checkout.unlink()
+    checkout.mkdir()
+
+    code, payload = _check(home)
+    assert code == 1
+    drifted = [i for i in payload["results"] if i["status"] == "drift"]
+    findings = drifted[0]["findings"]
+    assert "checkout_foreign" in findings
+    assert "readme_drift" not in findings, findings
+
+
+def test_non_utf8_installed_file_is_a_finding_not_a_traceback(tmp_path: Path):
+    """1 file が壊れても JSON を返し、残りの target を検査し続けること。"""
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_bytes(b"\xff\xfe\x00binary")
+
+    code, payload = _check(home)
+    assert code == 1
+    assert payload["status"] == "drift"
+    by_runtime = {i["runtime"]: i for i in payload["results"]}
+    assert by_runtime["claude-code"]["findings"] == ["skill_md_unreadable"]
+    # 壊れていない側は最後まで検査される
+    assert by_runtime["agents"]["status"] == "ok"
+
+
+def test_missing_adapter_is_not_reported_as_pass(tmp_path: Path):
+    """何も検査できなかった run を status: pass と書かないこと。
+
+    exit code だけで伝えると、JSON を読む consumer が fail-open する。
+    """
+    fake_repo = tmp_path / "fake-repo"
+    (fake_repo / "runtime" / "shared").mkdir(parents=True)
+    (fake_repo / "SKILL.md").write_text("# fake\n", encoding="utf-8")
+    (fake_repo / "runtime" / "shared" / "run_preflight.py").write_text(
+        "# fake\n", encoding="utf-8"
+    )
+    home = _fresh_home(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(fake_repo),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 2
+    assert {i["status"] for i in payload["results"]} == {"missing_adapter"}
+    assert payload["status"] != "pass"
+    assert payload["next"] != "no action"
+
+
+# --- 2026-09-12 Codex P2: --check の見逃しを塞ぐ回帰 --------------------------
+
+
+def _load_install():
+    spec = importlib.util.spec_from_file_location("install_runtime_skills", INSTALL)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _replace_checkout_with_path_file(dest: Path, recorded: str) -> None:
+    checkout = dest / "checkout"
+    if checkout.is_symlink() or checkout.exists():
+        if checkout.is_symlink() or checkout.is_file():
+            checkout.unlink()
+        else:
+            shutil.rmtree(checkout)
+    checkout.mkdir()
+    (checkout / "ROOT_PATH.txt").write_text(recorded, encoding="utf-8")
+
+
+def test_relative_path_file_target_is_rejected_even_from_repo_cwd(tmp_path: Path):
+    """相対 ROOT_PATH.txt を cwd 依存で ok にしないこと。
+
+    install は絶対 path だけを書く。`.` を repo 直下から resolve すると
+    正本と一致してしまい、launcher は後の別 cwd で解決に失敗する。
+    """
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    _replace_checkout_with_path_file(dest, ".\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["link"] == "path-file"
+    assert "checkout_foreign" in entry["findings"], entry
+
+
+def test_absolute_path_file_target_still_passes(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    _replace_checkout_with_path_file(dest, str(ROOT.resolve()) + "\n")
+
+    code, payload = _check(home)
+    assert code == 0, payload
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["status"] == "ok"
+    assert entry["link"] == "path-file"
+    assert entry["findings"] == []
+
+
+def test_unexpected_dest_node_is_drift_not_not_installed(tmp_path: Path):
+    """dest が file / dangling symlink のとき not_installed にしないこと。"""
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.write_text("not a directory\n", encoding="utf-8")
+
+    code, payload = _check(home)
+    assert code == 1
+    assert payload["status"] == "drift"
+    by_runtime = {i["runtime"]: i for i in payload["results"]}
+    assert by_runtime["claude-code"]["status"] == "drift"
+    assert by_runtime["claude-code"]["findings"] == ["dest_unexpected"]
+    assert by_runtime["agents"]["status"] == "not_installed"
+
+
+def test_dangling_dest_symlink_is_drift_not_not_installed(tmp_path: Path):
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.symlink_to(tmp_path / "missing-skill-dir")
+
+    code, payload = _check(home)
+    assert code == 1
+    entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
+    assert entry["status"] == "drift"
+    assert entry["findings"] == ["dest_unexpected"]
+
+
+def test_apply_replaces_unexpected_dest_file(tmp_path: Path):
+    """file で塞がれた dest でも --apply が再配布できること。"""
+    home = _fresh_home(tmp_path)
+    dest = home / ".claude" / "skills" / "repo-preflight"
+    dest.write_text("blocker\n", encoding="utf-8")
+    _install(home)
+    assert dest.is_dir()
+    assert (dest / "SKILL.md").is_file()
+
+
+def test_detect_link_mode_identifies_junction_before_root_path_marker(
+    tmp_path: Path, monkeypatch
+):
+    """junction 先の ROOT_PATH.txt を path-file marker と取り違えないこと。"""
+    install = _load_install()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "ROOT_PATH.txt").write_text("/unrelated/place\n", encoding="utf-8")
+
+    real_is_junction = getattr(Path, "is_junction", lambda self: False)
+
+    def fake_is_junction(self):
+        try:
+            if self.resolve() == repo.resolve():
+                return True
+        except OSError:
+            pass
+        return bool(real_is_junction(self))
+
+    monkeypatch.setattr(Path, "is_junction", fake_is_junction, raising=False)
+
+    mode, finding = install.detect_link_mode(repo, repo)
+    assert mode == "junction"
+    assert finding is None
+
+
+def test_check_remediation_preserves_script_and_repo(tmp_path: Path):
+    """別 cwd から --repo 付きで呼んでも next が script と repo を保持すること。"""
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "drift\n", encoding="utf-8")
+
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(INSTALL),
+            "--repo",
+            str(ROOT),
+            "--home",
+            str(home),
+            "--check",
+        ],
+        cwd=elsewhere,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert result.returncode == 1
+    nxt = payload["next"]
+    assert str(INSTALL.resolve()) in nxt
+    assert str(ROOT.resolve()) in nxt
+    assert "--apply" in nxt
+    assert "python scripts/install_runtime_skills.py --apply" not in nxt
+
+
+def test_runtime_smoke_fails_when_scan_reports_tool_error(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # smoke は schema しか見ておらず、scan が tool_error (rc=2) を返しても
+    # pass にしていた。「CLI 契約が揃っている」と言うなら、CLI が実行を
+    # 完了できなかったことは失敗として出す必要がある。
+    spec = importlib.util.spec_from_file_location("runtime_smoke_under_test", SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    real_run_scan = module.run_scan
+
+    def run_scan(root, *args, **kwargs):
+        code, report, stderr = real_run_scan(root, *args, **kwargs)
+        if report is not None and "--intent" not in args:
+            report = {**report, "status": "tool_error"}
+            code = 2
+        return code, report, stderr
+
+    monkeypatch.setattr(module, "run_scan", run_scan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(tmp_path)],
+    )
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "scan_tool_error" in payload["errors"]
+
+
+def test_runtime_smoke_fails_when_open_pr_embedded_scan_is_tool_error(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # open_pr の dialogue は埋め込み scan の tool_error を外側 blocked / rc=1 に
+    # 写す (dialogue_gate.dialogue_status)。外側だけ見ると見逃す (Codex P2)。
+    spec = importlib.util.spec_from_file_location("runtime_smoke_open_pr", SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    real_run_scan = module.run_scan
+
+    def run_scan(root, *args, **kwargs):
+        code, report, stderr = real_run_scan(root, *args, **kwargs)
+        if report is not None and "open_pr" in args:
+            scan = {**(report.get("scan") or {}), "status": "tool_error"}
+            report = {**report, "status": "blocked", "scan": scan}
+            code = 1
+        return code, report, stderr
+
+    monkeypatch.setattr(module, "run_scan", run_scan)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(tmp_path)],
+    )
+    assert module.main() == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "open_pr_tool_error" in payload["errors"]
+
+
+# --- runtime smoke が install 済み skill コピーの drift を検査する -------------
+# #45 の --check は誰も呼んでおらず、drift は手で実行した時しか気付けなかった。
+
+
+def _load_smoke(name: str):
+    spec = importlib.util.spec_from_file_location(name, SMOKE)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_smoke(module, home: Path, monkeypatch, capsys) -> tuple[int, dict]:
+    monkeypatch.setattr(
+        sys, "argv", ["runtime_smoke.py", "--repo", str(ROOT), "--home", str(home)]
+    )
+    code = module.main()
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_runtime_smoke_fails_when_installed_skill_drifted(
+    tmp_path: Path, monkeypatch, capsys
+):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    skill = home / ".claude" / "skills" / "repo-preflight" / "SKILL.md"
+    skill.write_text(skill.read_text(encoding="utf-8") + "stale\n", encoding="utf-8")
+
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_drift"), home, monkeypatch, capsys
+    )
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_drift:claude-code:skill_md_drift" in payload["errors"]
+    assert "runtime_skills_claude-code=drift" in payload["notes"]
+    # 直し方も smoke から分かるようにする (--check の next と同じ再配布コマンド)
+    installer = _load_install()
+    expected_next = installer._apply_remediation(ROOT.resolve())
+    assert f"runtime_skills_next={expected_next}" in payload["notes"]
+    assert "--apply" in expected_next
+
+
+def test_runtime_smoke_passes_when_installed_skills_in_sync(
+    tmp_path: Path, monkeypatch, capsys
+):
+    home = _fresh_home(tmp_path)
+    _install(home)
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_in_sync"), home, monkeypatch, capsys
+    )
+    assert code == 0, payload["errors"]
+    assert payload["status"] == "pass"
+    assert {item["status"] for item in payload["runtime_skills"]} == {"ok"}
+    assert not any(n.startswith("runtime_skills_next=") for n in payload["notes"])
+
+
+def test_runtime_smoke_passes_when_skills_not_installed(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # CI には install 済みコピーが無い。not_installed で smoke を落とさない
+    code, payload = _run_smoke(
+        _load_smoke("runtime_smoke_not_installed"), tmp_path, monkeypatch, capsys
+    )
+    assert code == 0, payload["errors"]
+    assert payload["status"] == "pass"
+    assert {item["status"] for item in payload["runtime_skills"]} == {"not_installed"}
+
+
+def test_runtime_smoke_fails_when_skill_check_cannot_run(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # 検査自体が例外で落ちた run を pass にしない (#51 の tool_error と同じ扱い)
+    module = _load_smoke("runtime_smoke_check_error")
+
+    def broken_loader(root):
+        raise OSError("boom")
+
+    monkeypatch.setattr(module, "load_installer", broken_loader)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_tool_error:OSError:boom" in payload["errors"]
+
+
+def test_runtime_smoke_skill_check_maps_non_pass_statuses_to_errors(
+    tmp_path: Path, monkeypatch
+):
+    # missing_adapter (--check の tool_error) と未知の status は pass に丸めない
+    module = _load_smoke("runtime_smoke_status_map")
+    installer = _load_install()
+    statuses = iter(["missing_adapter", "surprise"])
+
+    def fake_check_one(*, repo, runtime, dest):
+        return {"runtime": runtime, "dest": str(dest), "status": next(statuses)}
+
+    monkeypatch.setattr(installer, "check_one", fake_check_one)
+    monkeypatch.setattr(module, "load_installer", lambda root: installer)
+    errors, results, notes = module.check_runtime_skills(ROOT, _fresh_home(tmp_path))
+    assert errors == [
+        "runtime_skills_tool_error:claude-code:missing_adapter",
+        "runtime_skills_tool_error:agents:surprise",
+    ]
+    assert len(results) == 2
+
+
+def test_runtime_smoke_fails_when_skill_check_calls_sys_exit(
+    tmp_path: Path, monkeypatch, capsys
+):
+    # SystemExit は Exception ではない。installer が import / 検査中に
+    # sys.exit(0) しても smoke を黙って exit 0 で終わらせない
+    module = _load_smoke("runtime_smoke_check_sys_exit")
+    installer = _load_install()
+
+    def exiting_check_one(**kwargs):
+        sys.exit(0)
+
+    monkeypatch.setattr(installer, "check_one", exiting_check_one)
+    monkeypatch.setattr(module, "load_installer", lambda root: installer)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert payload["status"] == "fail"
+    assert "runtime_skills_tool_error:SystemExit:0" in payload["errors"]
+
+    def exiting_loader(root):
+        raise SystemExit("installer exited at import")
+
+    monkeypatch.setattr(module, "load_installer", exiting_loader)
+    code, payload = _run_smoke(module, tmp_path, monkeypatch, capsys)
+    assert code == 1
+    assert (
+        "runtime_skills_tool_error:SystemExit:installer exited at import"
+        in payload["errors"]
+    )
+
+
+def test_installed_launcher_checks_public_attribution_from_unrelated_cwd(tmp_path):
+    # Installed launcher must resolve sibling modules without cwd/PYTHONPATH help.
+    skill = tmp_path / "skill"
+    skill.mkdir()
+    launcher = skill / "run_preflight.py"
+    shutil.copyfile(RUN, launcher)
+    checkout = skill / "checkout"
+    checkout.mkdir()
+    (checkout / "ROOT_PATH.txt").write_text(str(ROOT), encoding="utf-8")
+    env = dict(os.environ)
+    for key in (
+        "REPO_PREFLIGHT_ROOT",
+        "PYTHONPATH",
+        "PREFLIGHT_PRIVATE_PATTERNS",
+        "PREFLIGHT_PRIVATE_PATTERNS_FILE",
+        "PUBLIC_IDENTITY_GUARD_SCRIPT",
+        "PUBLIC_IDENTITY_DENYLIST",
+    ):
+        env.pop(key, None)
+    # Use a disposable target and comparison ref, independent of this checkout.
+    target = tmp_path / "target"
+    target.mkdir()
+    empty_config = tmp_path / "fixture-gitconfig"
+    empty_config.write_text("", encoding="utf-8")
+    env = {key: value for key, value in env.items() if not key.startswith("GIT_")}
+    env.update(
+        GIT_CONFIG_GLOBAL=str(empty_config),
+        GIT_CONFIG_SYSTEM=str(empty_config),
+        GIT_CONFIG_NOSYSTEM="1",
+        GIT_AUTHOR_NAME="nexus_ai",
+        GIT_COMMITTER_NAME="nexus_ai",
+        GIT_AUTHOR_EMAIL="273569186+nexus-ai-2045@users.noreply.github.com",
+        GIT_COMMITTER_EMAIL="273569186+nexus-ai-2045@users.noreply.github.com",
+    )
+
+    def fixture_git(*args, data=None):
+        return (
+            subprocess.run(
+                ["git", "-C", str(target), *args],
+                env=env,
+                input=data,
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode("utf-8")
+            .strip()
+        )
+
+    fixture_git("init", "--template=")
+    tree = fixture_git("mktree", data=b"")
+    head = fixture_git("commit-tree", tree, data=b"fixture commit\n")
+    fixture_git("update-ref", "refs/heads/main", head)
+    fixture_git("symbolic-ref", "HEAD", "refs/heads/main")
+    fixture_git("update-ref", "refs/remotes/origin/main", head)
+    fixture_git("remote", "add", "origin", "https://github.com/example/repo.git")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            str(launcher),
+            "--repo",
+            str(target),
+            "--allowed-identities",
+            str(ROOT / "references/public-commit-identities.json"),
+            "--consistency-base-ref",
+            "origin/main",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    payload = json.loads(result.stdout)
+    assert "checks" in payload, payload.get("issues")
+    assert payload["checks"]["public_attribution"]["status"] == "pass"
+    # 許可名義の一覧がある CI では、非公開の型が無いことだけでは止めない（public_attribution が判定する）。
+    assert payload["checks"]["identity_gate"] == {
+        "status": "not_configured",
+        "reason": "private_patterns_not_configured",
+        "covered_by": "public_attribution",
+    }

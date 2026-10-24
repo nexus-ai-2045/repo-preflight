@@ -1,0 +1,11 @@
+name: 登録済み個人情報の検査
+description: 信頼済み workflow_run から対象 Git データだけを検査する
+runs:
+  using: composite
+  steps:
+    - name: 対象を実行せず検査する
+      shell: bash
+      env:
+        PREFLIGHT_ACTION_PATH: ${{ github.action_path }}
+        PYTHONUTF8: "1"
+      run: python "$PREFLIGHT_ACTION_PATH/../../../scripts/github_privacy_check.py"

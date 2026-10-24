@@ -1,0 +1,18 @@
+name: リポジトリ公開前検査
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    uses: ./.github/workflows/preflight-gate.yml
+    with:
+      preflight-ref: ${{ github.sha }}
+      baseline: .repo-preflight/ratchet-baseline.json

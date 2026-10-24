@@ -1,0 +1,165 @@
+name: preflight-gate
+
+# 各リポジトリから 1 行で呼ぶ共通の CI ゲート（reusable workflow）。
+# 呼び出し側の repository を全履歴で検査し、基準値ファイルとのラチェットで判定する。
+# 導入手順は docs/publish-and-ci-gate.md。呼び出し側の必須チェック名は
+# 「<呼び出し側の job id> / preflight」になる。
+
+on:
+  workflow_call:
+    inputs:
+      preflight-ref:
+        description: repo-preflight の 40桁の commit SHA。uses の @ と同じ SHA を渡す（既定なし・枝名やタグ名は不可）
+        type: string
+        required: true
+      baseline:
+        description: 呼び出し側 repository 内の基準値ファイル
+        type: string
+        default: .repo-preflight/ratchet-baseline.json
+      python-version:
+        type: string
+        default: "3.13"
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      # 検査の版は SHA で固定する。枝名（main など）は後から動くので受け付けない
+      - name: Require pinned repo-preflight SHA
+        env:
+          PREFLIGHT_REF: ${{ inputs.preflight-ref }}
+        run: '[[ "$PREFLIGHT_REF" =~ ^[0-9a-f]{40}$ ]] || { echo "preflight-ref には 40桁の commit SHA を渡してください" >&2; exit 1; }'
+      # 呼び出し側と repo-preflight を別の場所へ置き、検査対象の作業ツリーを汚さない
+      - name: Check out target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: target
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Check out repo-preflight
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nexus-ai-2045/repo-preflight
+          ref: ${{ inputs.preflight-ref }}
+          path: tool
+          persist-credentials: false
+      - name: Verify repo-preflight checkout matches the pinned SHA
+        env:
+          PREFLIGHT_REF: ${{ inputs.preflight-ref }}
+        run: 'test "$(git -C tool rev-parse HEAD)" = "$PREFLIGHT_REF"'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Run preflight ratchet
+        env:
+          BASELINE: ${{ inputs.baseline }}
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          MERGE_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
+          PUSH_BEFORE_SHA: ${{ github.event.before || '' }}
+          PUSH_FORCED: ${{ github.event.forced || false }}
+          PUSH_DELETED: ${{ github.event.deleted || false }}
+          EVENT_FETCH_TOKEN: ${{ github.token }}
+        run: |
+          set +ax
+          set -euo pipefail
+          unset event_fetch_token auth_header
+          event_fetch_token="${EVENT_FETCH_TOKEN:-}"
+          unset EVENT_FETCH_TOKEN
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE
+          unset GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_TRACE2_CONFIG_PARAMS GIT_TRACE2_ENV_VARS
+          test "$(git -C target rev-parse HEAD)" = "$EVENT_HEAD_SHA"
+          case "$GITHUB_EVENT_NAME" in
+            pull_request) BASE_SHA="$PR_BASE_SHA" ;;
+            merge_group) BASE_SHA="$MERGE_BASE_SHA" ;;
+            push)
+              test "$PUSH_FORCED" != true
+              test "$PUSH_DELETED" != true
+              BASE_SHA="$PUSH_BEFORE_SHA"
+              ;;
+            *) echo "unsupported preflight event" >&2; exit 1 ;;
+          esac
+          # 許可名義は固定した repo-preflight に同梱の一覧だけ。名簿はリポに置かない（リポ側の一覧では広げられない）。
+          policy=tool/references/public-commit-identities.json
+          args=(--repo target --baseline "$BASELINE" --allowed-identities tool/references/public-commit-identities.json)
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            # 初回だけ既存initial_tree契約を使う。比較元や空commitを作らない。
+            unset event_fetch_token
+            python - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          import sys
+
+          path = Path("tool/scripts/consistency_gate.py")
+          spec = importlib.util.spec_from_file_location("trusted_consistency_gate", path)
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+          if not module._single_complete_root(Path("target")):
+              raise SystemExit("initial push requires one complete root across all refs")
+          PY
+          else
+            [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+            # ブランチ名はイベント後に進み得る。before/base SHAを同じ固定refへ束縛する。
+            BASE_REF="refs/remotes/origin/preflight-event-base"
+            test -n "$event_fetch_token"
+            # checkoutは資格情報を残さない。read tokenはこのfetchの環境だけへ供給する。
+            auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$event_fetch_token" | base64 | tr -d '\r\n')"
+            unset event_fetch_token
+            GIT_CONFIG_COUNT=2 \
+            GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraheader" \
+            GIT_CONFIG_VALUE_0="$auth_header" \
+            GIT_CONFIG_KEY_1=credential.helper \
+            GIT_CONFIG_VALUE_1= \
+            GIT_TERMINAL_PROMPT=0 \
+              git -C target fetch --no-tags origin "${BASE_SHA}:${BASE_REF}"
+            unset auth_header
+            test "$(git -C target rev-parse "${BASE_REF}^{commit}")" = "$BASE_SHA"
+            test "$(git -C target rev-parse --symbolic-full-name "$BASE_REF")" = "$BASE_REF"
+            git -C target merge-base --is-ancestor "$BASE_REF" HEAD
+            test "$BASE_SHA" != "$EVENT_HEAD_SHA"
+            args+=(--baseline-base-ref "$BASE_SHA" --consistency-base-ref "$BASE_REF")
+          fi
+          python tool/scripts/preflight_ratchet.py "${args[@]}"
+          # 足したコミット（名義・本文・足した行）を pre-push と同じ入口（identity_gate.py --public）で見る。
+          # push・merge_group でも見る（squash の本文や Web 上の編集も通る）。初回 push は全履歴。
+          gate=(python tool/scripts/identity_gate.py --public --repo target --allowed-identities "$policy")
+          if [ -n "${BASE_REF:-}" ]; then gate+=(--range "${BASE_REF}..HEAD"); else gate+=(--range HEAD); fi
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ -n "${GITHUB_EVENT_PATH:-}" ]; then
+            # 呼び出し側は pull_request の types に edited を入れる（題名・本文の編集で再実行）。
+            gate+=(--pr-event "$GITHUB_EVENT_PATH")
+          fi
+          "${gate[@]}"
+      # gitleaks を版とハッシュで固定して入れ、足した範囲（初回は全履歴）を見る。設定は固定した repo-preflight 側だけを使う。
+      - name: Run pinned gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_ARCHIVE_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          dir="${RUNNER_TEMP:-/tmp}/gitleaks"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_ARCHIVE_SHA256}  $dir/gl.tgz" | sha256sum -c -
+          tar -xzf "$dir/gl.tgz" -C "$dir" gitleaks
+          if git -C target rev-parse -q --verify refs/remotes/origin/preflight-event-base >/dev/null; then
+            opts="refs/remotes/origin/preflight-event-base..HEAD"
+          else
+            opts="HEAD"
+          fi
+          "$dir/gitleaks" git --no-banner --redact --config tool/.gitleaks.toml --log-opts="$opts" target
+      - name: Install hash-pinned PyYAML for base-guard
+        run: python -m pip install --disable-pip-version-check --no-deps --require-hashes -r tool/requirements-guard.txt
+      # 比較元（保護された側）の呼び出し定義で、uses の @ と preflight-ref が同じ 40桁 SHA かを見る。
+      # 初回 push は比較元が無いので見送る。比較元に呼び出しが無い（導入前）ときも見送る。読めない定義は赤。
+      # これは補助。必須チェックは pull_request_target の別ワークフロー（templates/github-actions/preflight-guard.yml）。
+      - name: Check base workflow pins
+        if: ${{ !(github.event_name == 'push' && github.event.before == '0000000000000000000000000000000000000000') }}
+        run: python tool/scripts/base_guard.py --repo target --base-ref refs/remotes/origin/preflight-event-base --allow-absent

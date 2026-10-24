@@ -1,0 +1,9 @@
+/vendor/ai_ratchet_gate-0.1.1-py3-none-any.whl binary
+/vendor/ai-ratchet-gate.LICENSE -text
+# 改行は LF に固定する。Windows の core.autocrlf=true で取り出しても、フック（#!/bin/sh）・
+# スクリプト・ワークフローが CRLF にならず、「動かない／素通り」を起こさない（品質判定 M3）
+templates/** text eol=lf
+.githooks/** text eol=lf
+.github/** text eol=lf
+*.sh text eol=lf
+*.py text eol=lf

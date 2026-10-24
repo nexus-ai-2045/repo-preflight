@@ -1,0 +1,20 @@
+# 既定の規則を残したまま足す。useDefault が無いと既定の規則が 0 本になる。
+title = "repo-preflight"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "claude-session-trailer"
+description = "開発道具のセッション行"
+regex = '''(?i)(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*]*(?::|：)'''
+
+[[rules]]
+id = "claude-session-url"
+description = "開発道具のセッションURL"
+regex = '''(?i)claude[.]ai/code/(?:session_|projects?/)'''
+
+[[rules]]
+id = "ai-work-url"
+description = "開発道具の作業URL（Codex・ChatGPT・Cursor）"
+regex = '''(?i)(?:chatgpt[.]com|chat[.]openai[.]com)/(?:codex/tasks|c|share|g)/|cursor[.](?:com|sh)/(?:agents|background-agent|bc)[/?#]'''

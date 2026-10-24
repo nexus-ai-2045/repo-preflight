@@ -1,0 +1,35 @@
+name: 登録済み個人情報の検査
+on:
+  workflow_run:
+    workflows: [個人情報保護の公開前検査]
+    types: [completed]
+permissions: {}
+jobs:
+  private-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: privacy-check-trusted
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: 対象repo限定の検査用tokenを発行する
+        id: check-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.PREFLIGHT_CHECK_APP_ID }}
+          private-key: ${{ secrets.PREFLIGHT_CHECK_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: read
+          permission-checks: write
+      - uses: nexus-ai-2045/repo-preflight/.github/actions/private-identity-guard@__REPO_PREFLIGHT_MAIN_SHA__
+        env:
+          PREFLIGHT_CHECK_TOKEN: ${{ steps.check-token.outputs.token }}
+          PREFLIGHT_CHECK_APP_ID: ${{ vars.PREFLIGHT_CHECK_APP_ID }}
+          PREFLIGHT_PRIVATE_DENYLIST: ${{ secrets.PREFLIGHT_PRIVATE_DENYLIST }}
+          PREFLIGHT_PRIVATE_IDENTITY_POLICY: ${{ secrets.PREFLIGHT_PRIVATE_IDENTITY_POLICY }}

@@ -1,0 +1,55 @@
+{
+  "$schema": "./schemas/repository-consistency.schema.json",
+  "schema": "repo-preflight.consistency/v1",
+  "mode": "enforce",
+  "markdown": {
+    "include": ["README.md", "SKILL.md", "docs/**/*.md", "references/**/*.md"]
+  },
+  "readme_contracts": {
+    "required_paths": [
+      "scripts/readiness_scan.py",
+      "scripts/github_settings_gate.py",
+      "scripts/readme_release_gate.py",
+      "scripts/consistency_gate.py",
+      "docs/repository-consistency-gate.md",
+      "docs/adr/README.md"
+    ],
+    "commands": [
+      {
+        "text": "python scripts/readiness_scan.py --repo /path/to/your-repo",
+        "paths": ["scripts/readiness_scan.py"]
+      },
+      {
+        "text": "python scripts/runtime_smoke.py --repo .",
+        "paths": ["scripts/runtime_smoke.py"]
+      }
+    ]
+  },
+  "impact_map": [
+    {
+      "change": ["scripts/readiness_scan.py", "scripts/dialogue_gate.py", "scripts/github_settings_gate.py"],
+      "requires_any": ["README.md", "docs/**/*.md", "tests/test_public_narrative_contract.py", "tests/**"]
+    },
+    {
+      "change": [".github/workflows/ci.yml"],
+      "requires_any": ["README.md", "docs/runtime-support.md", "tests/test_public_narrative_contract.py"]
+    },
+    {
+      "change": ["scripts/readme_release_gate.py"],
+      "requires_any": ["README.md", "tests/test_readme_release_gate.py"]
+    },
+    {
+      "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json", ".github/workflows/documentation-contract.yml"],
+      "requires_any": ["docs/repository-consistency-gate.md", "docs/adr/**", "tests/test_consistency_gate.py"],
+      "allow_github_action_ref_updates": true
+    },
+    {
+      "change": ["scripts/ai_entry_contract.py", "schemas/ai-entry-contract.schema.json"],
+      "requires_any": ["docs/ai-constitution-entry-contract.md", "tests/test_ai_entry_contract.py"]
+    },
+    {
+      "change": ["assets/**", "runtime/**", "SKILL.md"],
+      "requires_any": ["README.md", "docs/runtime-support.md", "tests/**"]
+    }
+  ]
+}

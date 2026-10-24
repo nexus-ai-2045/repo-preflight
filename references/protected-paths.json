@@ -1,0 +1,21 @@
+{
+  "schema": "repo-preflight.protected-paths/v1",
+  "description": "これを変える PR は base-guard が赤にする（人が見て ruleset を一時的に外してマージする）。大文字小文字は区別しない。",
+  "prefixes": [
+    ".github/",
+    ".githooks/",
+    ".repo-preflight/",
+    ".husky/"
+  ],
+  "exact": [
+    ".gitleaks.toml",
+    ".gitleaksignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".pre-commit-config.yaml",
+    "CODEOWNERS",
+    "docs/CODEOWNERS",
+    "lefthook.yml",
+    "lefthook.yaml"
+  ]
+}

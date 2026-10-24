@@ -1,0 +1,12 @@
+# Codex 用のひな形：~/.codex/config.toml（またはリポの .codex/config.toml）に足す。
+# 共通フックを外す・差し替えるシェル実行（--no-verify、core.hooksPath、検査が頼る環境変数の上書き）を
+# AI 側で拒む。パスは承認済み SHA に固定した repo-preflight の clone の絶対パスに置き換える。
+# 管理外のフックは、入れたあと /hooks で信頼する必要がある。古い版では [features] の codex_hooks = true も要る。
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = 'python3 -I "/ABSOLUTE/PATH/TO/repo-preflight/scripts/ai_command_guard.py"'
+timeout = 30
+statusMessage = "repo-preflight: 検査を外す操作でないか確かめています"

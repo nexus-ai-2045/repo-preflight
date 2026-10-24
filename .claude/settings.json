@@ -1,0 +1,20 @@
+{
+  "env": {
+    "TZ": "Asia/Tokyo"
+  },
+  "timeZone": "Asia/Tokyo",
+  "timeFormat": "24-hour",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,79 @@
+name: release
+
+# 手動起動のリリース。main の HEAD で版の整合（pyproject・CHANGELOG・リリースノート）を確かめ、
+# tag と GitHub Release を作る。任意で、開いた PR の無い不要なリモートブランチを先に消す。
+# 手順は OPERATIONS.md の「リリース」。repository visibility は変更しない。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 出す版（例 0.7.0）。pyproject と CHANGELOG 先頭の版と一致させる
+        required: true
+        type: string
+      delete-branches:
+        description: リリース前に消すリモートブランチ（空白区切り）。開いた PR があるものは消さずに止める
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  release:
+    name: release
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Verify version metadata
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z"; exit 1; }
+          grep -qx "version = \"$VERSION\"" pyproject.toml || { echo "pyproject version differs"; exit 1; }
+          head_version=$(grep -m1 -oP '^## \K\S+(?= - \d{4}-\d{2}-\d{2}\s*$)' CHANGELOG.md)
+          [ "$head_version" = "$VERSION" ] || { echo "CHANGELOG head is $head_version"; exit 1; }
+          [ -f "docs/releases/v$VERSION.md" ] || { echo "docs/releases/v$VERSION.md missing"; exit 1; }
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "tag v$VERSION already exists"; exit 1
+          fi
+
+      - name: Delete stale remote branches
+        if: inputs.delete-branches != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCHES: ${{ inputs.delete-branches }}
+        run: |
+          set -euo pipefail
+          for branch in $BRANCHES; do
+            [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid branch name"; exit 1; }
+            [ "$branch" != "main" ] || { echo "refusing to delete main"; exit 1; }
+            open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq length)
+            [ "$open" = "0" ] || { echo "$branch has an open PR"; exit 1; }
+            if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch"
+              echo "deleted $branch"
+            else
+              echo "$branch is already gone"
+            fi
+          done
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          notes="docs/releases/v$VERSION.md"
+          title=$(head -n1 "$notes" | sed 's/^# //')
+          tail -n +2 "$notes" > "$RUNNER_TEMP/notes.md"
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$title" --notes-file "$RUNNER_TEMP/notes.md"

@@ -1,0 +1,57 @@
+name: 公開前プリフライト
+description: Action 自身の固定版で利用側の公開前検査を行う
+inputs:
+  repository:
+    description: 検査対象の checkout ディレクトリ
+    required: true
+  baseline:
+    description: 対象リポジトリ内の基準値ファイル
+    default: .repo-preflight/ratchet-baseline.json
+  allowed-identities:
+    description: 対象内のレビュー済み公開名義リスト（省略時は同梱リスト）
+    default: ""
+  base-sha:
+    description: PR の比較元コミット
+    default: ""
+  base-branch:
+    description: PR の比較元ブランチ
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: 公開前検査を実行する
+      shell: bash
+      env:
+        PREFLIGHT_ACTION_PATH: ${{ github.action_path }}
+        TARGET_REPOSITORY: ${{ inputs.repository }}
+        TARGET_BASELINE: ${{ inputs.baseline }}
+        TARGET_IDENTITIES: ${{ inputs.allowed-identities }}
+        TARGET_BASE_SHA: ${{ inputs.base-sha }}
+        TARGET_BASE_BRANCH: ${{ inputs.base-branch }}
+        PYTHONUTF8: "1"
+      run: |
+        set -euo pipefail
+        tool="$PREFLIGHT_ACTION_PATH/../../.."
+        identities="$tool/references/public-commit-identities.json"
+        if [ -n "$TARGET_IDENTITIES" ]; then
+          # It is an explicit target-relative JSON input, never an executable provider.
+          identities="$(python - <<'PY_RESOLVE'
+        import os
+        from pathlib import Path
+        try:
+            root = Path(os.environ["TARGET_REPOSITORY"]).resolve(strict=True)
+            raw = Path(os.environ["TARGET_IDENTITIES"])
+            path = (root / raw).resolve(strict=True)
+            if raw.is_absolute() or not path.is_relative_to(root) or not path.is_file():
+                raise ValueError("invalid path")
+        except (OSError, ValueError):
+            raise SystemExit("allowed-identities must be a file inside the target repository") from None
+        print(path)
+        PY_RESOLVE
+          )"
+        fi
+        args=(--repo "$TARGET_REPOSITORY" --baseline "$TARGET_BASELINE" --allowed-identities "$identities")
+        if [ -n "$TARGET_BASE_SHA" ]; then
+          args+=(--baseline-base-ref "$TARGET_BASE_SHA" --consistency-base-ref "origin/${TARGET_BASE_BRANCH#refs/heads/}")
+        fi
+        python "$tool/scripts/preflight_ratchet.py" "${args[@]}"

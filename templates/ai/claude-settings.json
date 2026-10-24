@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"/ABSOLUTE/PATH/TO/repo-preflight/scripts/ai_command_guard.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,62 @@
+# アーキテクチャ
+
+## 目的
+
+Repo Preflightは、ローカルGit repositoryを読み取り、見せる相手を広げる判断に必要な証拠を構造化するローカルファーストのscanner兼ライフサイクルskillです。scanner自身はGitHub作成、push、visibility変更、投稿を行いません。
+
+## コンポーネント
+
+- `scripts/readiness_scan.py`: Git状態、必須文書、履歴、secret候補、個人path、作者名義、CI、originを検査するread-only CLI。v0.3 では `--intent` で操作直前の質問パケットも返す
+- `scripts/identity_gate.py`: 名義の許可リスト・共同作者行・コミット本文を全コミット範囲で検査する。個人の型は非公開設定から読み、値は出力しない。`readiness_scan.py` の `identity_gate` は必須の停止判定に含める。設定欠落・違反は `blocked`、設定不正・検査不能は `tool_error` で止め、値を出さない
+- `scripts/dialogue_gate.py`: AI向け intent 対話パケット (proposals / confirmations) を組み立てる
+- `scripts/github_settings_gate.py`: `gh api`のGETだけでGitHub Settingsを実測し、運用profileとの差分と個別変更previewを組み立てる。default branchの保護はrulesetとclassic branch protectionを累積して評価し、必須checkは直近にmergeされたPRのhead commitで照合する。Actions設定の変更案は固定bodyではなく、実行直前に取り直した現在値へ承認項目だけを重ねて1回PUTする手順で示す
+- `SKILL.md`と`references/`: 状態、承認手順、必要文書、repository catalog登録の仕様。AI自動発火トリガーを定義
+- `tests/`: 一時Git repositoryを使い、履歴secret、読取不能、壊れたGit object、非ASCII path、gitlink、intent対話などのfail-closed挙動を固定
+- `assets/`: 対象repoへ明示的に適用する文書テンプレート。scannerから自動上書きしない
+- `.github/workflows/ci.yml`: ubuntu / macOS で Python 3.9・3.11・3.13、Windows で 3.13 の回帰試験（3.9 は test-py39 ジョブ）（ubuntu のみ `black --check scripts/ tests/` も実行。ファイル名を直書きせず、新規追加が自動で対象に入るようにしている）
+
+## データフロー
+
+```text
+AI is about to create_repo / push / open_pr / merge / configure_settings / publish / release
+  -> readiness_scan.py --intent <intent> [--repo PATH]
+  -> (optional) local scan
+  -> dialogue_gate: proposals + confirmations + guarantees/non_guarantees
+  -> agent presents numbered questions to human
+  -> human answers
+  -> agent applies only approved local fixes / settings
+  -> separate approval for the external execute step
+  -> verify
+```
+
+素の検査だけの場合:
+
+```text
+--repo PATH
+  -> resolve Git top-level
+  -> fixed-argument git subprocess
+  -> inventory + bounded blob reads
+  -> regex + metadata checks
+  -> schema v3 JSON on stdout
+```
+
+scannerは検査対象の内容を外部送信しません。secret本文をreportへ含めず、候補ファイル位置だけを返します。
+`configure_settings`だけはGitHub APIへread-only GETを行い、`repo-preflight.github-settings-review/v1`を対話packetへ添付します。通常scanはネットワーク非依存のままです。
+保証境界 (`guarantees` / `non_guarantees`) は scan / dialogue のどちらでも同じ定義を使い、pass を公開承認と誤読させない。
+intent 対話は設定提案までで、push/PR/public の実行そのものは別承認境界に残す。
+
+## Trust boundary
+
+- 信頼しない入力: `--repo`で指定されたrepository、ファイル名、ファイル内容、Git履歴、remote URL、Git command output
+- 信頼する境界: ローカルPython runtime、ローカルGit executable、scannerの固定コマンド引数、実行ユーザーのfilesystem権限
+- 外部境界: GitHub Settingsは`configure_settings` intentで`gh api`から現在値を取得する。実CI結果やorganization/enterprise policyの全体は別証拠を要求する
+- 外部境界: ローカルscanner単体はGitHub状態を証明しない。明示的なreview snapshotは`gh`で
+  CI、review、inline threadをread-only取得し、期待HEADへ束縛する
+- 権限境界: scannerは読み取り専用とし、commit、push、設定変更、削除、visibility変更を実装しない
+
+## 制約
+
+- regex検出は専門secret scannerと人間レビューを置き換えない
+- 2 MBを超える履歴blobは内容検査対象外であり、別の大容量ファイル検査が必要
+- symlinkとgitlinkはリンク先を読まず、履歴objectとmetadataだけを扱う
+- GitHubのbranch保護、Security Advisories、依存関係の脆弱性、第三者素材の権利は別途確認する

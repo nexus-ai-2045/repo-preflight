@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  # ジョブ表示名は ruleset 必須チェック `test (3.11)` / `test (3.13)` と一致させる
+  test:
+    name: test (${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade "pip>=26.1.2"
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pip install --require-hashes -r requirements-tools.txt
+      - run: python -m ai_ratchet_gate --repo .
+      # ファイル名の直書きにすると、新しく足した script / test が永久に対象外になる。
+      # 実際 tests/test_session_timezone.py (#47) が未整形のまま main へ入った。
+      - run: python -m black --check scripts/ tests/
+      - run: python -m pytest -q -n auto
+      - name: runtime smoke (CLI + skill adapters)
+        run: python scripts/runtime_smoke.py --repo .
+
+  # Mac 保証用。ruleset 必須ではないが CI で毎回通す
+  test-macos:
+    name: test-macos (${{ matrix.python-version }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade "pip>=26.1.2"
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pip install --require-hashes -r requirements-tools.txt
+      - run: python -m ai_ratchet_gate --repo .
+      - run: python -m pytest -q -n auto
+      - name: runtime smoke (CLI + skill adapters)
+        run: python scripts/runtime_smoke.py --repo .
+
+  # Mac 標準の Python 3.9 で検査とフックが動くことの保証。ruleset 必須ではない。
+  # 保全した ai-ratchet-gate wheel と black は 3.11 以上が要るので、上のジョブで回す。
+  test-py39:
+    name: test-py39 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.9"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pytest -q -n auto
+      - name: runtime smoke (CLI + skill adapters)
+        run: python scripts/runtime_smoke.py --repo .
+
+  test-windows:
+    name: test-windows (3.13)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade "pip>=26.1.2"
+      - run: python -m pip install -e ".[test]"
+      - run: python -m pip install --require-hashes -r requirements-tools.txt
+      - run: python -m ai_ratchet_gate --repo .
+      - run: python -m pytest -q -n auto
+      - name: runtime smoke (CLI + skill adapters)
+        run: python scripts/runtime_smoke.py --repo .
