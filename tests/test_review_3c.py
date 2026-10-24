@@ -228,11 +228,20 @@ def test_h1_path_names_are_red_on_pre_commit(policy, repo, name):
 
 @needs_gitleaks
 def test_h1_plain_file_names_are_green(policy, repo):
-    _add(repo, "docs/assets/icon" + AT + "2x.png.txt")
+    # 拡張子の後ろが境界の画像の倍率だけを外す（2x.png の後に .txt が続く名前は下の試験で止める）。
+    _add(repo, "docs/assets/icon" + AT + "2x.svg")
     _rename(repo, "d/renamed.txt")
     assert gate(policy, "--repo", str(repo), "--staged", cwd=repo).returncode == 0
     result = _pre_push(policy, repo)
     assert result.returncode == 0, result.stderr
+
+
+@needs_gitleaks
+def test_h1_image_scale_followed_by_domain_shape_is_red(policy, repo):
+    # 品質係 2026-10-24: 画像の拡張子の後にドメインの形が続く名前は、メールの形として止める。
+    _add(repo, "docs/assets/icon" + AT + "2x.png.txt")
+    result = gate(policy, "--repo", str(repo), "--staged", cwd=repo)
+    assert result.returncode == 1, result.stderr
 
 
 def test_gitleaks_rules_follow_session_shapes():

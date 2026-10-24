@@ -4,6 +4,7 @@
 (b) HTTP の動詞（GET・POST など）の直後のホーム
 (c) path=・url=・to=・redirect= などの後に引用符で来るホーム
 (d) 数字+x で始まるドメインと Punycode の末尾のメール（画像の倍率の除外が広すぎた分）
+(e) 「名前@2x.png.」の後にドメインが続くメール（拡張子の後ろが境界でないもの）
 
 値はすべて仮の値で、実行時に組み立てる。IDENTITY_GATE_SCRIPT で直す前の版に差し替えると、RED が落ちる。
 """
@@ -36,6 +37,9 @@ RED = {
     # (d)
     "数字+x で始まるドメイン": "fixture" + AT + "2x.company.com",
     "Punycode の末尾": "fixture" + AT + "company.xn--p1ai",
+    # (e)
+    "画像の拡張子の後にドメイン": "fixture" + AT + "2x.png.company.com",
+    "jpg の後に国別ドメイン": "fixture" + AT + "3x.jpg.company.co.jp",
 }
 GREEN = {
     "承認どおり .get( の中": f'app.get("/{H}/index", show)',
@@ -43,6 +47,8 @@ GREEN = {
     "例示の localhost は外したまま": "user" + AT + "localhost",
     "例示の .test は外したまま": "alice" + AT + "example.test",
     "画像の倍率は外したまま": "icon" + AT + "3x.webp",
+    "文末の画像の倍率も外したまま": "見本は icon" + AT + "2x.png.",
+    "かっこの中の画像の倍率も外したまま": "(icon" + AT + "2x.png)",
 }
 
 

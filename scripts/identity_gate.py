@@ -193,11 +193,12 @@ def personal_mail_domain(domain: str) -> bool:
 
 # レビュー3C 高5: ドメインの末尾は英字2文字以上（@v4.1.0・lodash@4.17.21・x@W.T を外す）。
 # Punycode の末尾（xn--…）は英字でなくてもメールとして見る。
-# 画像の倍率（ファイル名の後の「@2x.png」）は、倍率の直後が画像の拡張子で終わるときだけメールとして見ない
+# 画像の倍率（ファイル名の後の「@2x.png」）は、倍率の直後が画像の拡張子で終わるとき
+# （拡張子の後ろが末尾か境界）だけメールとして見ない。「@2x.png.」の後にドメインが続く形は見る。
 # （2x.company.com のような本物のドメインは見る）。
 MAIL_RE = re.compile(
     r"[A-Za-z0-9._%+-]+@"
-    r"(?!\d+x[.](?:png|jpe?g|gif|webp|svg|avif|bmp|ico)(?![A-Za-z0-9-]))"
+    r"(?!\d+x[.](?:png|jpe?g|gif|webp|svg|avif|bmp|ico)(?![A-Za-z0-9-]|[.][A-Za-z0-9-]))"
     r"([A-Za-z0-9-]+(?:[.][A-Za-z0-9-]+)*[.](?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+))"
     r"(?![A-Za-z0-9-])"
 )
