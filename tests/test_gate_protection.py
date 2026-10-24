@@ -66,7 +66,7 @@ def test_documentation_contract_runs_on_pr_merge_queue_and_main_push():
     body = _read(".github/workflows/documentation-contract.yml")
     assert "pull_request:" in body
     assert "merge_group:" in body
-    assert "branches: [main]" in body
+    assert "  push:\n    branches:\n      - main\n" in body
 
 
 def test_ci_workflow_keeps_ruleset_required_job_names():

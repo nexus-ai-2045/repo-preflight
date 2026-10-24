@@ -48,6 +48,7 @@ SCRIPT_OWNERS = (
     "publish_gate.py",
     "preflight_ratchet.py",
     "publish_guard_hook.py",
+    "base_guard.py",
 )
 
 

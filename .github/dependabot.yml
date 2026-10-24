@@ -10,6 +10,11 @@ updates:
       time: "09:00"
       timezone: "Asia/Tokyo"
     open-pull-requests-limit: 5
+    # requirements-tools.txt は同梱 wheel（./vendor/…）を --hash で固定した path 依存だけを持つ。
+    # Dependabot は path 依存を取得できず update_files が毎回失敗するため、走査から外す。
+    # この wheel の更新は人が release wheel と SHA-256 を差し替えて行う。
+    exclude-paths:
+      - "requirements-tools.txt"
 
   # full SHA へ固定した GitHub Actions の更新候補を追跡する。
   - package-ecosystem: "github-actions"

@@ -1096,6 +1096,101 @@ def test_allowed_identities_fail_on_unlisted_committer(tmp_path: Path):
     assert "someone@example.invalid" not in json.dumps(report)
 
 
+WEB_COMMITTER = "GitHub <noreply@github.com>"
+
+
+def write_policy_with_committer_only(tmp_path: Path) -> Path:
+    path = tmp_path / "allowed-identities.json"
+    path.write_text(
+        json.dumps(
+            {
+                "identities": ["Test Author <test-author@example.invalid>"],
+                "committer_only": [WEB_COMMITTER],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def commit_extra(repo: Path, message: str = "extra", **identity: str) -> None:
+    (repo / "extra.txt").write_text(message + "\n", encoding="utf-8")
+    git(repo, "add", "extra.txt")
+    subprocess.run(
+        ["git", "commit", "-q", "-m", message],
+        cwd=repo,
+        check=True,
+        env={**os.environ, **identity},
+    )
+
+
+def test_allowed_identities_committer_only_passes_as_committer(tmp_path: Path):
+    # Dependabot の PR は作者が dependabot[bot]、記録者が GitHub の Web 名義になる
+    repo = make_repo(tmp_path)
+    commit_extra(
+        repo,
+        GIT_COMMITTER_NAME="GitHub",
+        GIT_COMMITTER_EMAIL="noreply@github.com",
+    )
+
+    check = MODULE.scan(
+        repo, allowed_identities=write_policy_with_committer_only(tmp_path)
+    )["checks"]["commit_identity"]
+
+    assert check["status"] == "pass"
+    assert check["mismatch_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "committer_email",
+    [
+        "NoReply@github.com",
+        "noreply@github.com.example.invalid",
+        "noreply@example.invalid",
+    ],
+)
+def test_allowed_identities_committer_only_is_exact_match(
+    tmp_path: Path, committer_email: str
+):
+    repo = make_repo(tmp_path)
+    commit_extra(repo, GIT_COMMITTER_NAME="GitHub", GIT_COMMITTER_EMAIL=committer_email)
+
+    report = MODULE.scan(
+        repo, allowed_identities=write_policy_with_committer_only(tmp_path)
+    )
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 1
+
+
+def test_allowed_identities_committer_only_fails_as_author(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    commit_extra(
+        repo,
+        GIT_AUTHOR_NAME="GitHub",
+        GIT_AUTHOR_EMAIL="noreply@github.com",
+    )
+
+    report = MODULE.scan(
+        repo, allowed_identities=write_policy_with_committer_only(tmp_path)
+    )
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 1
+
+
+def test_allowed_identities_committer_only_fails_as_co_author(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    commit_extra(repo, f"extra\n\nCo-authored-by: {WEB_COMMITTER}")
+
+    report = MODULE.scan(
+        repo, allowed_identities=write_policy_with_committer_only(tmp_path)
+    )
+
+    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 1
+
+
 def test_allowed_identities_invalid_file_is_tool_error(tmp_path: Path):
     repo = make_repo(tmp_path)
     allowed = write_allowed_identities(tmp_path, [])

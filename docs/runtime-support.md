@@ -29,7 +29,9 @@
    root `SKILL.md` と乖離しない（GitHub Settings の変更は行わず GET/比較/preview まで）。
 4. **クロス OS CIの定義**
    `.github/workflows/ci.yml` どおり: ubuntu-latest と macos-latest で Python 3.9 / 3.11 / 3.13、  
-   windows-latest で Python 3.13 のみ。3.9 は test-py39 ジョブで pytest だけを回す（ai-ratchet-gate と black は 3.11 以上のジョブで回す）。各ジョブを`PYTHONUTF8=1`で実行し、pytest（`pytest-xdist` で `-n auto` の並行実行）、`runtime_smoke`、原本のまま同梱したrelease wheelとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。
+   windows-latest で Python 3.13 のみ。3.9 は test-py39 ジョブで pytest だけを回す（ai-ratchet-gate と black は 3.11 以上のジョブで回す）。各ジョブを`PYTHONUTF8=1`で実行し、pytest（`pytest-xdist` で `-n auto` の並行実行）、`runtime_smoke`、原本のまま同梱したrelease wheelとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1を実行する。  
+   秘密情報検査の試験は本物の gitleaks を要るため、各ジョブ（Windows・macOS を含む）は最初に `scripts/install_pinned_gitleaks.py` で `references/gitleaks-pins.json` の版（preflight-gate と同じ 8.30.1）を入れる。OS ごとの配布物の SHA-256 と、取り出した本体の SHA-256 の両方が固定値と一致したときだけ置き、合わなければジョブを止める。  
+   workflow の一覧は `jobs` の外では block 形式、matrix は `include` 形式で書く。consistency gate の Action 参照読み取り器は流れ形式やスカラーの列を読まずに免除を断るため、こう書かないと Dependabot の Action SHA 更新が関連 docs 不足で止まる。
 5. **発火は skill 遵守前提**  
    エージェントが skill を読み、外部操作前に CLI を実行する運用を契約とする。
 6. **GitHub 採用時の対話**  
