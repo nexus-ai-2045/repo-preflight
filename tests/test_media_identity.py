@@ -515,10 +515,32 @@ def test_mp4_normal_and_mvhd_trailer_both_reject_before_callbacks(tmp_path):
             )
 
 
-def test_mp4_process_failure_is_safe(monkeypatch):
+def test_mp4_process_failure_is_safe(tmp_path, monkeypatch):
+    path = tmp_path / "malformed.mp4"
+    path.write_bytes(b"not a valid media container")
+    monkeypatch.setattr(MEDIA.shutil, "which", lambda name: "/synthetic/" + name)
     monkeypatch.setattr(MEDIA, "_run", lambda *a, **kw: (1, b"", b"private stderr"))
-    with pytest.raises(ValueError, match="private_identity_media_unverified"):
+    with pytest.raises(MEDIA.MediaError, match="^unverified$"):
+        MEDIA._mp4(path, MEDIA._Extracted())
+
+
+def test_mp4_child_failure_is_sanitized(monkeypatch):
+    monkeypatch.setattr(MEDIA, "_run", lambda *a, **kw: (1, b"", b"private stderr"))
+    with pytest.raises(ValueError, match="^private_identity_media_unverified$"):
         scan(b"not a valid media container", "mp4")
+
+
+def test_mp4_missing_decoder_stops_before_process(tmp_path, monkeypatch):
+    path = tmp_path / "malformed.mp4"
+    path.write_bytes(b"not a valid media container")
+    monkeypatch.setattr(MEDIA.shutil, "which", lambda name: None)
+
+    def unexpected_process(*args, **kwargs):
+        pytest.fail("missing decoder must stop before process execution")
+
+    monkeypatch.setattr(MEDIA, "_run", unexpected_process)
+    with pytest.raises(MEDIA.MediaError, match="^dependency_unavailable$"):
+        MEDIA._mp4(path, MEDIA._Extracted())
 
 
 def coverage_pdf(*, header=False, comment=False, free=False):

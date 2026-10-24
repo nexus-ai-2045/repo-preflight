@@ -8,7 +8,7 @@ import sys
 import pytest
 from pypdf import PdfWriter
 from test_readiness_scan import MODULE, SCRIPT, make_repo, git
-from test_media_identity import make_av, requires_decoder
+from test_media_identity import make_av, requires_decoder, FFMPEG, FFPROBE
 
 requires_pdf = pytest.mark.skipif(
     sys.version_info < (3, 10), reason="PDF inspection requires Python 3.10+"
@@ -83,7 +83,7 @@ def test_real_readiness_pdf_metadata_and_adapter_evidence(tmp_path, monkeypatch)
         (
             "unknown.mp4",
             b"\x00\x00\x00\x10ftypisom\x00\x00\x00\x00",
-            "unverified",
+            "unverified" if FFMPEG and FFPROBE else "dependency_unavailable",
         ),
     ],
 )

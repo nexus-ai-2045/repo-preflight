@@ -304,3 +304,5 @@ PDFの完全原本検査はPython 3.10+のoptional機能（pypdf 6.21.2 / pdfmin
 Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3・eexec開始・readstring→PS object→CharStrings/Subrsを正確に結ぶ。raw/decryptedの全文字領域を検査し、完全なcodeword decode後のbinary区間以外は免除しない。operation/割当前allocation/stack/depth/output/I/O予算を超えれば停止する。PatternType1/FunctionType4は既存parserでinert graphics sourceを確認する。checksumだけの不一致は数値diagnosticとして残すが、全table/glyph/metadataはstrict decompile必須で、元checksum整合性の保証をしない。
 
 埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。Python3.10のPDF字句・原本検査は維持し、font decoderがない入力はdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
+
+媒体依存のPython 3.9互換版はMutagen 1.47.0（上流Requires-Python >=3.7）、3.10+は1.48系（>=3.10）を使う。FFmpeg/FFprobe不足は検査成功ではなくdependency unavailableで停止する。fontTools 4.67.0のsource pinは既存LF SHAを維持し、配布SHAを照合した公式Windows wheelの完全一致CRLF SHAだけを追加する。任意の改行正規化・混在改行・コード変更は受理しない。

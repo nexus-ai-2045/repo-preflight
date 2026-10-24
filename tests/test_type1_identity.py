@@ -205,6 +205,31 @@ def test_type1_dependency_source_drift_rejects(monkeypatch):
         inspect_font(data, lengths)
 
 
+@pytest.mark.parametrize("name", list(TYPE1.SOURCES))
+def test_type1_exact_windows_source_and_unreviewed_variants(name):
+    import importlib
+
+    raw = Path(importlib.import_module(name).__file__).read_bytes()
+    canonical = raw.replace(b"\r\n", b"\n")
+    windows = canonical.replace(b"\n", b"\r\n")
+    assert hashlib.sha256(canonical).hexdigest() == TYPE1.SOURCES[name]
+    assert hashlib.sha256(windows).hexdigest() == TYPE1.WINDOWS_SOURCES[name]
+    TYPE1._verify_source_bytes(name, canonical)
+    TYPE1._verify_source_bytes(name, windows)
+    for unreviewed in (windows + b"# drift\r\n", windows.replace(b"\r\n", b"\n", 1)):
+        with pytest.raises(TYPE1.Type1Error, match="dependency"):
+            TYPE1._verify_source_bytes(name, unreviewed)
+
+
+def test_type1_windows_source_still_bound_to_canonical_pin(monkeypatch):
+    name = "fontTools.misc.psLib"
+    canonical = Path(psLib.__file__).read_bytes().replace(b"\r\n", b"\n")
+    windows = canonical.replace(b"\n", b"\r\n")
+    monkeypatch.setitem(TYPE1.SOURCES, name, "0" * 64)
+    with pytest.raises(TYPE1.Type1Error, match="dependency"):
+        TYPE1._verify_source_bytes(name, windows)
+
+
 def test_type1_host_io_guard_restores_real_implementations():
     import builtins
 

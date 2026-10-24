@@ -159,6 +159,35 @@ class _Extracted:
         }
 
 
+def _verify_font_reader_sources():
+    import fontTools.ttLib.ttFont as tt_source
+    import fontTools.ttLib.sfnt as sfnt_source
+
+    # The official 4.67.0 Windows wheel uses CRLF in these Python sources.
+    # Accept only the two verified raw artifacts, not arbitrary normalization.
+    for module, expected in (
+        (
+            tt_source,
+            {
+                "01bed50be567307a84cd4f0c19e12514e746689501f6f7aacddc04edeeb59079",
+                "e8a849a433548185466e5cd18b945a479553379654992af526703850dc651605",
+            },
+        ),
+        (
+            sfnt_source,
+            {
+                "adb2adf08781868769f14bcff10ec6cd3772f6fb80d4d316c4404bcc8653a4d9",
+                "0c3dbc294906a37243ff084326b83e4af7ba3089638e5477275203f138d1b5ca",
+            },
+        ),
+    ):
+        if (
+            hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+            not in expected
+        ):
+            raise MediaError("dependency_unavailable")
+
+
 def _font(data, subtype, output, lengths=None):
     from fontTools import version
     from fontTools.cffLib import CFFFontSet
@@ -167,18 +196,7 @@ def _font(data, subtype, output, lengths=None):
     output.versions["fonttools"] = version
     if version != "4.67.0":
         raise MediaError("dependency_unavailable")
-    import fontTools.ttLib.ttFont as tt_source
-    import fontTools.ttLib.sfnt as sfnt_source
-
-    for module, expected in (
-        (tt_source, "01bed50be567307a84cd4f0c19e12514e746689501f6f7aacddc04edeeb59079"),
-        (
-            sfnt_source,
-            "adb2adf08781868769f14bcff10ec6cd3772f6fb80d4d316c4404bcc8653a4d9",
-        ),
-    ):
-        if hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest() != expected:
-            raise MediaError("dependency_unavailable")
+    _verify_font_reader_sources()
     if subtype == "/FontFile":
         import types
 

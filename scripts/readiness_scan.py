@@ -2256,6 +2256,19 @@ def changed_working_tree_files(
             if mode_probe.returncode:
                 raise RuntimeError("git_target_diff_inventory_failed")
             entries = [line for line in mode_probe.stdout.splitlines() if line]
+            if not entries:
+                # A committed deletion may retain an ignored local original.
+                # Prove absence from HEAD before excluding its nondelivery copy.
+                head_probe = run_subprocess(
+                    ["git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", rel],
+                    cwd=repo,
+                    capture_output=True,
+                )
+                if head_probe.returncode:
+                    raise RuntimeError("git_target_diff_inventory_failed")
+                if not head_probe.stdout:
+                    deleted.add(path)
+                    continue
             if len(entries) != 1:
                 raise RuntimeError("git_target_diff_inventory_failed")
             mode = entries[0].split(maxsplit=1)[0]

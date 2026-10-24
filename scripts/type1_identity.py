@@ -22,9 +22,33 @@ SOURCES = {
     "fontTools.misc.eexec": "18d9f638246f3b51db6c87833f193d8b48253bb72ec7f0106a854c5e1051f32f",
 }
 
+# Exact raw sources in the SHA-verified official fontTools 4.67.0 Windows
+# wheel. Its CRLF sources otherwise equal the existing LF source pins.
+WINDOWS_SOURCES = {
+    "fontTools.t1Lib": "cd5566943584bfd5182a95006025f9ae26f33477744e020673f84163e40e11c4",
+    "fontTools.misc.psLib": "d47834e0910fe2b457cecabd77c7aafad753015c4c42e6eb7002db4445ec7e4a",
+    "fontTools.misc.psOperators": "f67678ca66e288202963d57c38046962abceef7384709806c93b42b86cc3fabc",
+    "fontTools.misc.psCharStrings": "1be66367972ea80a79d66ae1a3e4489a66def6e527c50fce512e230b8a54e118",
+    "fontTools.misc.eexec": "78df51d7febbb5669e5a7de2904b3457007537bcabe2f05bcecf9a31b01444ec",
+}
+
 
 class Type1Error(ValueError):
     """Fixed diagnostic vocabulary, no source values."""
+
+
+def _verify_source_bytes(name: str, source: bytes) -> None:
+    """Accept only reviewed raw LF/Windows CRLF artifacts of the same source."""
+    expected = SOURCES[name]
+    actual = hashlib.sha256(source).hexdigest()
+    if actual == expected:
+        return
+    if (
+        actual == WINDOWS_SOURCES[name]
+        and hashlib.sha256(source.replace(b"\r\n", b"\n")).hexdigest() == expected
+    ):
+        return
+    raise Type1Error("dependency")
 
 
 class _Budget:
@@ -99,14 +123,10 @@ def _scan_type1(
 
     if fontTools.version != "4.67.0":
         raise Type1Error("dependency")
-    for name, expected in SOURCES.items():
-        if (
-            hashlib.sha256(
-                Path(importlib.import_module(name).__file__).read_bytes()
-            ).hexdigest()
-            != expected
-        ):
-            raise Type1Error("dependency")
+    for name in SOURCES:
+        _verify_source_bytes(
+            name, Path(importlib.import_module(name).__file__).read_bytes()
+        )
     # This reviewed subset is small Type1 programs. Bound the existing lexer's
     # largest possible token before it materializes a source literal/comment.
     if isinstance(data, bytes) and len(data) > 2000000:
