@@ -29,7 +29,7 @@ PATH_PATTERNS = (
     re.compile(
         _UNIX_PATH_START
         + r"(?P<personal_path>/Us"
-        + r"ers/(?:[^/\s'\"]+|"
+        + r"ers/(?!Shared(?:/|$))(?:[^/\s'\"]+|"
         + _QUOTED_UNIX_USER
         + r"))"
     ),

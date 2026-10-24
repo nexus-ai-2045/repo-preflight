@@ -85,6 +85,16 @@ def archive(
                 else:
                     zf.writestr("contents", content)
             content = stream.getvalue()
+            if zip_damage == "directory_name":
+                damaged = bytearray(content)
+                central = damaged.index(b"PK\x01\x02")
+                suffix = b"\0" + DENIED.encode()
+                length = struct.unpack_from("<H", damaged, central + 28)[0]
+                damaged[central + 46 + length : central + 46 + length] = suffix
+                struct.pack_into("<H", damaged, central + 28, length + len(suffix))
+                size = struct.unpack_from("<I", damaged, len(damaged) - 10)[0]
+                struct.pack_into("<I", damaged, len(damaged) - 10, size + len(suffix))
+                content = bytes(damaged)
             if zip_damage == "eof":
                 damaged = bytearray(content)
                 damaged[38] &= 0xFE
@@ -311,3 +321,47 @@ def test_unknown_reserved_metadata_is_not_silently_ignored():
     raw[18:22] = b"name"
     with pytest.raises(ValueError, match="caff_unverified"):
         ENGINE.scan_private_caff(bytes(raw), [DENIED])
+
+
+def test_original_zip_directory_name_is_verified_before_truncation():
+    raw = archive(zip_damage="directory_name")
+    with pytest.raises(ValueError, match="caff_unverified"):
+        ENGINE.scan_private_caff(raw, [DENIED])
+
+
+@pytest.mark.parametrize("name", [b"CAFF.md", b"CAFF/assets/model.cmo3"])
+def test_repository_names_are_not_dispatched_as_container_data(tmp_path, name):
+    spec = importlib.util.spec_from_file_location(
+        "caff_name_readiness", ROOT / "scripts/readiness_scan.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scan = module.PrivateIdentityScan(repo, True)
+    assert scan.checker is not None
+    scan.check(name, repository_name=True)
+    assert scan.result()["status"] == "pass"
+    assert scan.checker is not None
+
+
+def test_builtin_macos_shared_directory_is_not_a_personal_home():
+    shared = fixture_path("macos", "Shared", "neku-live2d")
+    assert not ENGINE.hit_local_absolute_path(shared)
+    assert ENGINE.scan_private_text(shared, [DENIED])["status"] == "pass"
+    raw = archive(xml=f"<r>{shared}</r>".encode())
+    assert ENGINE.scan_private_caff(raw, [DENIED])["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "flavour,username",
+    [
+        ("windows", "Shared"),
+        ("linux", "Shared"),
+        ("macos", "Shared-person"),
+        ("macos", "Shared person"),
+    ],
+)
+def test_shared_directory_rule_never_exempts_actual_user_homes(flavour, username):
+    value = fixture_path(flavour, username, "work")
+    assert ENGINE.hit_local_absolute_path(value)

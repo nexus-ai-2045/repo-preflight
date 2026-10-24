@@ -850,8 +850,10 @@ class PrivateIdentityScan:
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                if data.startswith(b"CAFF") and callable(
-                    getattr(self, "caff_checker", None)
+                if (
+                    not repository_name
+                    and data.startswith(b"CAFF")
+                    and callable(getattr(self, "caff_checker", None))
                 ):
                     results = [
                         self.caff_checker(data, self.patterns, self.caff_image_cache)

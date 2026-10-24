@@ -254,7 +254,11 @@ class Archive:
                 try:
                     with zipfile.ZipFile(io.BytesIO(raw)) as zf:
                         infos = zf.infolist()
-                        if len(infos) != 1 or infos[0].filename != "contents":
+                        if (
+                            len(infos) != 1
+                            or infos[0].filename != "contents"
+                            or infos[0].orig_filename != "contents"
+                        ):
                             raise _error()
                         value = _regular_zip(raw, zf, infos[0], MAX_EXPANDED - total)
                 except zipfile.BadZipFile:
