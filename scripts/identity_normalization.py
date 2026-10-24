@@ -1152,21 +1152,47 @@ def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
             metadata_match |= result["local_path_match"]
             reconstructed |= result.get("reconstructed_path_match", False)
 
+    def iptc(raw):
+        # IIMのrecord/dataset見出しと長さを、本文から分離して読む。
+        offset = 0
+        while offset < len(raw):
+            if offset + 5 > len(raw) or raw[offset] != 0x1C:
+                raise ValueError("private_identity_psd_unverified")
+            length = int.from_bytes(raw[offset + 3 : offset + 5], "big")
+            offset += 5
+            if length & 0x8000:
+                octets = length & 0x7FFF
+                if not 1 <= octets <= 4 or offset + octets > len(raw):
+                    raise ValueError("private_identity_psd_unverified")
+                length = int.from_bytes(raw[offset : offset + octets], "big")
+                offset += octets
+            if offset + length > len(raw):
+                raise ValueError("private_identity_psd_unverified")
+            for candidate in raw_views(raw[offset : offset + length]):
+                text(candidate)
+            offset += length
+
     def visit(value):
         nonlocal nodes
         nodes += 1
         if nodes > 100000:
             raise ValueError("private_identity_psd_text_limit")
-        if isinstance(value, str):
+        from psd_tools.psd.image_resources import ImageResource
+
+        if isinstance(value, ImageResource) and int(value.key) == 1028:
+            visit(value.name)
+            if not isinstance(value.data, bytes):
+                raise ValueError("private_identity_psd_unverified")
+            iptc(value.data)
+        elif isinstance(value, str):
             text(value)
         elif isinstance(value, bytes):
             for candidate in raw_views(value):
                 # 構造のゼロ区切りは本文の結合として解釈しない。
-                for segment in candidate.split("\x00"):
-                    if segment and all(
-                        ch.isprintable() or ch in "\r\n\t" for ch in segment
-                    ):
-                        text(segment)
+                for segment in re.findall(
+                    r"[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+", candidate
+                ):
+                    text(segment)
         elif isinstance(value, Mapping):
             for key, item in value.items():
                 visit(key)

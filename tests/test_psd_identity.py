@@ -167,3 +167,43 @@ def test_hidden_mask_pixels_are_scanned():
     stream = io.BytesIO()
     image._record.write(stream)
     assert ENGINE.scan_private_psd(stream.getvalue(), [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize("extended", [False, True])
+def test_binary_framed_iptc_caption_is_decoded_before_text_scan(extended):
+    import struct
+
+    caption = b'"psd-fixture-" + "private@example.invalid"'.ljust(260, b" ")
+    length = (
+        (b"\x80\x04" + struct.pack(">I", len(caption)))
+        if extended
+        else struct.pack(">H", len(caption))
+    )
+    image = PSDImage.new("RGB", (2, 2))
+    image._record.image_resources[1028] = ImageResource(
+        key=1028, data=b"\x1c\x02\x78" + length + caption
+    )
+    stream = io.BytesIO()
+    image._record.write(stream)
+    assert ENGINE.scan_private_psd(stream.getvalue(), [DENIED])["status"] == "fail"
+
+
+def test_unrecognized_binary_metadata_does_not_drop_printable_caption():
+    image = PSDImage.new("RGB", (2, 2))
+    image._record.image_resources[4000] = ImageResource(
+        key=4000, data=b"\x01\x04" + b'"psd-fixture-" + "private@example.invalid"'
+    )
+    stream = io.BytesIO()
+    image._record.write(stream)
+    assert ENGINE.scan_private_psd(stream.getvalue(), [DENIED])["status"] == "fail"
+
+
+def test_truncated_iptc_record_is_unverified():
+    image = PSDImage.new("RGB", (2, 2))
+    image._record.image_resources[1028] = ImageResource(
+        key=1028, data=b"\x1c\x02\x78\x01\x04short"
+    )
+    stream = io.BytesIO()
+    image._record.write(stream)
+    with pytest.raises(ValueError, match="psd_unverified"):
+        ENGINE.scan_private_psd(stream.getvalue(), [DENIED])
