@@ -1273,3 +1273,158 @@ def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
         "metadata_path_match": metadata_match,
         "reconstructed_path_match": reconstructed,
     }
+
+
+def scan_private_gif(data: bytes, patterns: list[str]) -> dict:
+    """GIFの拡張本文と全フレームの画素を検査する。画素を式として評価しない。"""
+    import io
+    import struct
+    import warnings
+    from urllib.parse import unquote
+
+    if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise ValueError("private_identity_policy_empty")
+    if len(data) > 128 * 1024 * 1024:
+        raise ValueError("private_identity_gif_size_limit")
+    if len(data) < 14 or data[:6] not in (b"GIF87a", b"GIF89a"):
+        raise ValueError("private_identity_gif_unverified")
+    try:
+        from PIL import Image, ImageFile, GifImagePlugin
+    except ImportError:
+        raise ValueError("private_identity_gif_decoder_unavailable") from None
+    if ImageFile.LOAD_TRUNCATED_IMAGES or int(GifImagePlugin.LOADING_STRATEGY) == 2:
+        raise ValueError("private_identity_gif_unverified")
+    hits = set()
+    path_match = metadata_match = reconstructed = False
+    metadata_size = 0
+
+    def views(raw):
+        values = {raw.decode("utf-8", errors="replace")}
+        for encoding in ("utf-16-le", "utf-16-be"):
+            values.add(raw.decode(encoding, errors="replace"))
+        return values | {unquote(v) for v in values}
+
+    def literal(raw):
+        nonlocal path_match
+        for value in views(raw):
+            hits.update(hit_patterns(value, patterns))
+            path_match |= hit_local_absolute_path(value)
+
+    def metadata(raw):
+        nonlocal metadata_size, path_match, metadata_match, reconstructed
+        metadata_size += len(raw)
+        if metadata_size > 8 * 1024 * 1024:
+            raise ValueError("private_identity_gif_size_limit")
+        for value in views(raw):
+            result = scan_private_text(value, patterns)
+            if result["literal_match_count"]:
+                hits.add("metadata")
+            path_match |= result["local_path_match"]
+            metadata_match |= result["local_path_match"]
+            reconstructed |= result.get("reconstructed_path_match", False)
+
+    literal(data)
+    screen_w, screen_h = struct.unpack("<HH", data[6:10])
+    if not screen_w or not screen_h:
+        raise ValueError("private_identity_gif_unverified")
+    palette_size = 3 * (2 ** ((data[10] & 7) + 1)) if data[10] & 128 else 0
+    offset = 13 + palette_size
+    palette = data[13:offset]
+    frames = []
+    expanded = 0
+
+    def blocks(start, collect=True):
+        chunks = []
+        while start < len(data):
+            length = data[start]
+            start += 1
+            if not length:
+                return b"".join(chunks) if collect else b"", start
+            if start + length > len(data):
+                break
+            if collect:
+                chunks.append(data[start : start + length])
+            start += length
+        raise ValueError("private_identity_gif_unverified")
+
+    while offset < len(data):
+        kind = data[offset]
+        if kind == 0x3B:
+            if offset != len(data) - 1 or not frames:
+                raise ValueError("private_identity_gif_unverified")
+            break
+        if kind == 0x21:
+            if offset + 2 >= len(data):
+                raise ValueError("private_identity_gif_unverified")
+            begin = offset
+            label = data[offset + 1]
+            if label not in (0xF9, 0xFE, 0xFF, 0x01):
+                raise ValueError("private_identity_gif_unverified")
+            if label in (0xFF, 0x01) and data[offset + 2] != (
+                11 if label == 0xFF else 12
+            ):
+                raise ValueError("private_identity_gif_unverified")
+            payload, offset = blocks(offset + 2)
+            if label == 0xF9:
+                if len(payload) != 4 or data[begin + 2] != 4 or offset != begin + 8:
+                    raise ValueError("private_identity_gif_unverified")
+            else:
+                metadata(payload)
+            continue
+        if kind != 0x2C or offset + 10 >= len(data):
+            raise ValueError("private_identity_gif_unverified")
+        start = offset
+        left, top, width, height = struct.unpack("<HHHH", data[offset + 1 : offset + 9])
+        packed = data[offset + 9]
+        if (
+            not width
+            or not height
+            or left + width > screen_w
+            or top + height > screen_h
+            or packed & 0x18
+        ):
+            raise ValueError("private_identity_gif_unverified")
+        if width * height * 4 > 128 * 1024 * 1024:
+            raise ValueError("private_identity_gif_size_limit")
+        expanded += width * height * 4
+        if expanded > 512 * 1024 * 1024 or len(frames) >= 512:
+            raise ValueError("private_identity_gif_size_limit")
+        local_size = 3 * (2 ** ((packed & 7) + 1)) if packed & 128 else 0
+        offset += 10 + local_size
+        if not palette_size and not local_size:
+            raise ValueError("private_identity_gif_unverified")
+        if offset >= len(data) or not 2 <= data[offset] <= 8:
+            raise ValueError("private_identity_gif_unverified")
+        _, offset = blocks(offset + 1, collect=False)
+        frames.append((start, offset, width, height))
+    else:
+        raise ValueError("private_identity_gif_unverified")
+    for start, end, width, height in frames:
+        # 各frameを単独で読み、透明・差分frameの元の画素も合成で消さない。
+        frame = (
+            b"GIF89a"
+            + struct.pack("<HH", width, height)
+            + data[10:13]
+            + palette
+            + b"\x2c\0\0\0\0"
+            + data[start + 5 : end]
+            + b"\x3b"
+        )
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                with Image.open(io.BytesIO(frame)) as image:
+                    image.load()
+                    if image.size != (width, height):
+                        raise ValueError("frame_size")
+                    literal(image.tobytes())
+                    literal(image.convert("RGBA").tobytes())
+        except Exception:
+            raise ValueError("private_identity_gif_unverified") from None
+    return {
+        "status": "fail" if hits or path_match else "pass",
+        "literal_match_count": len(hits),
+        "local_path_match": path_match,
+        "metadata_path_match": metadata_match,
+        "reconstructed_path_match": reconstructed,
+    }

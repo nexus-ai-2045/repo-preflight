@@ -15,7 +15,7 @@ license = "MIT"
 dependencies = []
 
 [project.optional-dependencies]
-images = ["simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
+images = ["Pillow>=11.3,<14", "simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
 test = [
     "black>=26.10.1,<27; python_version >= '3.10'",
     "pytest>=9.1.1,<10; python_version >= '3.10'",
