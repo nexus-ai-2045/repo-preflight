@@ -60,6 +60,40 @@ LOCAL_ABSOLUTE_PATH_PATTERN = re.compile(
 )
 
 
+_SHARED_REFERENCE_PATTERN = re.compile(
+    _UNIX_PATH_START
+    + "(?P<personal_path>"
+    + re.escape(MACOS_SHARED_DIRECTORY)
+    + ")(?=/|$)"
+)
+_PARENT_COMPONENT_PATTERN = re.compile(r"[/\\]\.\.(?=[/\\]|$)")
+
+
+def macos_shared_parent_matches(value):
+    """親参照が残るSharedのviewを保守的に拒否する。全体を二度走査するだけにする。"""
+    if isinstance(value, bytes):
+        parent = re.compile(_PARENT_COMPONENT_PATTERN.pattern.encode("ascii"))
+        shared = re.compile(_SHARED_REFERENCE_PATTERN.pattern.encode("ascii"))
+    else:
+        parent, shared = _PARENT_COMPONENT_PATTERN, _SHARED_REFERENCE_PATTERN
+    last_parent = -1
+    for match in parent.finditer(value):
+        last_parent = match.start()
+    if last_parent < 0:
+        return []
+    return [match for match in shared.finditer(value) if match.end() <= last_parent]
+
+
+def iter_private_path_matches(value):
+    for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS):
+        if isinstance(value, bytes):
+            pattern = re.compile(pattern.pattern.encode("ascii"))
+        for match in pattern.finditer(value):
+            yield rule, match
+    for match in macos_shared_parent_matches(value):
+        yield "macos_user_path", match
+
+
 def parse_denylist_text(text: str) -> list[str]:
     """読み取った同一snapshotからprivate照合語を得る。生値は返却以外へ出さない。"""
     patterns = list(
@@ -129,7 +163,9 @@ def hit_patterns(
 
 def hit_local_absolute_path(text: str) -> bool:
 
-    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None
+    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None or bool(
+        macos_shared_parent_matches(text)
+    )
 
 
 # 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。

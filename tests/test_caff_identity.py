@@ -376,3 +376,39 @@ def test_shared_directory_rule_never_exempts_actual_user_homes(flavour, username
 )
 def test_url_decoded_xml_source_gets_the_full_text_normalizer(xml):
     assert ENGINE.scan_private_caff(archive(xml=xml), [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "/../personal/work.psd",
+        "/nested/../../personal/work.psd",
+        '/with"quote/../../personal/work.psd',
+        "/with\nnewline/../../personal/work.psd",
+    ],
+)
+def test_shared_parent_reference_never_waives_personal_home(suffix):
+    from html import escape
+
+    value = ENGINE.MACOS_SHARED_DIRECTORY + suffix
+    assert ENGINE.scan_private_text(value, [DENIED])["local_path_match"]
+    raw = archive(xml=f"<r>{escape(value)}</r>".encode())
+    assert ENGINE.scan_private_caff(raw, [DENIED])["metadata_path_match"]
+
+
+def test_path_and_name_gates_share_parent_reference_rule():
+    value = ENGINE.MACOS_SHARED_DIRECTORY + "/../personal/work.psd"
+    spec = importlib.util.spec_from_file_location(
+        "caff_shared_readiness", ROOT / "scripts/readiness_scan.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.personal_path_matches(value.encode())
+    assert module.text_has(module.PATH_PATTERNS, value.encode())
+    gate_spec = importlib.util.spec_from_file_location(
+        "caff_shared_gate", ROOT / "scripts/identity_gate.py"
+    )
+    gate = importlib.util.module_from_spec(gate_spec)
+    sys.modules[gate_spec.name] = gate
+    gate_spec.loader.exec_module(gate)
+    assert "実ホームパスの形" in gate.shape_findings(value)

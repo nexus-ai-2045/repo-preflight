@@ -420,8 +420,7 @@ def personal_path_matches(data: bytes) -> Counter:
                         ).encode("utf-8")
                     ).hexdigest(),
                 )
-                for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-                for match in pattern.finditer(candidate)
+                for rule, match in _PATH_GRAMMAR.iter_private_path_matches(candidate)
             )
     matches |= Counter(
         (
@@ -430,8 +429,7 @@ def personal_path_matches(data: bytes) -> Counter:
                 match.groupdict().get("personal_path") or match.group()
             ).hexdigest(),
         )
-        for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+        for rule, match in _PATH_GRAMMAR.iter_private_path_matches(data)
     )
     return matches
 
@@ -529,6 +527,11 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
         except UnicodeDecodeError:
             continue
         decoded_text = unquote(text)
+        if PATH_PATTERNS[1] in patterns and any(
+            _PATH_GRAMMAR.macos_shared_parent_matches(value)
+            for value in (text, decoded_text)
+        ):
+            return True
         if any(
             pattern.search(candidate)
             for candidate in (text, decoded_text)
@@ -1766,6 +1769,8 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     so matching their pattern text against raw bytes finds embedded hits
     without needing the surrounding noise to decode at all.
     """
+    if PATH_PATTERNS[1] in patterns and _PATH_GRAMMAR.macos_shared_parent_matches(data):
+        return True
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
