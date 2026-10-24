@@ -290,3 +290,17 @@ CAFF v0.0.0 / format `----` のファイル表と各ファイル固有のXORキ�
 
 
 Git履歴の通常batch予算16,000,000 byteは維持します。現在の作業treeで同一byteをCAFFデコーダの上限内で完全に形式検査したblobだけ、SHA-1/SHA-256のGit object IDへ証拠を束縛し、予算超過分を単独batchで読み直します。読み直した本文のOID・private/secret/path検査は省略しません。同じデコーダ・方針hashのclean cacheも同一byteの証拠を引き継ぎます。未検証の大容量objectや、現在treeにない過去の大容量blobは従来どおりunknownです。
+
+## PDF・MP3とMP4のprivate identity境界
+
+同梱のtrusted adapterはPDF・MP3・限定H264 MP4を形式検証して本文・metadata・coverを既存identity callbackへ渡す。extensionとmagicの不一致、不正・未知形式・依存不足はtool_errorになる。MP4はHachoir3.4.0と固定mov decoderによる1本のH264 videoだけを扱い、audio/字幕/cover/他codecは停止する。同一hashへ全decode・trace・exact packet/container範囲を結合し、SEIのUUID/payload/結合viewも検査する（ADR-0014）。復号文字viewのsecretも既存secret_scanへ別集計する。外部の明示providerにはこのbinary exemptionを与えない。
+
+worktreeと到達可能なGit blobは同じdispatchを使い、blobの全path aliasもextension照合に使う。媒体はdecoder環境をlookup前に完全束縛するまでclean-pass cacheのlookup/recordを行わない。他の文書・画像のcache契約は維持する。reportにはadapter SHAと実decoder versionsを付ける。これらの証拠は利用側CIや原本参照の採用を代替しない。
+
+PDFの完全原本検査はPython 3.10+のoptional機能（pypdf 6.21.2 / pdfminer.six 20260107）。coreのPython 3.9契約は変えず、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
+
+限定null互換は、xref_free_entryで明示freeかつlive xref/object streamに存在しない正確なgeneration/idだけに適用する。その他のstrict読取り失敗は維持し、元free bytesの検査と数値の適用回数を残す。mailtoは非空targetのinert metadataとして原文・percent復号を検査し、外部へ送信しない。文字列件数は既存object上限100000に整合し、2MB等の他上限は維持する。
+
+Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3・eexec開始・readstring→PS object→CharStrings/Subrsを正確に結ぶ。raw/decryptedの全文字領域を検査し、完全なcodeword decode後のbinary区間以外は免除しない。operation/割当前allocation/stack/depth/output/I/O予算を超えれば停止する。PatternType1/FunctionType4は既存parserでinert graphics sourceを確認する。checksumだけの不一致は数値diagnosticとして残すが、全table/glyph/metadataはstrict decompile必須で、元checksum整合性の保証をしない。
+
+埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。Python3.10のPDF字句・原本検査は維持し、font decoderがない入力はdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
