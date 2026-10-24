@@ -69,19 +69,49 @@ _SHARED_REFERENCE_PATTERN = re.compile(
 _PARENT_COMPONENT_PATTERN = re.compile(r"[/\\]\.\.(?=[/\\]|$)")
 
 
-def macos_shared_parent_matches(value):
-    """親参照が残るSharedのviewを保守的に拒否する。全体を二度走査するだけにする。"""
-    if isinstance(value, bytes):
-        parent = re.compile(_PARENT_COMPONENT_PATTERN.pattern.encode("ascii"))
-        shared = re.compile(_SHARED_REFERENCE_PATTERN.pattern.encode("ascii"))
-    else:
-        parent, shared = _PARENT_COMPONENT_PATTERN, _SHARED_REFERENCE_PATTERN
-    last_parent = -1
-    for match in parent.finditer(value):
-        last_parent = match.start()
-    if last_parent < 0:
-        return []
-    return [match for match in shared.finditer(value) if match.end() <= last_parent]
+def macos_shared_parent_matches(value, *, entire_path=False):
+    """同じ参照の正規化結果だけでSharedの外へ戻るか判定する。"""
+    import posixpath
+
+    binary = isinstance(value, bytes)
+    shared = (
+        re.compile(_SHARED_REFERENCE_PATTERN.pattern.encode("ascii"))
+        if binary
+        else _SHARED_REFERENCE_PATTERN
+    )
+    text = value.decode("latin-1") if binary else value
+    results = []
+    consumed = 0
+    for match in shared.finditer(value):
+        start = match.start("personal_path")
+        if start < consumed:
+            continue
+        whole = entire_path and (start == 0 or text[:start] in ("file:", "file://"))
+        end = start
+        quote_char = text[start - 1] if start and text[start - 1] in "\"'`" else None
+        if whole:
+            end = len(text)
+        elif quote_char:
+            end = start
+            while end < len(text):
+                if text[end] == quote_char and (end == 0 or text[end - 1] != "\\"):
+                    break
+                end += 1
+        else:
+            while (
+                end < len(text)
+                and not text[end].isspace()
+                and text[end] not in "\"'`<>"
+            ):
+                end += 1
+        consumed = max(end, match.end())
+        reference = text[start:end]
+        normalized = posixpath.normpath(reference)
+        if normalized != MACOS_SHARED_DIRECTORY and not normalized.startswith(
+            MACOS_SHARED_DIRECTORY + "/"
+        ):
+            results.append(match)
+    return results
 
 
 def iter_private_path_matches(value):
@@ -1775,10 +1805,13 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
         metadata_match |= metadata and result["local_path_match"]
         reconstructed |= result.get("reconstructed_path_match", False)
 
-    def metadata_text(value):
-        # XMLの要素・属性だけでなくcomment/PIを含むsourceにも同じ順序を使う。
+    def metadata_text(value, *, path_value=False):
+        nonlocal path_match, metadata_match
+        # XML sourceとscalarは同じ正規化を使う。scalarのpathは制御文字も含めて判定する。
         for view in {value, unquote(value)}:
             record(scan_private_text(view, patterns), True)
+            if path_value and macos_shared_parent_matches(view, entire_path=True):
+                path_match = metadata_match = True
 
     def literal(raw):
         nonlocal path_match
@@ -1797,7 +1830,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
     main_count = 0
     for entry, content in archive.contents():
         for value in (entry.name, entry.tag):
-            metadata_text(value)
+            metadata_text(value, path_value=True)
         if entry.tag == "main_xml":
             main_count += 1
             try:
@@ -1837,7 +1870,7 @@ def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dic
                     *node.attrib.values(),
                 ):
                     if value:
-                        metadata_text(value)
+                        metadata_text(value, path_value=True)
         elif content.startswith(b"\x89PNG\r\n\x1a\n"):
             digest = (
                 hashlib.sha256(content).hexdigest(),

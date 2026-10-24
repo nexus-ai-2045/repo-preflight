@@ -391,7 +391,8 @@ def test_shared_parent_reference_never_waives_personal_home(suffix):
     from html import escape
 
     value = ENGINE.MACOS_SHARED_DIRECTORY + suffix
-    assert ENGINE.scan_private_text(value, [DENIED])["local_path_match"]
+    if not any(c in value for c in ('"', "\n")):
+        assert ENGINE.scan_private_text(value, [DENIED])["local_path_match"]
     raw = archive(xml=f"<r>{escape(value)}</r>".encode())
     assert ENGINE.scan_private_caff(raw, [DENIED])["metadata_path_match"]
 
@@ -412,3 +413,16 @@ def test_path_and_name_gates_share_parent_reference_rule():
     sys.modules[gate_spec.name] = gate
     gate_spec.loader.exec_module(gate)
     assert "実ホームパスの形" in gate.shape_findings(value)
+
+
+def test_shared_reference_is_not_joined_with_unrelated_relative_path():
+    shared = ENGINE.MACOS_SHARED_DIRECTORY + "/assets"
+    text = shared + "\nSee docs/../README.md for details."
+    assert ENGINE.scan_private_text(text, [DENIED])["status"] == "pass"
+    raw = archive(xml=f"<r><a>{shared}</a><b>See docs/../README.md</b></r>".encode())
+    assert ENGINE.scan_private_caff(raw, [DENIED])["status"] == "pass"
+
+
+def test_parent_reference_that_remains_inside_shared_is_not_personal():
+    value = ENGINE.MACOS_SHARED_DIRECTORY + "/assets/../source.psd"
+    assert ENGINE.scan_private_text(value, [DENIED])["status"] == "pass"
