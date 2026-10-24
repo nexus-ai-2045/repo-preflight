@@ -43,8 +43,36 @@ def scan_script():
     raise AssertionError("Scan every ref が無い")
 
 
+def step_run(name):
+    for step in steps():
+        if step.get("name") == name:
+            return step["run"]
+    raise AssertionError(f"{name} が無い")
+
+
+def fetch_script():
+    return step_run("Fetch every branch, tag and pull request head quietly")
+
+
 def all_run_text():
     return "\n".join(step.get("run", "") for step in steps())
+
+
+def shell_lines(script):
+    """行の継続をつなぎ、heredoc（python）と注釈を除いたシェルの行。"""
+    joined = re.sub(r"\\\n\s*", " ", script)
+    lines, heredoc = [], None
+    for line in joined.splitlines():
+        if heredoc:
+            if line.strip() == heredoc:
+                heredoc = None
+            continue
+        match = re.search(r"<<'(\w+)'", line)
+        if match:
+            heredoc = match.group(1)
+        if not line.strip().startswith("#"):
+            lines.append(line)
+    return lines
 
 
 def test_triggers_are_schedule_and_manual_only():
@@ -67,9 +95,13 @@ def test_token_is_read_only():
         assert "permissions" not in job
     text = WORKFLOW.read_text(encoding="utf-8")
     assert ": write" not in text
+    # actions/checkout は使わない（取った枝の名前・SHA をログに出す。トークンも作業場に残しうる）
     for step in steps():
-        if str(step.get("uses", "")).startswith("actions/checkout@"):
-            assert step["with"]["persist-credentials"] is False
+        assert not str(step.get("uses", "")).startswith("actions/checkout@"), step
+    # トークンは取得の1回だけ、環境変数の設定として渡し、終わったら消す
+    fetch = fetch_script()
+    assert "unset EVENT_FETCH_TOKEN" in fetch and "unset auth_header" in fetch
+    assert "git config" not in fetch
 
 
 def test_actions_and_gitleaks_are_pinned():
@@ -86,25 +118,20 @@ def test_actions_and_gitleaks_are_pinned():
 
 
 def test_fetches_every_branch_tag_and_pull_head():
-    targets = [
-        step
-        for step in steps()
-        if str(step.get("uses", "")).startswith("actions/checkout@")
-        and step["with"].get("path") == "target"
-    ]
-    # actions/checkout の全履歴取得は取った枝・タグの名前をログに出すので、浅く1つだけ取る
-    assert len(targets) == 1 and targets[0]["with"]["fetch-depth"] == 1
     fetch = [step for step in steps() if "git -C target fetch" in step.get("run", "")]
     assert len(fetch) == 1
     run = fetch[0]["run"]
-    assert "fetch -q --unshallow" in run
+    assert "fetch -q --no-tags --no-write-fetch-head" in run
     for refspec in (
-        "'+refs/heads/*:refs/remotes/origin/*'",
-        "'+refs/tags/*:refs/tags/*'",
-        "'+refs/pull/*/head:refs/remotes/pull/*'",
+        "'+refs/heads/*:refs/all-refs/heads/*'",
+        "'+refs/tags/*:refs/all-refs/tags/*'",
+        "'+refs/pull/*/head:refs/all-refs/pull/*'",
     ):
         assert refspec in run
-    assert "refs/heads refs/remotes refs/tags" in scan_script()
+    # 取った ref だけの名前空間を見る。枝の名前で飛ばす ref は無い（HEAD という名前の枝も見る）
+    script = scan_script()
+    assert "for-each-ref --format='%(refname)' refs/all-refs/" in script
+    assert "origin/HEAD" not in script
 
 
 def test_logs_only_counts_and_kinds():
@@ -128,6 +155,16 @@ def test_logs_only_counts_and_kinds():
             assert re.search(
                 r">\s*\"?\$work/\w+\.out\"?\s+2>&1|> /dev/null 2>&1", line
             ), line
+    # git の出力（ref 名・ファイル名・作者を含みうる）はどれもログへ流さない
+    for line in shell_lines(all_run_text()):
+        if not re.search(
+            r"(?:^|[\s(;&|])git (?:-[Cc] |init|fetch|checkout|update-ref)", line
+        ):
+            continue
+        assert re.search(
+            r"^\s*quiet git |>>? \"?\$(?:log|gitlog|out)\"? 2>&1|2>/dev/null|2>> \"\$gitlog\"",
+            line,
+        ), line
     # GitHub の注釈（::error など）も出さない
     assert "::" not in all_run_text()
     # actions/checkout 以外で ref を取る git fetch は全部 -q
@@ -146,10 +183,16 @@ def test_annotated_tags_are_checked_before_peeling():
 
 def test_policy_and_exceptions_come_only_from_default_branch_tool():
     by_name = {step.get("name"): step for step in steps()}
-    tool = by_name["Check out repo-preflight (default branch)"]
-    assert tool["with"]["ref"] == "${{ github.sha }}"
-    assert by_name["Scan every ref"]["env"]["DEFAULT_SHA"] == "${{ github.sha }}"
-    assert "refs/heads/${default_branch}" in by_name["Require default branch"]["run"]
+    # 検査の版は、この実行の commit（デフォルト枝）を取り出したものに限り、一致を確かめる
+    fetch = fetch_script()
+    assert 'checkout -q --detach "$GITHUB_SHA"' in fetch
+    assert 'test "$(git -C tool rev-parse HEAD 2>/dev/null)" = "$GITHUB_SHA"' in fetch
+    assert 'DEFAULT_SHA="$GITHUB_SHA"' in scan_script()
+    require = by_name["Require default branch"]
+    assert '"$GITHUB_REF" != "refs/heads/${default_branch}"' in require["run"]
+    # 枝の名前・SHA を env に展開すると、ログの env 一覧に値が出る。既定の環境変数で読む
+    text = WORKFLOW.read_text(encoding="utf-8")
+    assert "github.sha" not in text and "github.ref" not in text
     script = scan_script()
     for call in re.findall(r"python \"\$\w+/scripts/[\w.]+\.py\"", script):
         assert call.startswith('python "$tool/scripts/'), call
@@ -259,26 +302,42 @@ def commit_file(repo, name, text, *, author=None):
     return git(repo, "rev-parse", "HEAD")
 
 
-def run_scan(tmp_path, origin):
-    target = tmp_path / "target"
-    git(tmp_path, "clone", "-q", str(origin), str(target))
-    script = tmp_path / "scan.sh"
-    script.write_text(textwrap.dedent(scan_script()), encoding="utf-8")
+def run_scan(tmp_path, origin, *, extra_env=None):
+    """取得の手順（file:// の origin から）と検査の手順を、workflow の中身のまま続けて動かす。
+
+    返す stdout・stderr は2つの手順の分をつないだもの。"""
+    work = tmp_path / "runner"
+    work.mkdir()
     env = {
         **os.environ,
-        "TARGET": str(target),
+        "GITHUB_SERVER_URL": f"file://{origin.parent}/",
+        "GITHUB_REPOSITORY": origin.name,
+        "GITHUB_SHA": git(origin, "rev-parse", "main"),
+        "EVENT_FETCH_TOKEN": "fixture-token-not-a-secret",
+        "TARGET": "target",
         "TOOL": str(ROOT),
-        "DEFAULT_SHA": git(origin, "rev-parse", "main"),
         "ORIGIN_URL": ORIGIN_URL,
         "RUNNER_TEMP": str(tmp_path),
+        **(extra_env or {}),
     }
-    return subprocess.run(
-        ["bash", str(script)],
-        cwd=tmp_path,
-        text=True,
-        capture_output=True,
-        env=env,
-        timeout=600,
+    outs, errs = [], []
+    for name, body in (("fetch", fetch_script()), ("scan", scan_script())):
+        script = tmp_path / f"{name}.sh"
+        script.write_text(textwrap.dedent(body), encoding="utf-8")
+        result = subprocess.run(
+            ["bash", str(script)],
+            cwd=work,
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=600,
+        )
+        outs.append(result.stdout)
+        errs.append(result.stderr)
+        if name == "fetch":
+            assert result.returncode == 0, result.stderr
+    return subprocess.CompletedProcess(
+        result.args, result.returncode, "".join(outs), "".join(errs)
     )
 
 
@@ -445,3 +504,272 @@ def test_nested_annotated_tag_is_followed(tmp_path, origin):
         "赤: 注釈付きタグ: タグの作者が公開許可名義と不一致 1 件"
     ]
     assert_nothing_personal(result, inner, outer)
+
+
+# --- git が checkout でパスを出す場面 -------------------------------------------
+# どれも、架空の個人名入りのファイル名・枝名を使う。確かめること:
+# - ログ全体（取得と検査の両方の stdout・stderr）のどこにも名前やハッシュが出ない
+# - 取り出せない ref は「checkout できない ref」として赤になる（緑で通らない）
+# - 残りの ref も検査される（別の枝に置いた鍵が赤になり、全部の commit に「== 検査」が出る）
+
+
+def git_input(repo, data, *args, env=None):
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        input=data,
+        capture_output=True,
+        check=True,
+        env=env,
+    )
+    return result.stdout.decode().strip()
+
+
+def commit_with_entries(repo, branch, entries, message="crafted tree"):
+    """main の木に、作業ツリーでは作れない項目（長すぎる名前・不正なパスなど）を足した commit を枝にする。"""
+    base = subprocess.run(
+        ["git", "ls-tree", "-z", "main"], cwd=repo, capture_output=True, check=True
+    ).stdout
+    records = [record for record in base.split(b"\0") if record]
+    for mode, kind, oid, name in entries:
+        records.append(f"{mode} {kind} {oid}\t".encode() + name)
+    tree = git_input(repo, b"\0".join(records) + b"\0", "mktree", "-z", "--missing")
+    commit = git(repo, "commit-tree", tree, "-p", "main", "-m", message)
+    git(repo, "update-ref", f"refs/heads/{branch}", commit)
+    return commit
+
+
+def blob(repo, data):
+    return git_input(repo, data, "hash-object", "-w", "--stdin")
+
+
+def add_secret_branch(origin):
+    """別の枝に置いた鍵。取り出せない ref のあとも検査が続けば、gitleaks の赤が出る。"""
+    git(origin, "checkout", "-q", "-b", "other-secret", "main")
+    sha = commit_file(origin, "token.txt", f"token = {FAKE_TOKEN}\n")
+    git(origin, "checkout", "-q", "main")
+    return sha
+
+
+def assert_all_refs_scanned(result):
+    match = re.search(r"検査する commit (\d+) 件", result.stdout)
+    assert match, result.stdout
+    total = int(match.group(1))
+    seen = re.findall(r"^== 検査 (\d+)/(\d+)（ref \d+ 件）$", result.stdout, re.M)
+    assert [int(i) for i, _ in seen] == list(range(1, total + 1)), result.stdout
+    # 別の枝の鍵も見ている
+    assert any(
+        ": gitleaks: gitleaks " in line for line in red_lines(result)
+    ), red_lines(result)
+
+
+def assert_checkout_red(result):
+    assert result.returncode == 1
+    lines = red_lines(result)
+    assert any(
+        re.fullmatch(
+            r"赤: 検査 \d+/\d+（ref \d+ 件）: checkout できない ref 1 件", line
+        )
+        for line in lines
+    ), lines
+
+
+@needs_tools
+def test_file_name_over_255_bytes_is_red_without_name_and_rest_is_scanned(
+    tmp_path, origin
+):
+    """作業ツリーに置けない長さのファイル名（cannot stat '<名前>'）。"""
+    secret = add_secret_branch(origin)
+    name = f"{PERSONAL}-{'x' * 300}.md".encode()
+    bad = commit_with_entries(
+        origin,
+        f"{PERSONAL}/long-name",
+        [("100644", "blob", blob(origin, b"long\n"), name)],
+    )
+    result = run_scan(tmp_path, origin)
+    assert_checkout_red(result)
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+def test_unencodable_working_tree_encoding_is_red_without_name(tmp_path, origin):
+    """working-tree-encoding に変換できない中身（failed to encode '<名前>'。git は 0 で終わる）。"""
+    secret = add_secret_branch(origin)
+    git(origin, "checkout", "-q", "-b", f"{PERSONAL}/encoding", "main")
+    commit_file(origin, f"{PERSONAL}-memo.txt", "絵文字 \U0001f600\n")
+    (origin / ".gitattributes").write_text(
+        "*.txt working-tree-encoding=SHIFT-JIS\n", encoding="utf-8"
+    )
+    git(origin, "add", ".gitattributes")
+    git(origin, "commit", "-qm", "encoding")
+    bad = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-q", "main")
+    result = run_scan(tmp_path, origin)
+    assert_checkout_red(result)
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+LFS_POINTER = (
+    "version https://git-lfs.github.com/spec/v1\n"
+    f"oid sha256:{hashlib.sha256(b'all-refs-scan lfs fixture').hexdigest()}\n"
+    "size 12345\n"
+)
+
+
+def lfs_config(tmp_path, kind):
+    """ubuntu-latest の git-lfs（system の設定）と同じく、filter.lfs を必須にした設定を作る。"""
+    config = tmp_path / f"lfs-{kind}.gitconfig"
+    if kind == "git-lfs":
+        filters = (
+            "\tclean = git-lfs clean -- %f\n"
+            "\tsmudge = git-lfs smudge -- %f\n"
+            "\tprocess = git-lfs filter-process\n"
+        )
+    else:
+        # git-lfs が無い手元でも、取りに行って失敗する形（名前を stderr に出して 128 で終わる）を真似る
+        fake = tmp_path / "fake-lfs.sh"
+        fake.write_text(
+            '#!/bin/sh\necho "Downloading $1" >&2\n'
+            'echo "Error downloading object: $1" >&2\nexit 128\n',
+            encoding="utf-8",
+        )
+        fake.chmod(0o755)
+        filters = f"\tclean = cat\n\tsmudge = {fake} %f\n"
+    config.write_text(f'[filter "lfs"]\n{filters}\trequired = true\n', encoding="utf-8")
+    return {"GIT_CONFIG_GLOBAL": str(config)}
+
+
+@needs_tools
+@pytest.mark.parametrize("kind", ["fake", "git-lfs"])
+def test_lfs_pointer_is_red_without_name_and_rest_is_scanned(tmp_path, origin, kind):
+    """LFS のポインタ（Downloading <名前> / Error downloading object: <名前>）。LFS は動かさず、件数だけ赤。"""
+    if kind == "git-lfs" and shutil.which("git-lfs") is None:
+        pytest.skip("git-lfs が無い（ubuntu-latest には入っている）")
+    secret = add_secret_branch(origin)
+    git(origin, "checkout", "-q", "-b", f"{PERSONAL}/lfs", "main")
+    (origin / ".gitattributes").write_text(
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n", encoding="utf-8"
+    )
+    bad = commit_file(origin, f"{PERSONAL}-scan.bin", LFS_POINTER)
+    git(origin, "checkout", "-q", "main")
+    result = run_scan(tmp_path, origin, extra_env=lfs_config(tmp_path, kind))
+    assert result.returncode == 1
+    assert any(
+        re.fullmatch(
+            r"赤: 検査 \d+/\d+（ref \d+ 件）: LFS の中身を検査できないファイル 1 件",
+            line,
+        )
+        for line in red_lines(result)
+    ), red_lines(result)
+    assert "Downloading" not in result.stdout + result.stderr
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+def test_invalid_path_is_red_without_name(tmp_path, origin):
+    """git が作業ツリーに置くのを拒むパス（invalid path '<名前>'）。"""
+    secret = add_secret_branch(origin)
+    inner = git_input(
+        origin,
+        f"100644 blob {blob(origin, b'x')}\t{PERSONAL}-config\n".encode(),
+        "mktree",
+        "--missing",
+    )
+    bad = commit_with_entries(
+        origin, f"{PERSONAL}/invalid", [("040000", "tree", inner, b".GIT")]
+    )
+    result = run_scan(tmp_path, origin)
+    assert_checkout_red(result)
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+def test_symlink_is_checked_out_as_plain_file_without_name(tmp_path, origin):
+    """作業場の外を指すシンボリックリンク。リンクとしては置かず、名前も出さない。"""
+    secret = add_secret_branch(origin)
+    link = blob(origin, f"../../../{PERSONAL}-outside".encode())
+    bad = commit_with_entries(
+        origin,
+        f"{PERSONAL}/symlink",
+        [("120000", "blob", link, f"{PERSONAL}-link".encode())],
+    )
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert "checkout できない ref" not in result.stderr
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+def test_submodule_and_executable_file_do_not_print_names(tmp_path, origin):
+    """サブモジュール（gitlink）と実行権限つきのファイル。"""
+    secret = add_secret_branch(origin)
+    gitlink = hashlib.sha1(b"all-refs-scan submodule fixture").hexdigest()
+    bad = commit_with_entries(
+        origin,
+        f"{PERSONAL}/modes",
+        [
+            ("160000", "commit", gitlink, f"{PERSONAL}-module".encode()),
+            ("100755", "blob", blob(origin, b"#!/bin/sh\n"), f"{PERSONAL}.sh".encode()),
+        ],
+    )
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+
+
+@needs_tools
+def test_case_colliding_names_do_not_print_names(tmp_path, origin):
+    """大文字小文字だけ違う2つのファイル（大文字小文字を区別しない設定）。"""
+    secret = add_secret_branch(origin)
+    data = blob(origin, b"case\n")
+    bad = commit_with_entries(
+        origin,
+        f"{PERSONAL}/case",
+        [
+            ("100644", "blob", data, f"{PERSONAL.upper()}.md".encode()),
+            ("100644", "blob", data, f"{PERSONAL}.md".encode()),
+        ],
+    )
+    config = tmp_path / "ignorecase.gitconfig"
+    config.write_text("[core]\n\tignorecase = true\n", encoding="utf-8")
+    result = run_scan(tmp_path, origin, extra_env={"GIT_CONFIG_GLOBAL": str(config)})
+    assert result.returncode == 1
+    assert_all_refs_scanned(result)
+    assert_nothing_personal(result, bad, secret)
+    assert PERSONAL.upper() not in result.stdout + result.stderr
+
+
+@needs_tools
+def test_branch_named_head_and_pull_head_are_scanned(tmp_path, origin):
+    """HEAD という名前の枝と PR の head（refs/pull/*/head）も、飛ばさずに検査する。"""
+    git(origin, "checkout", "-q", "--detach", "main")
+    on_head = commit_file(origin, PERSONAL_FILE, "head branch\n", author=UNLISTED)
+    git(origin, "update-ref", "refs/heads/HEAD", on_head)
+    git(origin, "checkout", "-q", "--detach", "main")
+    on_pull = commit_file(origin, "pull.md", f"token = {FAKE_TOKEN}\n")
+    git(origin, "update-ref", "refs/pull/1/head", on_pull)
+    git(origin, "checkout", "-q", "main")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 1
+    assert "検査する commit 3 件" in result.stdout
+    lines = red_lines(result)
+    assert any(": identity_gate: " in line for line in lines), lines
+    assert any(": gitleaks: gitleaks " in line for line in lines), lines
+    assert_nothing_personal(result, on_head, on_pull)
+
+
+@needs_tools
+def test_logs_do_not_show_default_branch_name_or_sha(tmp_path, origin):
+    """取得・取り出しを含めたログに、デフォルト枝の名前と SHA を出さない。"""
+    main_sha = git(origin, "rev-parse", "main")
+    result = run_scan(tmp_path, origin)
+    assert result.returncode == 0, result.stderr
+    out = result.stdout + result.stderr
+    assert main_sha[:7] not in out
+    assert "main" not in out
