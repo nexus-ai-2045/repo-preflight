@@ -24,12 +24,12 @@ RED = {
 
 
 @pytest.mark.parametrize("name", sorted(GREEN))
-def test_human_pending_exemptions_are_green(policy, tmp_path, name):  # noqa: F811
+def test_human_approved_exemptions_are_green(policy, tmp_path, name):  # noqa: F811
     result = message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(RED))
-def test_human_pending_real_names_stay_red(policy, tmp_path, name):  # noqa: F811
+def test_human_approved_real_names_stay_red(policy, tmp_path, name):  # noqa: F811
     result = message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)
