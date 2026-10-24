@@ -19,3 +19,30 @@ d430d8e0f9e91d27f637fecf1fb5afc3d1e66732bdd0f6a73202531f169c36d7  tests/test_com
 19bbf04d6a24cc85a10638a4759594b1da575ab3d2113d20f06c0a5227c09e03  tests/test_holes_12_3.py  # 試験の仮データ。中身は例示で、2026-10-24 に人が確認
 fd019624242bf72bb45e96c7742ee10a957f24616c53320f1b7fcec0406a9f71  templates/canary/local-canary.sh  # カナリア脚本の仮データ。中身は例示で、2026-10-24 に人が確認
 b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7  vendor/ai_ratchet_gate-0.1.1-py3-none-any.whl  # 保全した ai-ratchet-gate v0.1.1 の原本 wheel（requirements-tools.txt と同じ SHA256）。2026-10-24 に人が確認
+# 他リポの画像・図・雛形（このリポに無いファイル）。理由の頭に「他リポ <リポ名> の」を書く。
+# 画像23件と .xmind：人承認 2026-10-24 16:14・品質係の目視 OK 16:16（中身は清掃済みの版）。ノート1件：人承認 2026-10-24 16:19。
+28729d09741f8522c2e0ae53609d848f373bd46afb5695d45f6b40688d298b4b  docs/assets/ai-round-table-architecture.png  # 他リポ ai-round-table の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+52873964eb547122821eb88c4eb104a73a325cf381d1af87595de0dbfeb7d1ac  design/reference/capability-atlas-integrated.png  # 他リポ capability-atlas の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+6c60fee9c0efc4e71dcc465b20c164acbf120f8fb1dce903aa19078b75e6f658  docs/images/01-overview.png  # 他リポ chronica の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+f7f2f5164c21190ecb200ae4f6e33e3d9038c1c9701219592393df38d81d133f  docs/images/02-timeline.png  # 他リポ chronica の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+1411edbbdcf2cd07a73559e5c614b9b0790f551e1603167731e81c9c6af18dee  docs/images/03-density.png  # 他リポ chronica の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+19f4df1e90b74db86731218d632ce82e4c8c97f864ff10e84de89813238b3a90  docs/images/04-search.png  # 他リポ chronica の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+9d0a1f80da6a64f3ab6af73397d2aaa915d43f57ea5d7beb529a559b413b1fdd  assets/fde-cover.png  # 他リポ fractal-decision-ecosystem の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+e53e5fe14c874c057b8ed40997ca70d3b84f0492f780367b9aa93c3067857875  README.rendered.png  # 他リポ note-publishing-suite の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+dc574cb69b2dd7b18174b2a5bbff18d1e4cd1b9ad467bc1c2b5e1fabc04541ef  assets/demo/usage-walkthrough-thumb.svg  # 他リポ note-publishing-suite の清掃済みの図（SVG）。人承認済み（2026-10-24 16:14）・品質係目視OK
+8d5c9697bae5b2496a6ce545aa8795d3fd2eb84a658687a8973a1c50c4a02d3d  assets/note-publishing-workflow.svg  # 他リポ note-publishing-suite の清掃済みの図（SVG）。人承認済み（2026-10-24 16:14）・品質係目視OK
+148bf35f0c5e1448585c74cf617f390abd040400ebafb0a8308c80bd4bcff6cc  assets/preview.svg  # 他リポ project-review-xmind-template の清掃済みの図（SVG）。人承認済み（2026-10-24 16:14）・品質係目視OK
+0268d2da0cccf78c0636c843c26f8b22a5089543335c91c9f3cff9a8df7cd1e2  design/concept-primary.png  # 他リポ public-interest-lens の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+f2ab30609a4719e290e1785168d6e0b915681d64bbdb49f437fda89424f49287  design/implementation-desktop.png  # 他リポ public-interest-lens の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+b0d0d6e8db35a743e9f5c21d7c42d4b5775a6cb076f5779eb22835575709fe62  docs/design/selected-ui-concept.png  # 他リポ quiet-orchestrator-japan の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+0e4252ab3a4b285a5884a591009de0b11f70b024e61b7b1801bc322e770e43db  docs/images/simulator-preview-causal-slice.png  # 他リポ quiet-orchestrator-japan の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+15da2ee7f53f082125c1c5ec36ab64d0256c044d2275cfd01ec5d1aa4485a7b8  docs/images/simulator-preview-one-month.jpg  # 他リポ quiet-orchestrator-japan の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+59c92f9e54c67d57cf52d039ebaab5c424c831c6db4b551734914fc24f5d9a82  docs/design/causal-constellation-concept.png  # 他リポ space-civilization-choice の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+8bde484aca1d81c208056e2ea6f219de41cf0889967f25f49307c5ef5d886b84  docs/assets/detached-worktree-hero.jpg  # 他リポ worktree-lifecycle-control の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+73a8099c6f78f53dea21f231be2b5d53f697dd702d5b9cb93ce5d4eff861197e  web/public/images/bookkeeping-depreciation.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+4fd3ab2823cc65f830de13a6a67ecfb562694dbe8ebc4dd153d688738718a13a  web/public/images/bookkeeping-equipment.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+31a514071489a0517fb17d6915130a1a6c9e038dbf48b52bde5f3a64c67ee329  web/public/images/bookkeeping-inventory.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+dc84585a3fc9d809748bb288726c19e1a2a74ec77ea34424bff83e862d3c1641  web/public/images/bookkeeping-provisions.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+819f8221833b2ba51f126412bdc7b6728de853f1797a764244e43f53a60535e9  web/public/images/cafe-consultation.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
+354b552ed1f87998f49121ceee65c6d1c184d5e40835230a900b1c4a46b7b524  templates/project-review-public-template.xmind  # 他リポ project-review-xmind-template のXMind の雛形。人承認済み（2026-10-24 16:14）・品質係目視OK
+5f2e7e4ef0d58649dba1a36ce5ab970845af54e78ef2bf8a8d5b0d8d6bbd5d19  notebooks/validate-worldline.ipynb  # 他リポ fiction-forks の本流ノート。人承認済み（2026-10-24 16:19）・中身確認済み（セル6・出力0・痕跡0）
