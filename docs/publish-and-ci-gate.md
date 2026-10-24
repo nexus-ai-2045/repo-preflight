@@ -78,6 +78,15 @@ jobs:
 - checkoutの`persist-credentials: false`は維持します。非公開の利用側でも比較元を取得できるよう、組込み`github.token`（`contents: read`）の認証headerをそのfetch一命令の環境だけへ渡します。credential helperとtraceを抑え、tokenをGit設定ファイルへ保存せず、raw tokenや認証設定を後続の検査processへ渡しません。追加Secretsや権限拡張は不要です。
 - 比較元の欠落・不正・非祖先、checkoutとイベントHEADの不一致、force push、削除通知は検査本体へ進めず停止します。初回pushのゼロ比較元だけは、既存の`initial_tree`契約（非shallowかつ全参照で単一root commit）を確認して全体検査します。空commitや架空の比較元は作りません。PR・merge queue・push以外からの呼出しは未対応として停止します。
 
+### 全 ref の定期検査（repo-preflight 本体）
+
+PR・push の CI は、そのイベントの commit から辿れる履歴だけを見ます。PR の無い枝・タグ・閉じた PR の head は、本体では `.github/workflows/all-refs-scan.yml` が毎日（03:17 UTC）と手動実行で見ます。
+
+- ref（枝・タグ・`refs/pull/*/head`）ごとに、その ref の履歴とデフォルト枝の commit だけを入れた別の作業場を作り、`identity_gate.py --public`・`preflight_ratchet.py`・固定版 gitleaks を呼びます。新しい検査はありません。
+- 道具・許可名義・名義検査の例外一覧は、デフォルト枝の版だけを読みます。枝側で例外一覧を広げても通りません。枝で足した試験データが枝側の例外一覧に頼っているときは、その例外が人のレビューを経てデフォルト枝に入るまで赤のままです。
+- `identity_gate.py` はデフォルト枝に無い commit を見ます。デフォルト枝の commit は、その push の CI が当時の版で見ています。ラチェットと gitleaks はその ref の全履歴を見ます。基準値はデフォルト枝の版より緩められません。
+- 権限は `contents: read` だけで、Issue やコメントは作りません。ログには ref・commit・ファイル・行・種類だけを出し、値は出しません。手動実行はデフォルト枝の版でだけ動きます。
+
 ### 通らないとマージできないようにする
 
 repository の Settings → Rules（または Branches）で default branch の保護に**必須チェック**を追加し、`gate / preflight` を選びます。名前は「呼び出し側の job id / preflight」です。job id を `gate` 以外にしたときはそれに合わせます。一度 CI を走らせてからでないと候補に出ません。

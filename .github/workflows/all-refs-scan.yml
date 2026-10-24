@@ -1,0 +1,186 @@
+name: all-refs-scan
+
+# PR・push の CI（preflight-gate.yml）は、そのイベントの commit から辿れる履歴だけを見る。
+# その穴埋めとして、PR の無い枝・タグ・PR の head（refs/pull/*/head）も含めたリモートの全 ref を、
+# 日に1回と手動で検査する。新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
+# - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
+# - 秘密・個人パス・名義の件数：scripts/preflight_ratchet.py（基準値はデフォルト枝の版より緩められない）
+# - 鍵：固定した gitleaks（全履歴）
+# 許可名義の一覧と名義検査の例外一覧は、デフォルト枝の版（tool 側）だけを読む。枝側で広げても通らない。
+# 書き込みはしない（Issue・コメントも作らない）。ログには ref・commit・ファイル・行・種類だけを出し、値は出さない。
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: all-refs-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      # 検査の版（例外一覧を含む）はデフォルト枝に限る。手動実行で別の枝を選んだときは赤にする。
+      - name: Require default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
+          test -n "$default_branch"
+          if [ "$RUN_REF" != "refs/heads/${default_branch}" ]; then
+            echo "all-refs-scan はデフォルト枝の版でだけ動かします" >&2
+            exit 1
+          fi
+      - name: Check out target repository (all branches and tags)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: target
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out repo-preflight (default branch)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tool
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Verify tool checkout matches the default branch commit
+        env:
+          DEFAULT_SHA: ${{ github.sha }}
+        run: 'test "$(git -C tool rev-parse HEAD)" = "$DEFAULT_SHA"'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      # preflight-gate・ci と同じ固定版（references/gitleaks-pins.json の配布物ハッシュと本体ハッシュ）
+      - name: Install pinned gitleaks
+        run: python tool/scripts/install_pinned_gitleaks.py --dest "${{ runner.temp }}/gitleaks" --github-path
+      # PR の head（refs/pull/*/head）も取る。merge 用の ref は GitHub が作る合成物なので見ない。
+      - name: Fetch pull request heads
+        env:
+          EVENT_FETCH_TOKEN: ${{ github.token }}
+        run: |
+          set +ax
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE
+          token="${EVENT_FETCH_TOKEN:-}"
+          unset EVENT_FETCH_TOKEN
+          test -n "$token"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\r\n')"
+          unset token
+          GIT_CONFIG_COUNT=2 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraheader" \
+          GIT_CONFIG_VALUE_0="$auth_header" \
+          GIT_CONFIG_KEY_1=credential.helper \
+          GIT_CONFIG_VALUE_1= \
+          GIT_TERMINAL_PROMPT=0 \
+            git -C target fetch --no-tags origin '+refs/pull/*/head:refs/remotes/pull/*'
+          unset auth_header
+      - name: Scan every ref
+        env:
+          TARGET: target
+          TOOL: tool
+          DEFAULT_SHA: ${{ github.sha }}
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set +ax
+          set -euo pipefail
+          target="$(cd "$TARGET" && pwd)"
+          tool="$(cd "$TOOL" && pwd)"
+          policy="$tool/references/public-commit-identities.json"
+          work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/all-refs-scan.XXXXXX")"
+          : > "$work/refs.txt"
+          # 枝（origin/HEAD の別名は除く）・タグ・PR の head。タグは指す commit に直す。commit に直せない ref は赤。
+          while read -r ref; do
+            case "$ref" in refs/remotes/origin/HEAD) continue ;; esac
+            if sha="$(git -C "$target" rev-parse -q --verify "${ref}^{commit}")"; then
+              printf '%s %s\n' "$sha" "$ref" >> "$work/refs.txt"
+            else
+              printf 'unresolved %s\n' "$ref" >> "$work/refs.txt"
+            fi
+          done < <(git -C "$target" for-each-ref --format='%(refname)' refs/heads refs/remotes refs/tags)
+          test -s "$work/refs.txt" || { echo "検査する ref がありません" >&2; exit 1; }
+          git -C "$target" cat-file -e "${DEFAULT_SHA}^{commit}"
+          failed=0
+          if grep -q '^unresolved ' "$work/refs.txt"; then
+            grep '^unresolved ' "$work/refs.txt" | while read -r _ ref; do
+              echo "赤: ${ref}: commit を指していない ref" >&2
+            done
+            failed=1
+          fi
+          # 同じ commit を指す ref はまとめて1回だけ検査する
+          for sha in $(grep -v '^unresolved ' "$work/refs.txt" | cut -d' ' -f1 | sort -u); do
+            refs="$(awk -v s="$sha" '$1 == s { print $2 }' "$work/refs.txt" | paste -sd, -)"
+            scan="$work/repo-$sha"
+            # ref ごとに別の作業場へ、その ref の履歴とデフォルト枝の commit だけを入れる。
+            # 他の ref が入ると全履歴の検査（--all）が他の枝の中身を見てしまう（#2 の原因）。
+            git init -q "$scan"
+            git -C "$target" update-ref refs/all-refs-scan/one "$sha"
+            git -C "$target" update-ref refs/all-refs-scan/default "$DEFAULT_SHA"
+            git -C "$scan" fetch -q --no-tags "$target" refs/all-refs-scan/default refs/all-refs-scan/one
+            git -C "$target" update-ref -d refs/all-refs-scan/one
+            git -C "$target" update-ref -d refs/all-refs-scan/default
+            git -C "$scan" -c advice.detachedHead=false checkout -q --detach "$sha"
+            rm -f "$scan/.git/FETCH_HEAD"
+            test -z "$(git -C "$scan" for-each-ref --format='%(refname)')"
+            git -C "$scan" remote add origin "$ORIGIN_URL"
+            echo "== ${sha:0:12} (${refs})"
+            # デフォルト枝との分かれ目。整合性の比較元（preflight-gate の preflight-event-base と同じ形）と、
+            # identity_gate の範囲（デフォルト枝に無い commit）に使う。分かれ目は HEAD の祖先なので、全履歴の範囲は広がらない。
+            ratchet_args=(--repo "$scan" --allowed-identities "$policy" --baseline-base-ref "$DEFAULT_SHA")
+            if mb="$(git -C "$scan" merge-base "$DEFAULT_SHA" HEAD)"; then
+              git -C "$scan" update-ref refs/remotes/origin/all-refs-scan-base "$mb"
+              ratchet_args+=(--consistency-base-ref refs/remotes/origin/all-refs-scan-base)
+              id_range="${mb}..HEAD"
+            else
+              # デフォルト枝と共通の祖先が無い ref は、全履歴を足した commit として見る
+              id_range=HEAD
+            fi
+            # 名義・本文・足した行の形。例外一覧は tool 側（デフォルト枝の版）だけを読む。出力は commit と種類だけ。
+            # デフォルト枝の commit は、その push の CI（preflight-gate）が当時の固定した版で見ている。
+            # 例外一覧はファイルの最新の中身の SHA256 だけを持つので、今の一覧で古い中身を見直すと必ず赤になる。
+            if ! python "$tool/scripts/identity_gate.py" --public --repo "$scan" --allowed-identities "$policy" --range "$id_range"; then
+              echo "赤: ${refs}: identity_gate" >&2
+              failed=1
+            fi
+            # 秘密・個人パス・名義の件数（全履歴）。基準値はその ref の版を使い、デフォルト枝の版より緩めていれば赤。出力は件数だけ。
+            if ! python "$tool/scripts/preflight_ratchet.py" "${ratchet_args[@]}"; then
+              echo "赤: ${refs}: preflight_ratchet" >&2
+              failed=1
+            fi
+            # 鍵。値は report にだけ伏せ字で書き、ログにはファイル・行・commit・規則だけを出す。
+            report="$work/gitleaks-$sha.json"
+            if ! gitleaks git --no-banner --redact --log-level error --config "$tool/.gitleaks.toml" \
+                --log-opts=HEAD --report-format json --report-path "$report" "$scan" > /dev/null 2>&1; then
+              if [ -s "$report" ]; then
+                python - "$report" "$refs" <<'PY'
+          import json
+          import sys
+
+          findings = json.load(open(sys.argv[1], encoding="utf-8"))
+          if not findings:
+              print(f"赤: {sys.argv[2]}: gitleaks を実行できません", file=sys.stderr)
+          for f in findings:
+              print(
+                  f"赤: {sys.argv[2]}: gitleaks: {f.get('File')}:{f.get('StartLine')}"
+                  f" ({str(f.get('Commit'))[:8]}, {f.get('RuleID')})",
+                  file=sys.stderr,
+              )
+          PY
+              else
+                echo "赤: ${refs}: gitleaks を実行できません" >&2
+              fi
+              failed=1
+            fi
+            rm -rf "$scan" "$report"
+          done
+          exit "$failed"
