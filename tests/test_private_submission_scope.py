@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from synthetic_paths import synthetic_home_path
 
 from test_readiness_scan import MODULE, git, make_repo, set_remote_base
 
@@ -390,3 +391,106 @@ def test_local_base_movement_during_scan_invalidates_proof(submission, monkeypat
         "status": "tool_error",
         "issues": ["private_submission_local_refs_changed"],
     }
+
+
+def rebase_submission(repo, monkeypatch):
+    base = set_remote_base(repo)
+    oid = MODULE.run(repo, "git", "rev-parse", base)[1]
+
+    def api(endpoint):
+        if "/git/ref/" in endpoint:
+            return {"ref": "refs/heads/main", "object": {"type": "commit", "sha": oid}}
+        return {"full_name": "example/repo", "private": True, "visibility": "private"}
+
+    monkeypatch.setattr(
+        MODULE, "load_github_settings_module", lambda: SimpleNamespace(gh_api_get=api)
+    )
+    return base
+
+
+def test_modified_text_does_not_reclassify_unchanged_fixtures(submission, monkeypatch):
+    repo, _, _, _ = submission
+    body = (
+        'OLD = "synthetic-private-identity-marker"\nPATH = '
+        + repr(synthetic_home_path("macos", "old-fixture/work"))
+        + '\nKEY = "sk-'
+        + "A" * 48
+        + '"\n'
+    )
+    commit(repo, body=body)
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo, body=body + 'SAFE = "public"\n')
+    report = run_scan(repo, base)
+    assert report["status"] == "pass"
+    for gate in ("private_identity_scan", "personal_path_scan", "secret_scan"):
+        assert report["checks"][gate]["status"] == "pass"
+    assert MODULE.scan(repo, require_private_identity=True)["status"] == "blocked"
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        'NEW = "synthetic-private-identity-marker"\n',
+        "PATH2 = " + repr(synthetic_home_path("macos", "new-fixture/work")) + "\n",
+    ],
+)
+def test_modified_text_new_sensitive_value_blocks(submission, monkeypatch, addition):
+    repo, _, _, _ = submission
+    body = "OLD = " + repr(synthetic_home_path("macos", "old-fixture/work")) + "\n"
+    commit(repo, body=body)
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo, body=body + addition)
+    assert run_scan(repo, base)["status"] == "blocked"
+
+
+def test_modified_text_context_reconstruction_blocks(submission, monkeypatch):
+    repo, _, _, _ = submission
+    before = 'PATH = (\n    "/" + "Users/"\n)\n'
+    commit(repo, body=before)
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo, body=before.replace("\n)", '\n    + "operator-fixture/work"\n)'))
+    report = run_scan(repo, base)
+    assert report["checks"]["private_identity_scan"]["status"] == "fail"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("operation", ["rename", "copy"])
+def test_new_path_without_same_parent_baseline_is_full(
+    submission, monkeypatch, operation
+):
+    repo, _, _, _ = submission
+    body = 'OLD = "synthetic-private-identity-marker"\n'
+    commit(repo, body=body)
+    base = rebase_submission(repo, monkeypatch)
+    if operation == "rename":
+        git(repo, "mv", "change.txt", "new-name.txt")
+        git(repo, "commit", "-m", "renamed text")
+    else:
+        commit(repo, "new-name.txt", body)
+    assert run_scan(repo, base)["checks"]["private_identity_scan"]["status"] == "fail"
+
+
+def test_modified_text_intermediate_add_then_remove_blocks(submission, monkeypatch):
+    repo, _, _, _ = submission
+    commit(repo)
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo, body='public change\nNEW = "synthetic-private-identity-marker"\n')
+    commit(repo)
+    assert run_scan(repo, base)["checks"]["private_identity_scan"]["status"] == "fail"
+
+
+def test_unchanged_sibling_name_not_reclassified(submission, monkeypatch):
+    repo, _, _, _ = submission
+    commit(repo, "synthetic-private-identity-marker.txt", "safe body\n")
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo)
+    assert run_scan(repo, base)["status"] == "pass"
+
+
+def test_opaque_extension_retains_full_body_inspection(submission, monkeypatch):
+    repo, _, _, _ = submission
+    body = "synthetic-private-identity-marker\n"
+    commit(repo, "fixture.zip", body)
+    base = rebase_submission(repo, monkeypatch)
+    commit(repo, "fixture.zip", body + "safe addition\n")
+    assert run_scan(repo, base)["checks"]["private_identity_scan"]["status"] == "fail"

@@ -886,10 +886,12 @@ class PrivateIdentityScan:
         reviewed_raw_paths: bool = False,
         defer_unverified_jpeg: bool = False,
         source_names=(),
+        previous_text: str | None = None,
     ):
         # 例外の助けなしに合格した本文だけ、使った正規化器のhashを残す (控えの材料)。
         self.last_clean_pass_digests = None
         self.last_media_secret_matches = 0
+        self.last_text_path_match = False
         if self.checker is None:
             return
         seen_normalizer_digests: set[str] = set()
@@ -1011,6 +1013,23 @@ class PrivateIdentityScan:
                     getattr(self, "jpeg_checker", None)
                 ):
                     results = [self.jpeg_checker(data, self.patterns)]
+                elif (
+                    previous_text is not None
+                    and self.report["provider_kind"] == "bundled_canonical"
+                ):
+                    delta_checker = getattr(
+                        self.path_normalizer, "scan_private_text_delta", None
+                    )
+                    if not callable(delta_checker):
+                        raise ValueError("private_identity_normalization_incomplete")
+                    current_text = data.decode("utf-8")
+                    results = [
+                        delta_checker(old, new, self.patterns)
+                        for old, new in {
+                            (previous_text, current_text),
+                            (unquote(previous_text), unquote(current_text)),
+                        }
+                    ]
                 else:
                     results = [
                         (
@@ -1067,22 +1086,20 @@ class PrivateIdentityScan:
                             raise ValueError("private_identity_normalizer_changed")
                         self.report["normalizer_sha256"] = normalizer_digest
                         seen_normalizer_digests.add(normalizer_digest)
+                    if result.get("delta_full_fallback") is True:
+                        self.report["text_delta_full_fallbacks"] = (
+                            self.report.get("text_delta_full_fallbacks", 0) + 1
+                        )
                     # literal_onlyは旧caller互換だけ。未承認pathの抑止には使わない。
                     same_normalizer = (
                         self.report["provider_kind"] == "bundled_canonical"
                         or normalizer_digest == self.path_normalizer_sha256
                     )
-                    found |= bool(
-                        result["literal_match_count"]
-                        or (
-                            result["local_path_match"]
-                            and (
-                                not reviewed_raw_paths
-                                or not same_normalizer
-                                or metadata_match
-                            )
-                        )
+                    effective_path_match = result["local_path_match"] and (
+                        not reviewed_raw_paths or not same_normalizer or metadata_match
                     )
+                    self.last_text_path_match |= effective_path_match
+                    found |= bool(result["literal_match_count"] or effective_path_match)
         except (Exception, SystemExit) as exc:
             code = str(exc)
             # 送信に含まれない既存JPEGの構造不正だけは、そのfileを未展開として続ける。
@@ -1540,19 +1557,19 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
 
 
-def changed_committed_media_entries(
-    repo: Path, revisions: tuple[str, ...]
-) -> dict[str, str]:
-    """Read only changed committed media declarations, including reused blobs."""
+def changed_committed_entries(repo: Path, revisions: tuple[str, ...]) -> list[tuple]:
     bases = [revision[1:] for revision in revisions if revision.startswith("^")]
     if len(bases) != 1:
         raise RuntimeError("git_history_inventory_failed")
     commits = run_subprocess(
-        ["git", "rev-list", *revisions], cwd=repo, text=True, capture_output=True
+        ["git", "rev-list", "--reverse", *revisions],
+        cwd=repo,
+        text=True,
+        capture_output=True,
     )
     if commits.returncode:
         raise RuntimeError("git_history_inventory_failed")
-    entries: dict[str, str] = {}
+    entries = []
     for commit in commits.stdout.splitlines():
         parent = comparison_parent(repo, bases[0], commit)
         changed = run_subprocess(
@@ -1578,16 +1595,76 @@ def changed_committed_media_entries(
             fields = records[offset].split()
             if len(fields) != 5 or not fields[0].startswith(b":"):
                 raise RuntimeError("git_history_inventory_failed")
-            name = records[offset + 1].decode("utf-8", errors="surrogateescape")
-            if fields[1] not in {b"100644", b"100755"} or PurePosixPath(
-                name
-            ).suffix.lower() not in {".pdf", ".mp3", ".mp4"}:
-                continue
-            oid = fields[3].decode("ascii")
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid):
+            old_oid, new_oid = (value.decode("ascii") for value in fields[2:4])
+            if any(
+                not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", oid)
+                for oid in (old_oid, new_oid)
+            ):
                 raise RuntimeError("git_history_inventory_failed")
-            entries.setdefault(oid, name)
+            name = records[offset + 1].decode("utf-8", errors="surrogateescape")
+            entries.append(
+                (parent, commit, name, fields[0][1:], fields[1], old_oid, new_oid)
+            )
     return entries
+
+
+def changed_committed_media_entries(
+    repo: Path, revisions: tuple[str, ...]
+) -> dict[str, str]:
+    return {
+        new_oid: name
+        for _, _, name, _, mode, _, new_oid in changed_committed_entries(
+            repo, revisions
+        )
+        if mode in {b"100644", b"100755"}
+        and PurePosixPath(name).suffix.lower() in {".pdf", ".mp3", ".mp4"}
+    }
+
+
+def submission_text(data: bytes, names, opaque_suffixes=frozenset()) -> str | None:
+    suffixes = {PurePosixPath(name).suffix.lower() for name in names}
+    if suffixes & opaque_suffixes:
+        return None
+    if suffixes & {
+        ".pdf",
+        ".mp3",
+        ".mp4",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".psd",
+        ".caff",
+        ".cmo3",
+    }:
+        return None
+    if data.startswith(
+        (b"CAFF", b"8BPS", b"GIF87a", b"GIF89a", b"\x89PNG", b"\xff\xd8")
+    ) or media_candidate(data, names):
+        return None
+    text = _decode_scannable_text(data)
+    if text is None or any(ord(char) < 32 and char not in "\t\r\n\f" for char in text):
+        return None
+    return text
+
+
+def verified_parent_blob(repo: Path, oid: str) -> bytes | None:
+    size = run(repo, "git", "cat-file", "-s", oid)
+    if size[0] or not size[1].isdigit():
+        raise RuntimeError("git_history_inventory_failed")
+    if int(size[1]) > _HISTORY_BATCH_BUDGET_BYTES:
+        return None
+    blob = run_subprocess(
+        ["git", "cat-file", "blob", oid], cwd=repo, capture_output=True
+    )
+    if blob.returncode:
+        raise RuntimeError("git_history_inventory_failed")
+    data = blob.stdout
+    digest = hashlib.new("sha1" if len(oid) == 40 else "sha256", usedforsecurity=False)
+    digest.update(f"blob {len(data)}\0".encode("ascii") + data)
+    if digest.hexdigest() != oid:
+        raise RuntimeError("git_raw_object_digest_mismatch")
+    return data
 
 
 def history_hits(
@@ -1623,11 +1700,28 @@ def history_hits(
             inventory_by_id.setdefault(
                 oid, raw_name.decode("utf-8", errors="surrogateescape")
             )
+    submission_entries = (
+        changed_committed_entries(repo, revisions) if check_repository_names else []
+    )
+    opaque_suffixes = (
+        {"." + extension for extension in load_identity_gate().OPAQUE_EXTENSIONS}
+        if check_repository_names
+        else frozenset()
+    )
+    entries_by_blob: dict[str, list[tuple]] = {}
     if check_repository_names:
-        # A renamed media declaration is a submitted semantic change even when
-        # its blob already existed at base. Never enumerate unchanged base blobs.
-        for oid, name in changed_committed_media_entries(repo, revisions).items():
-            inventory_by_id.setdefault(oid, name)
+        # New entries are sent even when their blob already exists at base.
+        for entry in submission_entries:
+            _, _, name, _, mode, _, oid = entry
+            if mode != b"000000" and private_identity is not None:
+                for view in {name, PurePosixPath(name).with_suffix("").as_posix()}:
+                    private_identity.check(
+                        view.encode("utf-8", errors="surrogateescape"),
+                        repository_name=True,
+                    )
+            if mode in {b"100644", b"100755", b"120000"}:
+                inventory_by_id.setdefault(oid, name)
+                entries_by_blob.setdefault(oid, []).append(entry)
     inventory = list(inventory_by_id.items())
     # 空range (base == HEAD 等) は検査対象ゼロの成功。空入力をcat-fileへ
     # 渡すと出力行数が合わず inventory 失敗と誤判定するため、ここで返す
@@ -1762,27 +1856,110 @@ def history_hits(
                 digest.update(f"{object_type} {len(data)}\0".encode("ascii") + data)
                 if digest.hexdigest() != object_id:
                     raise RuntimeError("git_raw_object_digest_mismatch")
+                if check_repository_names and object_type == "blob":
+                    names = aliases.get(object_id, {name})
+                    text = submission_text(data, names, opaque_suffixes)
+                    entries = entries_by_blob.get(object_id, [])
+                    if text is not None and entries:
+                        for (
+                            parent,
+                            commit,
+                            path,
+                            old_mode,
+                            new_mode,
+                            old_oid,
+                            _,
+                        ) in entries:
+                            previous_text = None
+                            if old_mode in {b"100644", b"100755"} and new_mode in {
+                                b"100644",
+                                b"100755",
+                            }:
+                                old_data = verified_parent_blob(repo, old_oid)
+                                if old_data is not None:
+                                    previous_text = submission_text(
+                                        old_data, (path,), opaque_suffixes
+                                    )
+                            if private_identity is not None:
+                                private_identity.check(
+                                    text.encode("utf-8"),
+                                    source_names=(path,),
+                                    previous_text=previous_text,
+                                    reviewed_raw_paths=(
+                                        reviewed_exceptions is not None
+                                        and reviewed_exceptions.all_paths_reviewed(
+                                            path,
+                                            data,
+                                            record=False,
+                                            normalized=True,
+                                            normalizer=private_identity.path_normalizer,
+                                        )
+                                    ),
+                                )
+                                if private_identity.last_text_path_match:
+                                    path_hits.add(f"history:{object_id[:12]}")
+                            if previous_text is None:
+                                secret_found = (
+                                    reviewed_exceptions.has_unreviewed(path, data)
+                                    if reviewed_exceptions is not None
+                                    else text_has(SECRET_PATTERNS, data)
+                                )
+                                path_found = (
+                                    reviewed_exceptions.has_unreviewed_paths(path, data)
+                                    if reviewed_exceptions is not None
+                                    else text_has(PATH_PATTERNS, data)
+                                )
+                            else:
+                                secret_found = diff_added_lines_have(
+                                    repo,
+                                    SECRET_PATTERNS,
+                                    parent,
+                                    commit,
+                                    reviewed_exceptions=reviewed_exceptions,
+                                    scan_path=path,
+                                )
+                                path_found = (
+                                    False
+                                    if private_identity is not None
+                                    and private_identity.report.get("provider_kind")
+                                    == "bundled_canonical"
+                                    else diff_added_lines_have(
+                                        repo,
+                                        PATH_PATTERNS,
+                                        parent,
+                                        commit,
+                                        reviewed_exceptions=reviewed_exceptions,
+                                        scan_path=path,
+                                    )
+                                )
+                            if (
+                                private_identity is not None
+                                and private_identity.report.get("provider_kind")
+                                != "bundled_canonical"
+                            ):
+                                path_found |= bool(
+                                    normalized_personal_path_matches(
+                                        data, private_identity.path_normalizer
+                                    )
+                                )
+                            if secret_found:
+                                secret_hits.add(f"history:{object_id[:12]}")
+                            if path_found:
+                                path_hits.add(f"history:{object_id[:12]}")
+                        continue
                 if private_identity is not None:
                     if check_repository_names and object_type == "tree":
-                        # Raw tree entries contain binary OIDs, so whole-object text
-                        # decoding cannot reliably enforce filename boundaries.
+                        # Tree structure is checked without reclassifying unchanged sibling names.
                         tree_cursor = 0
                         while tree_cursor < len(data):
                             space = data.index(b" ", tree_cursor)
                             nul = data.index(b"\0", space)
                             raw_name = data[space + 1 : nul]
-                            name = raw_name.decode("utf-8", errors="surrogateescape")
-                            for view in {
-                                name,
-                                PurePosixPath(name).with_suffix("").as_posix(),
-                            }:
-                                private_identity.check(
-                                    view.encode("utf-8", errors="surrogateescape"),
-                                    repository_name=True,
-                                )
+                            raw_name.decode("utf-8", errors="surrogateescape")
                             tree_cursor = nul + 1 + len(object_id) // 2
                         if tree_cursor != len(data):
                             raise RuntimeError("git_history_inventory_failed")
+                        continue
                     names = aliases.get(object_id)
                     reviewed_raw = bool(
                         object_type == "blob"
@@ -3138,6 +3315,15 @@ def scan(
             else "all_reachable_refs"
         ),
     )
+    if private_submission:
+        private_identity_report.update(
+            text_scope="added_text_and_changed_normalized_context_candidates",
+            filename_scope="changed_committed_entries",
+            baseline_text_scope="same_path_comparison_parent_only",
+            text_delta_full_fallbacks=private_identity_report.get(
+                "text_delta_full_fallbacks", 0
+            ),
+        )
     if reviewed_exceptions is not None and private_identity.checker is not None:
         private_identity_report["reviewed_path_exceptions"] = [
             {"id": key, "occurrence_count": count}

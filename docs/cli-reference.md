@@ -153,7 +153,7 @@ python scripts/readiness_scan.py --repo PATH --intent open_pr --base-ref origin/
 
 `--private-submission` は `push` / `open_pr` / `merge` 専用です。GitHub APIで現在のprivate状態とlive base SHAの完全一致を確認し、実効push先も同じrepositoryの単一URLと検証します。public・不明・API失敗・比較元不一致は `tool_error` です。credential入りURLも拒否します。
 
-この明示モードは `base..HEAD` で導入されたcommit/tree/blobのraw bytesを検査します。中間commitで削除された内容、commit metadata、新treeの名前と改名も含みます。変更していないbaseline blobと未送信のdirty・未追跡本文は内容検査しません。clean-worktreeと整合性のgateは残るため、dirtyなら別の理由で止まります。結果の `scan_scope.mode=private_committed_submission` とbase/head SHA・live private確認は今回の範囲の証拠であり、repository全体の検査証明ではありません。新treeのmetadataには変更していない名前も含まれます。
+この明示モードは `base..HEAD` で導入されたcommit/tree/blobのraw bytesを検査します。中間commitで削除された内容、commit metadata、変更entryの名前と改名も含みます。変更していないbaseline blobと未送信のdirty・未追跡本文は内容検査しません。clean-worktreeと整合性のgateは残るため、dirtyなら別の理由で止まります。結果の `scan_scope.mode=private_committed_submission` とbase/head SHA・live private確認は今回の範囲の証拠であり、repository全体の検査証明ではありません。treeの構造・OIDは検証しますが、変更していない兄弟entry名は再判定しません。
 
 `--base-ref` だけの既定動作、public・full・publish・releaseの検査、形式・容量制限、キャッシュ方針は変わりません。公開・releaseへこの限定を流用しないでください。
 
@@ -243,3 +243,7 @@ python scripts/runtime_smoke.py --repo .
 公開fixture用version 3の条件と今回の5履歴blobの確認記録は[ADR-0008](adr/0008-public-synthetic-path-fixtures.md)を参照してください。v2のprivate限定条件は維持します。
 
 改名などでPDF・MP3・MP4の形式宣言が追加・変更されたcommitted tree entryは、blobがbaselineに既存でも再検査します。変更していないbaseline全体は追加しません。
+
+明示private送信では、同じpathの直前の比較親と現在commitから得たtextだけを比較します。変更text内の不変行と不変の正規化候補は再判定せず、追加本文と新しい正規化値を調べます。変更部分に依存する再構成は、同値が親の別箇所にもあっても検査します。正規表現の役割に基づく既存のmaskは保持します。新規・copy・renameで同pathの比較元が無い場合、binary・media、commit metadataは全文検査のままです。全中間commitを調べるため、途中で追加後に削除した値も対象です。外部providerで差分の同等性を証明できない場合は全文側へ倒します。
+
+text比較は合計200万文字またはold/new行数の積1600万を上限にし、超えた変更fileだけを全文検査します。`private_identity_scan.text_delta_full_fallbacks` がその回数を記録します。不変性を証明できない候補も検査側へ倒します。公開・fullの検査方針、画像・媒体のstrict decoderと既存上限は変更しません。
