@@ -1985,7 +1985,11 @@ def history_hits(
                     )
                 if object_type != "blob":
                     continue
-                label = f"history:{sanitized_evidence_label(name or object_id[:12])}"
+                label = (
+                    f"history:{object_id[:12]}"
+                    if check_repository_names
+                    else f"history:{sanitized_evidence_label(name or object_id[:12])}"
+                )
                 if private_identity is not None and getattr(
                     private_identity, "last_media_secret_matches", 0
                 ):
@@ -2002,7 +2006,9 @@ def history_hits(
                     for alias in sorted(names or ()):
                         if reviewed_exceptions.has_unreviewed(alias, data):
                             secret_hits.add(
-                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                                label
+                                if check_repository_names
+                                else f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
                             )
                 if reviewed_exceptions is None:
                     if text_has(PATH_PATTERNS, data):
@@ -2014,7 +2020,9 @@ def history_hits(
                     for alias in sorted(names or ()):
                         if reviewed_exceptions.has_unreviewed_paths(alias, data):
                             path_hits.add(
-                                f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
+                                label
+                                if check_repository_names
+                                else f"history:{object_id[:12]}:{sanitized_evidence_label(alias)}"
                             )
         except (UnicodeDecodeError, ValueError, IndexError) as exc:
             raise RuntimeError("git_history_inventory_failed") from exc

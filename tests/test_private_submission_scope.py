@@ -77,6 +77,28 @@ def test_live_proof_and_empty_range(submission):
     )
 
 
+def test_private_reused_binary_diagnostics_use_oid_not_filename(
+    submission, monkeypatch
+):
+    import json
+
+    repo, _, _, _ = submission
+    original = repo / "baseline.bin"
+    original.write_bytes(
+        b"\x00" + synthetic_home_path("linux", "old-fixture/work").encode()
+    )
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "synthetic baseline")
+    base = rebase_submission(repo, monkeypatch)
+    marker = "synthetic-private-identity-marker"
+    git(repo, "mv", "baseline.bin", marker + ".bin")
+    git(repo, "commit", "-m", "synthetic rename")
+    report = run_scan(repo, base)
+    assert report["checks"]["personal_path_scan"]["files"]
+    assert marker not in json.dumps(report)
+    assert report["checks"]["private_identity_scan"]["status"] != "pass"
+
+
 @pytest.mark.parametrize(
     "live",
     [
