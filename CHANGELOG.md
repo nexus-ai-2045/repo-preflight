@@ -18,6 +18,7 @@
 
 ### その他の変更
 
+- 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポ note-publishing-suite の README 用の画面 GIF を2件足した（品質係が全コマを目視して OK、2026-10-25）。SHA256 で固定し、そのパスでその中身のときだけ外す。試験で他リポの行に GIF を許し、承認の記録として決まった書き方だけを通す。
 - 旧履歴 `719dc3a` の本人採用済みADR-0012を再構築後のmain `ad1531f` へ移植。検証済みPNG/JPEGのcoding・pixel・CRC領域とGit相対名を本文から区別し、metadataの全UTF-16 alignment・strict復号・不正入力の停止を維持する。現行PSD/GIF対応と公開名義policyは変更しない。
 
 - `scripts/local_identity_guard.py` の読み飛ばしを、許可名義の一覧（`references/public-commit-identities.json`：nexus の noreply と許可済みの bot）に載った名義だけに絞った。git の global のメールは、一覧に載ったものだけを外し、ほかの GitHub の noreply はローカル部分とログイン名も個人名義として止める。端末名はこれまでどおり集め、一覧の語（例「bot」）だけを照合から外す（`dependabot[bot]` の行の誤検知を直す）。端末名にだけ出る個人名は止まる。一覧が読めないときは何も外さない。

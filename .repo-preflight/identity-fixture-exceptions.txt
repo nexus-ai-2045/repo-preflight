@@ -44,3 +44,6 @@ dc84585a3fc9d809748bb288726c19e1a2a74ec77ea34424bff83e862d3c1641  web/public/ima
 819f8221833b2ba51f126412bdc7b6728de853f1797a764244e43f53a60535e9  web/public/images/cafe-consultation.png  # 他リポ zeirishi-coach-public の清掃済み画像。人承認済み（2026-10-24 16:14）・品質係目視OK
 354b552ed1f87998f49121ceee65c6d1c184d5e40835230a900b1c4a46b7b524  templates/project-review-public-template.xmind  # 他リポ project-review-xmind-template のXMind の雛形。人承認済み（2026-10-24 16:14）・品質係目視OK
 5f2e7e4ef0d58649dba1a36ce5ab970845af54e78ef2bf8a8d5b0d8d6bbd5d19  notebooks/validate-worldline.ipynb  # 他リポ fiction-forks の本流ノート。人承認済み（2026-10-24 16:19）・中身確認済み（セル6・出力0・痕跡0）
+# 他リポ note-publishing-suite の README 用の画面 GIF 2件：品質係が全コマを目視して OK（2026-10-25）。
+e59aa3e1d0bdefa0ef82f7265a89f2c0a2689b1ca881fdd84aa9dd546c0b00ec  assets/screenshots/provenance-and-preview.gif  # 他リポ note-publishing-suite の画面 GIF。品質係が全コマを目視して OK（2026-10-25）
+af74608cb12185886ad65b6448191817497b532499867f8a809cb08e96b571ea  assets/screenshots/writing-app-flow.gif  # 他リポ note-publishing-suite の画面 GIF。品質係が全コマを目視して OK（2026-10-25）
