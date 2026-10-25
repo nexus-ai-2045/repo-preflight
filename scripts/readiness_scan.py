@@ -3265,7 +3265,8 @@ def scan(
                 sanitized_evidence_label(
                     workflow.relative_to(repo).as_posix(),
                     private_name=(
-                        workflow.relative_to(repo).as_posix()
+                        private_submission
+                        or workflow.relative_to(repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
                     ),
@@ -3277,7 +3278,8 @@ def scan(
                 sanitized_evidence_label(
                     workflow.relative_to(repo).as_posix(),
                     private_name=(
-                        workflow.relative_to(repo).as_posix()
+                        private_submission
+                        or workflow.relative_to(repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
                     ),

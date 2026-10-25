@@ -44,6 +44,23 @@ def run_scan(repo, base, **kwargs):
     )
 
 
+@pytest.mark.parametrize("body", [b"name: missing jobs\n", b"\xff"])
+def test_private_workflow_diagnostics_never_disclose_filename(submission, body):
+    import json
+
+    repo, base, _, _ = submission
+    marker = "synthetic-private-identity-marker"
+    workflow = repo / ".github" / "workflows" / (marker + ".yml")
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_bytes(body)
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "synthetic workflow")
+    report = run_scan(repo, base)
+    assert report["checks"]["ci_configuration"]["invalid_files"] == ["<redacted-path>"]
+    assert marker not in json.dumps(report)
+    assert report["checks"]["private_identity_scan"]["status"] != "pass"
+
+
 def test_live_proof_and_empty_range(submission):
     repo, base, oid, calls = submission
     report = run_scan(repo, base)
