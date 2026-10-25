@@ -36,6 +36,10 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 既存private repoのpush / PR / mergeでは `--base-ref` を指定すると、今回の変更fileと `base..HEAD` のcommit履歴だけを検査できます。repo全体に以前からある問題を免除する機能ではなく、今回差分とbaselineを別々に報告するためのscope指定です。baseがHEADの祖先でなければ停止します。
 
+通常のprivate PRで未送信WIP本文を検査対象にしない場合は、`--intent open_pr --base-ref origin/main --private-submission` を明示します。`push` / `merge` にも使えます。live GitHub APIのprivate確認、base branch SHAの完全一致、同一repositoryの単一かつcredentialなしpush URLが必須です。失敗・不明・publicなら `tool_error` で止まります。対象は `base..HEAD` に導入されたcommit/tree/blobで、中間commit後に削除した内容とtreeの名前も含みます。変更していないbaseline blobとdirty・未追跡本文は内容検査しません。clean-worktree・整合性gateは維持します。結果は今回のcommitted送信scopeであり、repo全体の検査結果ではありません。
+
 公開・releaseでは `--base-ref` を使わず、必須文書と全履歴を含むrepo全体検査が必要です。change-sensitiveな整合性検査だけにbaseが必要なら、未指定時は `origin/main` を試し、別の比較元にしたいときだけ `--consistency-base-ref` を使います。secret・個人path・必須文書のscopeはrepo全体のままです。
 
 確認packetにはbase ref / base SHA / head SHAが入り、実際のpush / PRは同じbaseへ固定します。baseまたはHEADが変わった場合は、古い結果を使わず再検査します。
+
+改名などでPDF・MP3・MP4の形式宣言が追加・変更されたcommitted tree entryは、blobがbaselineに既存でも再検査します。変更していないbaseline全体は追加しません。

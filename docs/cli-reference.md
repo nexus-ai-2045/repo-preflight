@@ -145,12 +145,25 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 差分へ絞るときは **`--base-ref`** を使います。CLI に `--target-diff` フラグはありません。
 
+private repositoryへのコミット済み送信だけを検査する場合は、明示的に次を指定します。
+
+```bash
+python scripts/readiness_scan.py --repo PATH --intent open_pr --base-ref origin/main --private-submission
+```
+
+`--private-submission` は `push` / `open_pr` / `merge` 専用です。GitHub APIで現在のprivate状態とlive base SHAの完全一致を確認し、実効push先も同じrepositoryの単一URLと検証します。public・不明・API失敗・比較元不一致は `tool_error` です。credential入りURLも拒否します。
+
+この明示モードは `base..HEAD` で導入されたcommit/tree/blobのraw bytesを検査します。中間commitで削除された内容、commit metadata、新treeの名前と改名も含みます。変更していないbaseline blobと未送信のdirty・未追跡本文は内容検査しません。clean-worktreeと整合性のgateは残るため、dirtyなら別の理由で止まります。結果の `scan_scope.mode=private_committed_submission` とbase/head SHA・live private確認は今回の範囲の証拠であり、repository全体の検査証明ではありません。新treeのmetadataには変更していない名前も含まれます。
+
+`--base-ref` だけの既定動作、public・full・publish・releaseの検査、形式・容量制限、キャッシュ方針は変わりません。公開・releaseへこの限定を流用しないでください。
+
 ### 主な引数
 
 | 引数 | 何をするか |
 |---|---|
 | `--intent <場面>` | 操作の直前ゲート（対話 schema） |
 | `--repo <パス>` | 調べる対象。新規作成のときだけ不要 |
+| `--private-submission` | live確認済みprivate repositoryへのコミット済み送信だけを検査（`--base-ref` 必須） |
 | `--base-ref <比較元>` | 今回の変更へ絞る（`push` / `open_pr` / `merge`） |
 | `--consistency-base-ref <比較元>` | 文書チェックだけ差分に絞る（未指定時は `origin/main` を試す） |
 | `--expected-identity "<名前> <メール>"` | 全コミットの名義を確認する |
@@ -228,3 +241,5 @@ python scripts/runtime_smoke.py --repo .
 既知の誤検知を内容まで確認したときだけ、`--reviewed-secret-exceptions REVIEWED.json` を明示指定できます。通常の secret 正規表現、UTF-8/UTF-16、URL復号、作業ツリーと削除済みを含む履歴の検査は維持します。例外ファイルは自動読込せず、全束縛条件が一致した検出だけを除外します。private原資料の個人pathを扱うversion 2は、liveのprivate確認・UTC期限・人間レビュー参照を必須にします（[ADR-0006](adr/0006-private-evidence-path-exceptions.md)）。この指定は公開・push・導入の承認ではありません。キー一覧・件数集約・結果フィールド・失敗時の扱いなど詳細は [ADR-0005](adr/0005-reviewed-secret-exceptions.md) にあります。
 
 公開fixture用version 3の条件と今回の5履歴blobの確認記録は[ADR-0008](adr/0008-public-synthetic-path-fixtures.md)を参照してください。v2のprivate限定条件は維持します。
+
+改名などでPDF・MP3・MP4の形式宣言が追加・変更されたcommitted tree entryは、blobがbaselineに既存でも再検査します。変更していないbaseline全体は追加しません。
