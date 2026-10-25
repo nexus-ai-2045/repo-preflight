@@ -99,6 +99,44 @@ def test_private_reused_binary_diagnostics_use_oid_not_filename(
     assert report["checks"]["private_identity_scan"]["status"] != "pass"
 
 
+@pytest.mark.parametrize("location", ["owner", "repository", "folder"])
+def test_private_repository_metadata_contains_only_opaque_identity(
+    submission, monkeypatch, location
+):
+    import hashlib
+    import json
+
+    repo, base, oid, _ = submission
+    marker = "synthetic-private-identity-marker"
+    identity = (
+        marker + "/repo"
+        if location == "owner"
+        else "example/" + marker if location == "repository" else "example/repo"
+    )
+    git(repo, "remote", "set-url", "origin", "https://github.com/" + identity + ".git")
+    if location == "folder":
+        moved = repo.with_name(marker)
+        repo.rename(moved)
+        repo = moved
+
+    def api(endpoint):
+        if "/git/ref/" in endpoint:
+            return {"ref": "refs/heads/main", "object": {"sha": oid, "type": "commit"}}
+        return {"full_name": identity, "private": True, "visibility": "private"}
+
+    monkeypatch.setattr(
+        MODULE, "load_github_settings_module", lambda: SimpleNamespace(gh_api_get=api)
+    )
+    report = run_scan(repo, base)
+    assert report["status"] == "pass"
+    assert marker not in json.dumps(report)
+    assert report["repo"] == "<private-repository>"
+    assert report["checks"]["origin"]["url"] == "<private-origin>"
+    assert report["scan_scope"]["private_submission"]["repository_sha256"] == (
+        hashlib.sha256(identity.encode()).hexdigest()
+    )
+
+
 @pytest.mark.parametrize(
     "live",
     [

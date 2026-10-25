@@ -2794,7 +2794,8 @@ def verify_private_submission(
         # API failures and raw remote data must never become proof or diagnostics.
         raise RuntimeError("private_submission_live_verification_failed") from exc
     return {
-        "repository": identity,
+        "repository": "<private-repository>",
+        "repository_sha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
         "visibility": "private",
         "verification": "live_github_api",
         "push_repository_verified": True,
@@ -2823,20 +2824,27 @@ def scan(
     repo = repo.resolve()
     root_error = repository_root_error(repo)
     if root_error is not None:
+        if private_submission:
+            root_error["repo"] = "<private-repository>"
         return root_error
     repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
+    report_repo_label = (
+        "<private-repository>"
+        if private_submission
+        else repository_evidence_label(repo)
+    )
     if not base_ref:
         shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
         if shallow_code or shallow not in {"true", "false"}:
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": ["git_history_inventory_failed"],
             }
         if shallow == "true":
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": ["shallow_history_unavailable"],
             }
     if identity_base_ref:
@@ -2882,7 +2890,7 @@ def scan(
         ):
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": ["invalid_non_remote_or_non_ancestor_base_ref"],
             }
         identity_range = (
@@ -2923,7 +2931,7 @@ def scan(
     if any(code for code, _ in probes.values()):
         return {
             "status": "tool_error",
-            "repo": repository_evidence_label(repo),
+            "repo": report_repo_label,
             "issues": ["git_probe_failed"],
         }
     head = probes["head"][1]
@@ -2993,7 +3001,7 @@ def scan(
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": repository_evidence_label(repo),
+            "repo": report_repo_label,
             "issues": ["git_worktree_inventory_failed"],
         }
     # 明示private送信以外は個人識別子を作業treeの在庫全体で見る。
@@ -3022,7 +3030,7 @@ def scan(
         except RuntimeError:
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": ["git_worktree_inventory_failed"],
             }
         current_paths = []
@@ -3069,7 +3077,7 @@ def scan(
             except OSError:
                 return {
                     "status": "tool_error",
-                    "repo": repository_evidence_label(repo),
+                    "repo": report_repo_label,
                     "issues": [f"worktree_file_unreadable:{label}"],
                 }
             content_sha256 = None
@@ -3131,7 +3139,7 @@ def scan(
         if not path.is_file():
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": [f"worktree_file_unreadable:{label}"],
             }
         try:
@@ -3139,7 +3147,7 @@ def scan(
         except OSError:
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": [f"worktree_file_unreadable:{label}"],
             }
         if (
@@ -3184,7 +3192,7 @@ def scan(
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": repository_evidence_label(repo),
+            "repo": report_repo_label,
             "issues": ["git_history_inventory_failed"],
         }
     if private_submission:
@@ -3197,7 +3205,7 @@ def scan(
         except RuntimeError:
             return {
                 "status": "tool_error",
-                "repo": repository_evidence_label(repo),
+                "repo": report_repo_label,
                 "issues": ["git_target_diff_inventory_failed"],
             }
     else:
@@ -3430,7 +3438,7 @@ def scan(
         },
         "origin": {
             "status": "pass" if remote else "unknown",
-            "url": redact_remote(remote),
+            "url": "<private-origin>" if private_submission else redact_remote(remote),
         },
     }
     if identity_base:
@@ -3528,7 +3536,7 @@ def scan(
             "tool_error" if tool_error else "blocked" if blocking or unknown else "pass"
         ),
         "publication_decision": "blocked_human_review_required",
-        "repo": repository_evidence_label(repo),
+        "repo": report_repo_label,
         "head": head,
         "scan_scope": (
             {
