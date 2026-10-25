@@ -6,7 +6,7 @@ LOG="${1:-}"
 NAME=nexus_ai
 MAIL=273569186+nexus-ai-2045@users.noreply.github.com
 SID="00000000-0000-0000-0000-000000000000"
-HOST="${2:-機械}"  # 端末名は個人名を含みうるので使わない。箱／MacAir／Windows などの呼び名を渡す。
+HOST="${2:-機械}"  # 端末名は個人名を含みうるので使わない。箱／手元の端末 などの一般的な呼び名を渡す。
 fail=0
 one() {
   label=$1; want=$2; shift 2
