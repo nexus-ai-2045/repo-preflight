@@ -234,9 +234,11 @@ python -m pytest -q
 CI定義があることと、対象commitのジョブが開始・成功したことは別です。実行が制限されている場合は、ローカル試験の結果とGitHub上の未実行を分けて報告します。
 
 
+検証済みpixelや数値表に意図的に隠した文字列の不存在は保証しません。画像全byteのliteral不存在が必要な利用要件には、この境界は適合しません。Git在庫の相対名は名前専用contextで確認し、本文の絶対path・名前のidentity literal・埋込みhost pathの検査は維持します。
+
 ### PNGを含むprivate identity検査
 
-PNGは全byteのliteral・絶対path照合を維持し、圧縮画素をsource codeとして解析しません。文字metadata（tEXt・zTXt・iTXt）は[PNG仕様](https://www.w3.org/TR/png-3/#11textinfo)に沿って読み、圧縮文も展開して既存の静的文字列連結・URL表記の検査へ渡します。未知の付加chunkも既存の文字viewで検査します。
+PNGは[ADR-0012](adr/0012-image-binary-and-repository-name-semantics.md)に従い、構造・CRC・展開・scanlineを検証したcoding・pixel領域をbinaryとして扱い、文字としてのliteral・path照合から分けます。文字metadata（tEXt・zTXt・iTXt）は[PNG仕様](https://www.w3.org/TR/png-3/#11textinfo)に沿って読み、圧縮文も展開して既存の静的文字列連結・URL表記の検査へ渡します。未知の付加chunkも既存の文字viewで検査します。
 
 chunk境界・CRC・必要なheaderを確認し、壊れた構造、読めない文字metadata、展開上限超過は検査不能として停止します。PNGの全画像復号・OCRを保証する検査ではありません。既存のtext入力の厳格な正規化と、不明をpassにしない境界は維持します。
 
@@ -244,7 +246,7 @@ chunk境界・CRC・必要なheaderを確認し、壊れた構造、読めない
 
 ### JPEGを含むprivate identity検査
 
-JPEGは拡張子ではなく実signatureで判定し、[ADR-0010](adr/0010-strict-jpeg-private-scan.md)のstrict復号を終えてから画素をコード解析と分けます。全byteのliteral・path照合と、COMなど文字metadataの既存文字検査は保持します。未解析のAPP payloadはsource連結せず、raw照合だけを維持します。APP1のXMP本文だけは文字として連結検査します。破損・警告・時間や容量の上限超過・依存不足は検査不能です。今回の送信（比較元からHEADまでの差分と、未commitの追加・変更）に含まれるJPEGの検査不能は走査全体を止めます。送信に含まれない既存JPEGの構造不正（`private_identity_jpeg_unverified`）は、そのfileを未展開として数え、送信全体は止めません。読めるfileの個人識別子と、送信に含まれるJPEGは止めます。範囲は [ADR-0011](adr/0011-existing-jpeg-unverified-does-not-block-submission.md) です。
+JPEGは拡張子ではなく実signatureで判定し、[ADR-0010](adr/0010-strict-jpeg-private-scan.md)のstrict復号を終えてから画素をコード解析と分けます。検証済みcoding・entropy・JFIF thumbnail・Adobe数値項目は[ADR-0012](adr/0012-image-binary-and-repository-name-semantics.md)に従いbinaryとして扱います。COMなど文字metadataの既存文字検査は保持します。未解析のAPP payloadはsource連結せず、raw照合だけを維持します。APP1のXMP本文だけは文字として連結検査します。破損・警告・時間や容量の上限超過・依存不足は検査不能です。今回の送信（比較元からHEADまでの差分と、未commitの追加・変更）に含まれるJPEGの検査不能は走査全体を止めます。送信に含まれない既存JPEGの構造不正（`private_identity_jpeg_unverified`）は、そのfileを未展開として数え、送信全体は止めません。読めるfileの個人識別子と、送信に含まれるJPEGは止めます。範囲は [ADR-0011](adr/0011-existing-jpeg-unverified-does-not-block-submission.md) です。
 
 JPEG検査のruntimeには、任意の`images`追加依存の`simplejpeg`を導入した仮想環境を使用します。`python -m venv .venv`で分離し、その環境の`python -m pip install ".[images]"`で依存を入れて、同じ環境のPythonから既存CLIを起動してください。hookや外部wrapperから呼ぶ場合も、呼出元がその環境のPythonを選んでいることを別途確認します。標準ライブラリだけの旧実行経路はJPEGを成功扱いにせず、`private_identity_jpeg_decoder_unavailable`で停止します。homeのhookやsystem Pythonを自動変更する処理は含みません。
 
@@ -276,3 +278,33 @@ PSD（バージョン1）が対象で、PSB（バージョン2）は未対応で
 `.[images]` のPillowを使い、GIF87a/89aの構造を検証した後、拡張ブロックの本文と全フレームを検査します。コメントのsubblockを連結してから既存の文字列検査へ渡します。フレームは単独で展開し、透明・差分合成で元のパレット番号を消さず、番号と色の両方を直接照合します。画像の画素をプログラムとして解析しません。OCRは行いません。
 
 入力128MiB、1フレームのRGBA換算128MiB、全フレーム累計512MiB、512フレーム、拡張本文8MiBが上限です。構造不正・画像展開失敗・追加依存不足・切れた画像を許す設定・元の番号を失う強制RGB設定は検査不能にします。Pillowの版とデコーダ設定は検査キャッシュの鍵に含めます。
+
+
+## CubismのCMO3（CAFF）を含む個人情報検査
+
+CAFF v0.0.0 / format `----` のファイル表と各ファイル固有のXORキーを読み、圧縮画素を文字列式として解析しません。内部名・main_xml・全埋込みPNG・PNGのpreviewを既存の検査器へ渡します。中央directory付きZIPはPythonの標準ライブラリ、Cubismのstreaming ZIPは既存の局所header・deflate終端・descriptor・CRC検証を使います。未知の型、壊れたentry、重複名、範囲外や重なったoffsetは検査不能として停止します。
+
+入力128MiB、展開したentryの合計256MiB、main_xml 64MiB、entry 1万件、XML要素10万件が上限です。XMLはUTF-8のみで、DTD・外部entityを読みません。補助デコーダのSHA-256を検査キャッシュ鍵へ含めます。埋込み画像の再検査の控えも検査方針へ束縛します。旧来のCMO3パス検査も同じ読取りを再利用します。
+
+形式を確認した一次実装は [stretchystudioのCAFF読み取り](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/cmo3_decrypt.py) と [書き込み](https://github.com/MangoLion/stretchystudio/blob/master/docs/live2d-export/scripts/caff_packer.py) です。独自のZIP圧縮器や暗号処理を作り直さず、標準のZIP・zlib・CRCを再利用します。`rewrite_main_xml` は全entryの再読取りを行い、XML以外の内容がbyte単位で同じことを確認してから結果を返します。本人情報の削除を自動で承認する機能ではありません。
+
+
+Git履歴の通常batch予算16,000,000 byteは維持します。現在の作業treeで同一byteをCAFFデコーダの上限内で完全に形式検査したblobだけ、SHA-1/SHA-256のGit object IDへ証拠を束縛し、予算超過分を単独batchで読み直します。読み直した本文のOID・private/secret/path検査は省略しません。同じデコーダ・方針hashのclean cacheも同一byteの証拠を引き継ぎます。未検証の大容量objectや、現在treeにない過去の大容量blobは従来どおりunknownです。
+
+## PDF・MP3とMP4のprivate identity境界
+
+同梱のtrusted adapterはPDF・MP3・限定H264 MP4を形式検証して本文・metadata・coverを既存identity callbackへ渡す。extensionとmagicの不一致、不正・未知形式・依存不足はtool_errorになる。MP4はHachoir3.4.0と固定mov decoderによる1本のH264 videoだけを扱い、audio/字幕/cover/他codecは停止する。同一hashへ全decode・trace・exact packet/container範囲を結合し、SEIのUUID/payload/結合viewも検査する（ADR-0014）。復号文字viewのsecretも既存secret_scanへ別集計する。外部の明示providerにはこのbinary exemptionを与えない。
+
+worktreeと到達可能なGit blobは同じdispatchを使い、blobの全path aliasもextension照合に使う。媒体はdecoder環境をlookup前に完全束縛するまでclean-pass cacheのlookup/recordを行わない。他の文書・画像のcache契約は維持する。reportにはadapter SHAと実decoder versionsを付ける。これらの証拠は利用側CIや原本参照の採用を代替しない。
+
+PDFの完全原本検査はPython 3.10+のoptional機能（pypdf 6.21.2 / pdfminer.six 20260107）。coreのPython 3.9契約は変えず、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
+
+限定null互換は、xref_free_entryで明示freeかつlive xref/object streamに存在しない正確なgeneration/idだけに適用する。その他のstrict読取り失敗は維持し、元free bytesの検査と数値の適用回数を残す。mailtoは非空targetのinert metadataとして原文・percent復号を検査し、外部へ送信しない。文字列件数は既存object上限100000に整合し、2MB等の他上限は維持する。
+
+Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3・eexec開始・readstring→PS object→CharStrings/Subrsを正確に結ぶ。raw/decryptedの全文字領域を検査し、完全なcodeword decode後のbinary区間以外は免除しない。operation/割当前allocation/stack/depth/output/I/O予算を超えれば停止する。PatternType1/FunctionType4は既存parserでinert graphics sourceを確認する。checksumだけの不一致は数値diagnosticとして残すが、全table/glyph/metadataはstrict decompile必須で、元checksum整合性の保証をしない。
+
+埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。Python3.10のPDF字句・原本検査は維持し、font decoderがない入力はdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
+
+媒体依存のPython 3.9互換版はMutagen 1.47.0（上流Requires-Python >=3.7）、3.10+は1.48系（>=3.10）を使う。FFmpeg/FFprobe不足は検査成功ではなくdependency unavailableで停止する。fontTools 4.67.0のsource pinは既存LF SHAを維持し、配布SHAを照合した公式Windows wheelの完全一致CRLF SHAだけを追加する。任意の改行正規化・混在改行・コード変更は受理しない。
+
+媒体coverのPNG/JPEGは、既存parserが意味を検査できるmetadataだけでobserver完了を返し、復号した文字をidentityとsecretの両検査へ渡す。PNGは検証済みIHDR/PLTE/IDAT/IENDと解析済みtEXt/zTXt/iTXtだけを扱い、宣言済みXMP・iCCP・Exif・数値項目を含む未解析の付加chunkは停止する。JPEGは既存の形状検証済みJFIF/Adobe項目とCOMを扱い、単一segmentを含む全ICC・Exif・Photoshop・XMP・未知APP metadataは停止する。observer未対応も停止し、検証済みの画素・codewordを文字検査へ戻さない。この限定はobserverを使う媒体cover経路だけで、従来の2引数画像検査APIは維持する。PDFのXMLは上限付きExpatで文字参照・本文・属性・namespaceを検査し、DTD・外部entity・不正XMLを拒否する。CFFは未使用glyph名を含むName/String INDEXもmetadataとして検査する。

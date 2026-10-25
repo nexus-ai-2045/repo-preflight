@@ -420,8 +420,7 @@ def personal_path_matches(data: bytes) -> Counter:
                         ).encode("utf-8")
                     ).hexdigest(),
                 )
-                for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-                for match in pattern.finditer(candidate)
+                for rule, match in _PATH_GRAMMAR.iter_private_path_matches(candidate)
             )
     matches |= Counter(
         (
@@ -430,8 +429,7 @@ def personal_path_matches(data: bytes) -> Counter:
                 match.groupdict().get("personal_path") or match.group()
             ).hexdigest(),
         )
-        for rule, pattern in _zip_exact(PATH_RULE_IDS, PATH_PATTERNS)
-        for match in re.finditer(pattern.pattern.encode("ascii"), data)
+        for rule, match in _PATH_GRAMMAR.iter_private_path_matches(data)
     )
     return matches
 
@@ -529,6 +527,11 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
         except UnicodeDecodeError:
             continue
         decoded_text = unquote(text)
+        if PATH_PATTERNS[1] in patterns and any(
+            _PATH_GRAMMAR.macos_shared_parent_matches(value)
+            for value in (text, decoded_text)
+        ):
+            return True
         if any(
             pattern.search(candidate)
             for candidate in (text, decoded_text)
@@ -701,6 +704,37 @@ def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
     return matches
 
 
+def media_kind(data: bytes, source_names=()):
+    """Declared media and magic share one fail-closed dispatch in tree and blobs."""
+    declared = {Path(name).suffix.lower().lstrip(".") for name in source_names}
+    declared &= {"pdf", "mp3", "mp4"}
+    magic = None
+    if data.startswith(b"%PDF-"):
+        magic = "pdf"
+    elif data.startswith(b"ID3") or (
+        len(data) >= 4
+        and data[0] == 255
+        and data[1] & 224 == 224
+        and data[1] & 6 == 2  # MPEG Layer III, not an arbitrary FF/UTF-16 BOM.
+        and data[1] & 24 != 8  # reserved MPEG version
+        and data[2] & 12 != 12  # reserved sample rate
+        and data[2] >> 4 != 15  # reserved bitrate
+    ):
+        magic = "mp3"
+    elif len(data) >= 8 and data[4:8] == b"ftyp":
+        magic = "mp4"
+    if declared and (len(declared) != 1 or magic not in declared):
+        raise ValueError("private_identity_media_format_mismatch")
+    return magic or next(iter(declared), None)
+
+
+def media_candidate(data: bytes, source_names=()):
+    try:
+        return media_kind(data, source_names) is not None
+    except ValueError:
+        return True
+
+
 class PrivateIdentityScan:
     """明示された既存private providerを同一bytesから読み、値なしの実検査証拠を返す。"""
 
@@ -708,6 +742,7 @@ class PrivateIdentityScan:
         self.findings = 0
         self.objects = 0
         self.skipped = 0
+        self._verified_caff_blobs = set()
         self.report = {"status": "not_configured", "required": required}
         self.checker = None
         self.path_normalizer = None
@@ -773,6 +808,11 @@ class PrivateIdentityScan:
             self.path_normalizer_sha256 = hashlib.sha256(path_source_bytes).hexdigest()
             self.patterns = patterns
             self.checker = provider.scan_private_text
+            self.repository_name_checker = (
+                getattr(provider, "scan_private_repository_name", None)
+                if bundled
+                else None
+            )
             self.gif_checker = (
                 getattr(provider, "scan_private_gif", None) if bundled else None
             )
@@ -789,6 +829,13 @@ class PrivateIdentityScan:
             except ImportError:
                 self.report["gif_decoder_settings"] = None
 
+            self.caff_checker = (
+                getattr(provider, "scan_private_caff", None) if bundled else None
+            )
+            self.caff_image_cache = {}
+            self.report["caff_decoder_sha256"] = getattr(
+                provider, "CAFF_DECODER_SHA256", None
+            )
             self.psd_checker = (
                 getattr(provider, "scan_private_psd", None) if bundled else None
             )
@@ -803,6 +850,23 @@ class PrivateIdentityScan:
             self.png_checker = (
                 getattr(provider, "scan_private_png", None) if bundled else None
             )
+            self.media_checker = None
+            if bundled:
+                media_source = bundled_source.with_name("media_identity.py")
+                media_bytes = media_source.read_bytes()
+                media_provider = types.ModuleType("_bundled_media_adapter")
+                media_provider.__file__ = str(media_source)
+                exec(
+                    compile(media_bytes, str(media_source), "exec"),
+                    media_provider.__dict__,
+                )
+                self.media_checker = media_provider.scan_private_media
+                self.report["media_adapter_sha256"] = hashlib.sha256(
+                    media_bytes
+                ).hexdigest()
+                self.report["media_clean_cache"] = (
+                    "disabled_decoder_environment_unbound"
+                )
             self.report.update(
                 status="pass",
                 provider_sha256=hashlib.sha256(provider_bytes).hexdigest(),
@@ -818,11 +882,14 @@ class PrivateIdentityScan:
         data: bytes,
         *,
         literal_only: bool = False,
+        repository_name: bool = False,
         reviewed_raw_paths: bool = False,
         defer_unverified_jpeg: bool = False,
+        source_names=(),
     ):
         # 例外の助けなしに合格した本文だけ、使った正規化器のhashを残す (控えの材料)。
         self.last_clean_pass_digests = None
+        self.last_media_secret_matches = 0
         if self.checker is None:
             return
         seen_normalizer_digests: set[str] = set()
@@ -837,7 +904,98 @@ class PrivateIdentityScan:
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
-                if data.startswith(b"8BPS") and callable(
+                kind = None if repository_name else media_kind(data, source_names)
+                if kind is not None:
+                    if not callable(getattr(self, "media_checker", None)):
+                        raise ValueError(
+                            "private_identity_media_external_provider_unsupported"
+                        )
+
+                    def image_check(value, patterns):
+                        checker = (
+                            self.png_checker
+                            if value.startswith(b"\x89PNG")
+                            else self.jpeg_checker
+                        )
+                        if not callable(checker):
+                            raise ValueError(
+                                "private_identity_media_callback_unavailable"
+                            )
+                        secret_hits = Counter()
+
+                        def observe_metadata(text):
+                            nonlocal secret_hits
+                            secret_hits |= secret_matches(text.encode("utf-8"))
+
+                        result = dict(
+                            checker(value, patterns, metadata_observer=observe_metadata)
+                        )
+                        if result.pop("metadata_observer_complete", None) is not True:
+                            raise ValueError(
+                                "private_identity_media_callback_unavailable"
+                            )
+                        result["secret_match_count"] = sum(secret_hits.values())
+                        return result
+
+                    def media_text_check(value, patterns):
+                        result = dict(self.checker(value, patterns))
+                        result["secret_match_count"] = int(
+                            text_has(SECRET_PATTERNS, value.encode("utf-8"))
+                        )
+                        return result
+
+                    results = [
+                        self.media_checker(
+                            data,
+                            self.patterns,
+                            kind=kind,
+                            check_text=media_text_check,
+                            check_image=image_check,
+                        )
+                    ]
+                    evidence = results[0]
+                    secret_count = evidence.get("secret_match_count", 0)
+                    if type(secret_count) is not int or secret_count < 0:
+                        raise ValueError("private_identity_media_unverified")
+                    self.last_media_secret_matches = secret_count
+                    if (
+                        evidence.get("adapter_sha256")
+                        != self.report["media_adapter_sha256"]
+                    ):
+                        raise ValueError("private_identity_media_adapter_changed")
+                    self.report.setdefault("media_decoder_versions", {}).update(
+                        evidence["decoder_versions"]
+                    )
+                    self.report["media_objects"] = (
+                        self.report.get("media_objects", 0) + 1
+                    )
+                    type1_metrics = evidence.get("type1_metrics", [])
+                    if not isinstance(type1_metrics, list):
+                        raise ValueError("private_identity_media_unverified")
+                    self.report["type1_fonts_scanned"] = self.report.get(
+                        "type1_fonts_scanned", 0
+                    ) + len(type1_metrics)
+                    checksum_count = evidence.get("font_checksum_mismatches", 0)
+                    if type(checksum_count) is not int or checksum_count < 0:
+                        raise ValueError("private_identity_media_unverified")
+                    self.report["font_checksum_mismatches"] = (
+                        self.report.get("font_checksum_mismatches", 0) + checksum_count
+                    )
+                    free_count = evidence.get("pdf_known_free_references", 0)
+                    if type(free_count) is not int or free_count < 0:
+                        raise ValueError("private_identity_media_unverified")
+                    self.report["pdf_known_free_references"] = (
+                        self.report.get("pdf_known_free_references", 0) + free_count
+                    )
+                elif (
+                    not repository_name
+                    and data.startswith(b"CAFF")
+                    and callable(getattr(self, "caff_checker", None))
+                ):
+                    results = [
+                        self.caff_checker(data, self.patterns, self.caff_image_cache)
+                    ]
+                elif data.startswith(b"8BPS") and callable(
                     getattr(self, "psd_checker", None)
                 ):
                     results = [self.psd_checker(data, self.patterns)]
@@ -855,7 +1013,12 @@ class PrivateIdentityScan:
                     results = [self.jpeg_checker(data, self.patterns)]
                 else:
                     results = [
-                        self.checker(candidate, self.patterns)
+                        (
+                            self.repository_name_checker
+                            if repository_name
+                            and callable(getattr(self, "repository_name_checker", None))
+                            else self.checker
+                        )(candidate, self.patterns)
                         for text in texts
                         for candidate in {text, unquote(text)}
                     ]
@@ -934,6 +1097,8 @@ class PrivateIdentityScan:
                 "private_identity_jpeg_image_limit",
                 "private_identity_jpeg_text_limit",
                 "private_identity_jpeg_decoder_unavailable",
+                "private_identity_caff_unverified",
+                "private_identity_caff_size_limit",
                 "private_identity_gif_unverified",
                 "private_identity_gif_size_limit",
                 "private_identity_gif_decoder_unavailable",
@@ -947,6 +1112,38 @@ class PrivateIdentityScan:
                 "private_identity_png_animation_unverified",
                 "private_identity_normalization_incomplete",
             }
+            safe_codes.update(
+                "private_identity_media_" + reason
+                for reason in (
+                    "unsupported_structural_coverage",
+                    "format_mismatch",
+                    "external_provider_unsupported",
+                    "dependency_unavailable",
+                    "unverified",
+                    "unsupported_metadata",
+                    "unsupported_region",
+                    "unsupported_stream",
+                    "unsupported_image",
+                    "unsupported_font",
+                    "unsupported_font_table",
+                    "unsupported_active_or_attachment",
+                    "unsupported_attachment",
+                    "encrypted",
+                    "external_reference",
+                    "data_limit",
+                    "text_limit",
+                    "image_limit",
+                    "decoded_limit",
+                    "object_limit",
+                    "page_limit",
+                    "stream_limit",
+                    "duration_limit",
+                    "timeout",
+                    "output_limit",
+                    "callback_unavailable",
+                    "adapter_changed",
+                )
+            )
             reason = (
                 str(exc)
                 if str(exc) in safe_codes
@@ -955,10 +1152,34 @@ class PrivateIdentityScan:
             self.report.update(status="tool_error", reason=reason)
             self.checker = None
             return
+        if (
+            not repository_name
+            and data.startswith(b"CAFF")
+            and callable(getattr(self, "caff_checker", None))
+        ):
+            self._remember_verified_caff(data)
         self.objects += 1
         self.findings += int(found)
-        if not found and not reviewed_raw_paths:
+        if (
+            not found
+            and not reviewed_raw_paths
+            and not media_candidate(data, source_names)
+        ):
             self.last_clean_pass_digests = tuple(sorted(seen_normalizer_digests))
+
+    def _remember_verified_caff(self, data: bytes):
+        """形式検査済みの同一byteをGit blob IDへ束縛する。"""
+        if (
+            not callable(getattr(self, "caff_checker", None))
+            or data[:14] != b"CAFF\0\0\0----\0\0\0"
+        ):
+            return
+        header = f"blob {len(data)}\0".encode("ascii")
+        for algorithm in ("sha1", "sha256"):
+            digest = hashlib.new(algorithm, usedforsecurity=False)
+            digest.update(header)
+            digest.update(data)
+            self._verified_caff_blobs.add(digest.hexdigest())
 
     def reuse_clean_pass(self, normalizer_digests: tuple[str, ...]) -> bool:
         """控えた合格を、本文検査と同じ数え方・正規化器の一致確認で反映する。"""
@@ -1073,6 +1294,8 @@ class IdentityScanCache:
                 "policy_sha256": scan.report["policy_sha256"],
                 "provider_kind": scan.report["provider_kind"],
                 "normalized_path_provider_sha256": scan.path_normalizer_sha256,
+                "caff_checker": callable(getattr(scan, "caff_checker", None)),
+                "caff_decoder_sha256": scan.report.get("caff_decoder_sha256"),
                 "gif_checker": callable(getattr(scan, "gif_checker", None)),
                 "gif_decoder_version": scan.report.get("gif_decoder_version"),
                 "gif_decoder_settings": scan.report.get("gif_decoder_settings"),
@@ -1312,8 +1535,8 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
         raise RuntimeError("git_worktree_inventory_failed") from exc
 
 
-# 履歴objectの読取上限は、直下のbatch読取予算と同一の既存値。別の上限は持たない。
-# この予算以内は本文を読み、超過だけを未検査として残す。
+# 通常objectのbatch予算。超過は原則として未検査に残す。
+# 同じbyteを既にCAFF形式の上限内で検証したblobだけ、単独batchで読み直す。
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
 
 
@@ -1329,6 +1552,7 @@ def history_hits(
             "\n".join(revisions).encode("ascii")
         ).hexdigest()
         private_identity.report["replacement_objects_disabled"] = True
+        private_identity.report["verified_large_caff_objects_read"] = 0
     objects = run_subprocess(
         ["git", "rev-list", "--objects", "--no-object-names", *revisions],
         cwd=repo,
@@ -1383,16 +1607,37 @@ def history_hits(
             if size <= _HISTORY_BATCH_BUDGET_BYTES:
                 eligible.append((object_id, name, size, fields[1]))
             elif private_identity is not None:
-                private_identity.skipped += 1
+                if (
+                    fields[1] == "blob"
+                    and object_id in private_identity._verified_caff_blobs
+                ):
+                    eligible.append((object_id, name, size, fields[1]))
+                    private_identity.report["verified_large_caff_objects_read"] += 1
+                else:
+                    private_identity.skipped += 1
     aliases: dict[str, set[str]] = {}
-    if reviewed_exceptions is not None:
+    if reviewed_exceptions is not None or private_identity is not None:
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
         roots = run_subprocess(
             ["git", "log", "--format=%T", *revisions], cwd=repo, capture_output=True
         )
         if roots.returncode:
             raise RuntimeError("git_history_inventory_failed")
-        for tree in set(roots.stdout.splitlines()):
+        root_trees = set(roots.stdout.splitlines())
+        # A ref can point directly (or through an annotated tag) to a tree,
+        # without any commit owning that tree. Preserve its root-relative paths.
+        # Do not treat every nested inventory tree as a repository root.
+        for revision in revisions:
+            if revision.startswith("^"):
+                continue
+            resolved = run_subprocess(
+                ["git", "rev-parse", "--verify", revision + "^{tree}"],
+                cwd=repo,
+                capture_output=True,
+            )
+            if resolved.returncode == 0:
+                root_trees.add(resolved.stdout.strip())
+        for tree in root_trees:
             tree_files = run_subprocess(
                 ["git", "ls-tree", "-r", "-z", tree.decode("ascii")],
                 cwd=repo,
@@ -1477,10 +1722,20 @@ def history_hits(
                             for alias in names
                         )
                     )
-                    private_identity.check(data, reviewed_raw_paths=reviewed_raw)
+                    private_identity.check(
+                        data,
+                        reviewed_raw_paths=reviewed_raw,
+                        source_names=(
+                            tuple(names or ()) if object_type == "blob" else ()
+                        ),
+                    )
                 if object_type != "blob":
                     continue
                 label = f"history:{sanitized_evidence_label(name or object_id[:12])}"
+                if private_identity is not None and getattr(
+                    private_identity, "last_media_secret_matches", 0
+                ):
+                    secret_hits.add(label)
                 if reviewed_exceptions is None:
                     if text_has(SECRET_PATTERNS, data):
                         secret_hits.add(label)
@@ -1707,6 +1962,8 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     so matching their pattern text against raw bytes finds embedded hits
     without needing the surrounding noise to decode at all.
     """
+    if PATH_PATTERNS[1] in patterns and _PATH_GRAMMAR.macos_shared_parent_matches(data):
+        return True
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
@@ -1722,6 +1979,22 @@ def cmo3_contents_xml(data: bytes) -> bytes | None:
     entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
     the whole file unreadable rather than partly clean.
     """
+    if data[:14] == b"CAFF\0\0\0----\0\0\0":
+        # 実際のCAFFはヘッダにentry用キーを持つ。旧固定キーheuristicと混ぜない。
+        import runpy
+
+        try:
+            decoder = runpy.run_path(str(Path(__file__).with_name("caff_archive.py")))
+            documents = [
+                content
+                for entry, content in decoder["Archive"](data).contents()
+                if entry.tag == "main_xml"
+            ]
+            if len(documents) != 1 or len(documents[0]) > CMO3_MAX_XML_BYTES:
+                return None
+            return documents[0]
+        except Exception:
+            return None
     plain = data.translate(_CMO3_XOR_TABLE)
     documents: list[bytes] = []
     for match in _ZIP_LOCAL_HEADER.finditer(plain):
@@ -1997,6 +2270,19 @@ def changed_working_tree_files(
             if mode_probe.returncode:
                 raise RuntimeError("git_target_diff_inventory_failed")
             entries = [line for line in mode_probe.stdout.splitlines() if line]
+            if not entries:
+                # A committed deletion may retain an ignored local original.
+                # Prove absence from HEAD before excluding its nondelivery copy.
+                head_probe = run_subprocess(
+                    ["git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", rel],
+                    cwd=repo,
+                    capture_output=True,
+                )
+                if head_probe.returncode:
+                    raise RuntimeError("git_target_diff_inventory_failed")
+                if not head_probe.stdout:
+                    deleted.add(path)
+                    continue
             if len(entries) != 1:
                 raise RuntimeError("git_target_diff_inventory_failed")
             mode = entries[0].split(maxsplit=1)[0]
@@ -2349,6 +2635,7 @@ def scan(
                 invalid_documents.append(REVIEW_RECORD)
     private_identity = PrivateIdentityScan(repo, require_private_identity)
     credential_finding_count = 0
+    decoded_media_secrets: set[str] = set()
     path_hits: list[str] = []
     unscanned_path_files: list[str] = []
     try:
@@ -2412,7 +2699,7 @@ def scan(
                 name_views.append(stem)
             before_name_findings = private_identity.findings
             for name_view in name_views:
-                private_identity.check(name_view.encode("utf-8"))
+                private_identity.check(name_view.encode("utf-8"), repository_name=True)
                 if private_identity.checker is None:
                     break
             if private_identity.findings > before_name_findings:
@@ -2437,11 +2724,13 @@ def scan(
                     "issues": [f"worktree_file_unreadable:{label}"],
                 }
             content_sha256 = None
-            if identity_cache is not None:
+            if identity_cache is not None and not media_candidate(data, (rel,)):
                 # 同じ鍵で合格済みの内容なら本文検査を省く。ファイル名の検査は毎回行う。
                 content_sha256 = hashlib.sha256(data).hexdigest()
                 cached = identity_cache.lookup(content_sha256)
                 if cached is not None and private_identity.reuse_clean_pass(cached):
+                    # 同じhash・デコーダ・方針を確認した控えから形式証拠も引き継ぐ。
+                    private_identity._remember_verified_caff(data)
                     private_worktree_scanned_count += 1
                     private_worktree_cache_reused += 1
                     continue
@@ -2459,10 +2748,13 @@ def scan(
             private_identity.check(
                 data,
                 reviewed_raw_paths=reviewed_raw,
+                source_names=(rel,),
                 defer_unverified_jpeg=(
                     submission_rels is not None and rel not in submission_rels
                 ),
             )
+            if private_identity.last_media_secret_matches:
+                decoded_media_secrets.add(rel)
             if private_identity.checker is None:
                 break
             if (
@@ -2505,7 +2797,7 @@ def scan(
             reviewed_exceptions.has_unreviewed(rel, data)
             if reviewed_exceptions is not None
             else text_has(SECRET_PATTERNS, data)
-        ):
+        ) or rel in decoded_media_secrets:
             credential_finding_count += 1
         if base_ref:
             continue

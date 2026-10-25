@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### 形式別の媒体検査
+
+- PDF・MP3・限定H264 MP4を同梱adapterから既存の文字・画像検査へ接続。worktreeとGit blobのextension/magicを同じ入口で確認する。MP4は同一sourceのstrict Hachoir・packet・全decode・traceを結合し、container補集合とSEI UUID/payload/連結viewを検査する。外部providerにbinary exemptionを与えない。
+- decoder環境の完全束縛まで媒体のclean-pass cache lookup/recordを停止。adapter hashとdecoder versionsを値非表示のreportへ残す。
+
+- PDFの原本stream read範囲をobject identityへ束縛し、header/comment/free objectを含む補集合とPDF文字列escapeを既存parserで検査。正しいxrefのコメント・free文字objectの見逃しを回帰化した。依存版/source hash、Flate完全消費、位置・EOF・resourceを検証し、GoTo navigation/構造属性/Type3 glyphの役割を区別する。PDF lexerはPython 3.10+、埋込みfont検査は3.11+のoptional依存とし、core3.9は維持。
+
+- 既存readerの標準null互換を明示known-free参照だけに限定し、元free bytesの検査・strict読取り・競合拒否を維持。mailtoを非送信のmetadataとして原文/percent復号を確認する。CJK glyph名の測定に基づきunique文字列数のみ既存100000 object上限へ整合し、文字量2MBや他上限を変更しない。
+
+- 実FontFileの既存guarded Type1 decoderとexact readstring/object結合を追加し、raw/decrypted metadata・comments・unused sourceを検査。通常のTilingPattern/Function graphicsをinert sourceとして確認し、checksumだけは公式warning診断へ分離する。全table/glyphの読取り、未知/破損・予算超過拒否、原本bytes保持は維持。
+
+- PDFの全linked xref componentを同一原本の既存strict readerで確認し、上書きされた圧縮metadata・旧actionも省略しない。XRef streamのW/Index/decoded長と全消費、graph/cycle、global budgets、exact source rangeの同一性を検査する。
+- MP4の全decoder入力をmov・external drefs/absolute無効・file/pipeへ限定。復号された合成secretをworktreeと削除済み履歴の既存secret gateへ接続し、Hachoir/helper SHA/decoder版・固定diagnosticを残す。
+
+### その他の変更
+
+- 旧履歴 `719dc3a` の本人採用済みADR-0012を再構築後のmain `ad1531f` へ移植。検証済みPNG/JPEGのcoding・pixel・CRC領域とGit相対名を本文から区別し、metadataの全UTF-16 alignment・strict復号・不正入力の停止を維持する。現行PSD/GIF対応と公開名義policyは変更しない。
+
 - `scripts/local_identity_guard.py` の読み飛ばしを、許可名義の一覧（`references/public-commit-identities.json`：nexus の noreply と許可済みの bot）に載った名義だけに絞った。git の global のメールは、一覧に載ったものだけを外し、ほかの GitHub の noreply はローカル部分とログイン名も個人名義として止める。端末名はこれまでどおり集め、一覧の語（例「bot」）だけを照合から外す（`dependabot[bot]` の行の誤検知を直す）。端末名にだけ出る個人名は止まる。一覧が読めないときは何も外さない。
 - CI を全 OS で緑にした。CI の全ジョブで、`references/gitleaks-pins.json` の gitleaks を配布物と本体の両方の SHA-256 を確かめて入れる（`scripts/install_pinned_gitleaks.py`）。Windows では `ai_command_guard.py` の stderr を UTF-8 に固定し、試験の偽 gitleaks を `.cmd` にし、WSL の入口ではなく動く bash を使う。
 - 本体に全 ref の定期検査 `.github/workflows/all-refs-scan.yml` を足した（毎日と手動実行、`contents: read` だけ）。PR の無い枝・タグ・PR の head ごとに、既存の `identity_gate.py`・`preflight_ratchet.py`・固定版 gitleaks を、デフォルト枝の版の例外一覧で回す。注釈付きタグは commit に直す前に作者（tagger）と注釈文を `identity_gate.check_pushed_tags` で見る。ログに出すのは件数と種類だけで、ref 名・ファイル名・作者名（commit の作者・タグの作者）・値・ハッシュは出さない。`actions/checkout` は使わず、全 ref と検査の版を `git fetch -q` と静かな checkout で取り、git の出力はすべて作業場のファイルへ書く（デフォルト枝の名前と SHA もログに出さない）。ref ごとの checkout は filter（LFS を含む）とシンボリックリンクを切って行い、取り出せない ref は `checkout できない ref` として赤にして残りの ref の検査を続ける。LFS のポインタは中身を検査できないので、ref の履歴全体（git rev-list で辿れる全 object）にあるポインタの形の blob を数えて1件でも赤にする（足してから消したものも。git-lfs と同じく先頭の空白・タブ・改行は落としてから形を見る）。HEAD という名前の枝も飛ばさない。取得するのは枝・タグ・PR の head だけで、`refs/notes` などそれ以外の名前空間の ref は検査の対象外（文書に明記）。
