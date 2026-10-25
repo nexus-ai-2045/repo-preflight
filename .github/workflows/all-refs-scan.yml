@@ -1,0 +1,383 @@
+name: all-refs-scan
+
+# PR・push の CI（preflight-gate.yml）は、そのイベントの commit から辿れる履歴だけを見る。
+# その穴埋めとして、PR の無い枝・タグ・PR の head（refs/pull/*/head）も含めたリモートの ref を、
+# 日に1回と手動で検査する。取得するのは refs/heads・refs/tags・refs/pull/*/head だけで、
+# refs/notes やそれ以外の名前空間（任意の refs/*、refs/pull/*/merge など）は取得せず、検査の対象外。
+# 新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
+# - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
+# - 秘密・個人パス・名義の件数：scripts/preflight_ratchet.py（基準値はデフォルト枝の版より緩められない）
+# - 鍵：固定した gitleaks（全履歴）
+# - 注釈付きタグ：タグの作者（tagger）と注釈文（入れ子のタグも）を identity_gate.check_pushed_tags で見る
+# 許可名義の一覧と名義検査の例外一覧は、デフォルト枝の版（tool 側）だけを読む。枝側で広げても通らない。
+# 書き込みはしない（Issue・コメントも作らない）。
+# ログに出すのは件数と種類だけ。ref 名・ファイル名・作者名（commit の作者・タグの作者）・値は、
+# 個人名が入りうるので出さない。ログの本文には commit やタグのハッシュ、デフォルト枝の名前も出さない
+# （actions/checkout は枝の名前と SHA をログに出すので使わず、git の取得と checkout を自前で静かに行う。
+# 実行の画面の見出しに GitHub 自身が出す、この実行の commit は別）。
+# git を含む各検査の stdout・stderr は作業場のファイルにだけ書き、決まった文言か、
+# 下の summarize.py が種類と件数に直したものだけを出す。どの ref かは、手元で同じ検査を回して確かめる。
+# checkout はフィルタ（LFS を含む。外のコマンドを動かさない）とシンボリックリンクを切った専用の作業場で行い、
+# git が何か出力した・失敗した ref は「checkout できない ref」として赤にし、残りの ref の検査は続ける。
+# LFS のポインタは中身（LFS 側の大きいファイル）を検査できないので、ref の履歴（git rev-list --objects）にある
+# ポインタの形をした小さい blob を数え、1件でもあれば赤として件数を出す（足してから消したものも数える）。
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: all-refs-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      # 検査の版（例外一覧を含む）はデフォルト枝に限る。手動実行で別の枝を選んだときは赤にする。
+      # 枝の名前は既定の環境変数（GITHUB_REF）で読み、env に展開した値をログに出さない。
+      - name: Require default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch 2>/dev/null)" || {
+            echo "デフォルト枝を読めません" >&2
+            exit 1
+          }
+          test -n "$default_branch"
+          if [ "$GITHUB_REF" != "refs/heads/${default_branch}" ]; then
+            echo "all-refs-scan はデフォルト枝の版でだけ動かします" >&2
+            exit 1
+          fi
+      # actions/checkout は取った枝の名前と完全な SHA をログに出し、全履歴なら取った ref を1行ずつ出す。
+      # ここでは使わず、全部の枝・タグ・PR の head（refs/pull/*/head）を専用の名前空間 refs/all-refs/ へ
+      # -q で取り、git の出力はすべてファイルへ捨てる。merge 用の ref は GitHub が作る合成物なので見ない。
+      # 検査の版（tool）は、この実行の commit（GITHUB_SHA。デフォルト枝）を同じ手順で取り出す。
+      - name: Fetch every branch, tag and pull request head quietly
+        env:
+          EVENT_FETCH_TOKEN: ${{ github.token }}
+        run: |
+          set +ax
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_TRACE_SETUP
+          log="$(mktemp "${RUNNER_TEMP:-/tmp}/all-refs-fetch.XXXXXX")"
+          fail() { echo "$1" >&2; exit 1; }
+          token="${EVENT_FETCH_TOKEN:-}"
+          unset EVENT_FETCH_TOKEN
+          test -n "$token" || fail "取得用のトークンがありません"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$token" | base64 | tr -d '\r\n')"
+          unset token
+          git init -q target > "$log" 2>&1 || fail "取得の作業場を作れません"
+          GIT_CONFIG_COUNT=2 \
+          GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL%/}/.extraheader" \
+          GIT_CONFIG_VALUE_0="$auth_header" \
+          GIT_CONFIG_KEY_1=credential.helper \
+          GIT_CONFIG_VALUE_1= \
+          GIT_TERMINAL_PROMPT=0 \
+            git -C target fetch -q --no-tags --no-write-fetch-head "${GITHUB_SERVER_URL%/}/${GITHUB_REPOSITORY}" \
+              '+refs/heads/*:refs/all-refs/heads/*' \
+              '+refs/tags/*:refs/all-refs/tags/*' \
+              '+refs/pull/*/head:refs/all-refs/pull/*' >> "$log" 2>&1 || {
+            unset auth_header
+            fail "全 ref を取得できません"
+          }
+          unset auth_header
+          git -C target cat-file -e "${GITHUB_SHA}^{commit}" >> "$log" 2>&1 || fail "この実行の commit がありません"
+          git init -q tool >> "$log" 2>&1 || fail "検査の版の作業場を作れません"
+          git -C target update-ref refs/all-refs-scan/tool "$GITHUB_SHA" >> "$log" 2>&1 &&
+            git -C tool fetch -q --no-tags --no-write-fetch-head "$PWD/target" refs/all-refs-scan/tool >> "$log" 2>&1 &&
+            git -C target update-ref -d refs/all-refs-scan/tool >> "$log" 2>&1 &&
+            GIT_LFS_SKIP_SMUDGE=1 git -C tool -c filter.lfs.process= -c filter.lfs.smudge=cat -c filter.lfs.required=false \
+              -c advice.detachedHead=false checkout -q --detach "$GITHUB_SHA" >> "$log" 2>&1 ||
+            fail "検査の版を取り出せません"
+          test "$(git -C tool rev-parse HEAD 2>/dev/null)" = "$GITHUB_SHA" || fail "検査の版がこの実行の commit と違います"
+          rm -f "$log"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      # preflight-gate・ci と同じ固定版（references/gitleaks-pins.json の配布物ハッシュと本体ハッシュ）
+      - name: Install pinned gitleaks
+        run: python tool/scripts/install_pinned_gitleaks.py --dest "${{ runner.temp }}/gitleaks" --github-path
+      - name: Scan every ref
+        env:
+          TARGET: target
+          TOOL: tool
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set +ax
+          set -euo pipefail
+          unset GIT_TRACE GIT_TRACE_PACKET GIT_TRACE_CURL GIT_CURL_VERBOSE GIT_TRACE2 GIT_TRACE2_EVENT GIT_TRACE2_PERF GIT_TRACE_SETUP
+          DEFAULT_SHA="$GITHUB_SHA"
+          target="$(cd "$TARGET" && pwd)"
+          tool="$(cd "$TOOL" && pwd)"
+          policy="$tool/references/public-commit-identities.json"
+          work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/all-refs-scan.XXXXXX")"
+          # git の stdout・stderr（ref 名・ファイル名・作者を含みうる）はここへだけ書く。
+          gitlog="$work/git.log"
+          : > "$gitlog"
+          quiet() { "$@" >> "$gitlog" 2>&1; }
+          : > "$work/refs.txt"
+          : > "$work/tags.txt"
+          # 各検査の出力（ファイル名・commit・作者などを含みうる）を、種類と件数だけに直してログへ出す。
+          # 種類にパス・メール・山かっこの形が混ざっていたら、その種類も伏せる。
+          cat > "$work/summarize.py" <<'PY'
+          import collections
+          import json
+          import re
+          import sys
+
+          mode, path, where = sys.argv[1], sys.argv[2], sys.argv[3]
+          kinds = collections.Counter()
+          try:
+              with open(path, encoding="utf-8", errors="replace") as stream:
+                  text = stream.read()
+          except OSError:
+              text = ""
+          if mode == "issues":
+              for line in text.splitlines():
+                  line = line.strip()
+                  if line.startswith("失敗:"):
+                      kinds[line.rsplit(": ", 1)[-1]] += 1
+                  elif line.startswith("{"):
+                      try:
+                          data = json.loads(line)
+                      except ValueError:
+                          continue
+                      if data.get("status") == "tool_error":
+                          kinds[f"tool_error {data.get('reason', '')}".strip()] += 1
+          elif mode == "ratchet":
+              start = text.find("{")
+              try:
+                  data = json.JSONDecoder().raw_decode(text[start:])[0] if start >= 0 else {}
+              except ValueError:
+                  data = {}
+              for key in ("increased", "loosened"):
+                  for item in data.get(key) or []:
+                      kinds[f"{key} {item.get('check', '')}".strip()] += 1
+              if not kinds:
+                  kinds[f"status {data.get('status', 'tool_error')}"] += 1
+          elif mode == "gitleaks":
+              try:
+                  findings = json.loads(text) if text.strip() else []
+              except ValueError:
+                  findings = []
+              for finding in findings or []:
+                  kinds[f"gitleaks {finding.get('RuleID', '')}".strip()] += 1
+              if not kinds:
+                  kinds["gitleaks を実行できません"] += 1
+          if not kinds:
+              kinds["種類の読めない失敗"] += 1
+          for kind, count in sorted(kinds.items()):
+              if len(kind) > 80 or re.search(r"[/\\@<>:]|\.\w{1,5}\b", kind):
+                  kind = "種類を伏せた指摘"
+              print(f"赤: {where}: {kind} {count} 件", file=sys.stderr)
+          PY
+          # LFS のポインタの形をした blob を、その ref の履歴全体（git rev-list --objects）から数える。
+          # 足してから消したポインタも数える。ポインタの大きさ（1024 バイト）以下の blob だけ中身を読む。
+          # git の出力は捨てるか、この中で受けるだけ。出すのは件数だけ（名前・ハッシュは出さない）。
+          cat > "$work/lfs_pointers.py" <<'PY'
+          import subprocess
+          import sys
+
+          PREFIXES = ("version https://git-lfs.github.com/spec/", "version https://hawser.github.com/spec/")
+          MAX_POINTER = 1024
+          # git-lfs は前後の空白を落としてから読む（Go の bytes.TrimSpace）。先頭に空白・タブ・改行があっても
+          # 中身を展開するので、同じ空白（Go の unicode.IsSpace と同じ集合）を落としてから形を見る。
+          SPACES = "\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+          repo = sys.argv[1]
+
+
+          def git(args, data=None):
+              return subprocess.run(
+                  ["git", "-C", repo, *args], input=data, capture_output=True, check=True
+              ).stdout
+
+
+          oids = git(["rev-list", "--objects", "--no-object-names", "HEAD"]).split()
+          small = []
+          if oids:
+              listing = git(
+                  ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+                  b"\n".join(oids) + b"\n",
+              )
+              for line in listing.splitlines():
+                  fields = line.split()
+                  if len(fields) != 3:
+                      raise SystemExit(1)
+                  if fields[1] == b"blob" and int(fields[2]) <= MAX_POINTER:
+                      small.append(fields[0])
+          count = 0
+          if small:
+              out = git(["cat-file", "--batch"], b"\n".join(small) + b"\n")
+              pos = 0
+              while pos < len(out):
+                  end = out.index(b"\n", pos)
+                  header = out[pos:end].split()
+                  if len(header) != 3:
+                      raise SystemExit(1)
+                  size = int(header[2])
+                  body = out[end + 1 : end + 1 + size]
+                  pos = end + 1 + size + 1
+                  text = body.decode("utf-8", "replace").lstrip(SPACES)
+                  if text.startswith(PREFIXES) and "\noid sha256:" in text:
+                      count += 1
+          print(count)
+          PY
+          # 取得の手順が refs/all-refs/ に入れた枝・タグ・PR の head。タグは指す commit に直す。commit に直せない ref は赤。
+          # 注釈付きタグは、commit に直す前にタグの object を控えておき、下で作者と注釈文を見る。
+          while read -r ref; do
+            if [ "$(git -C "$target" cat-file -t "$ref" 2>/dev/null)" = tag ]; then
+              git -C "$target" rev-parse -q --verify "$ref" 2>/dev/null >> "$work/tags.txt" || true
+            fi
+            if sha="$(git -C "$target" rev-parse -q --verify "${ref}^{commit}" 2>/dev/null)"; then
+              printf '%s\n' "$sha" >> "$work/refs.txt"
+            else
+              printf 'unresolved\n' >> "$work/refs.txt"
+            fi
+          done < <(git -C "$target" for-each-ref --format='%(refname)' refs/all-refs/ 2>> "$gitlog")
+          test -s "$work/refs.txt" || { echo "検査する ref がありません" >&2; exit 1; }
+          quiet git -C "$target" cat-file -e "${DEFAULT_SHA}^{commit}" || { echo "デフォルト枝の commit がありません" >&2; exit 1; }
+          commits="$(grep -v '^unresolved$' "$work/refs.txt" | sort -u || true)"
+          total="$(printf '%s\n' "$commits" | grep -c . || true)"
+          echo "ref $(wc -l < "$work/refs.txt" | tr -d ' ') 件（注釈付きタグ $(wc -l < "$work/tags.txt" | tr -d ' ') 件、検査する commit ${total} 件）"
+          failed=0
+          unresolved="$(grep -c '^unresolved$' "$work/refs.txt" || true)"
+          if [ "$unresolved" -gt 0 ]; then
+            echo "赤: commit を指していない ref ${unresolved} 件" >&2
+            failed=1
+          fi
+          # 注釈付きタグの作者（tagger）と注釈文。入れ子のタグもたどる。pre-push と同じ check_pushed_tags を、
+          # デフォルト枝の版（tool 側）の許可名義で呼ぶ。指摘はファイルにだけ書き、種類と件数に直して出す。
+          if [ -s "$work/tags.txt" ]; then
+            if ! python - "$tool/scripts" "$policy" "$target" "$work/tags.txt" > "$work/tags.out" 2>&1 <<'PY'
+          import sys
+
+          sys.path.insert(0, sys.argv[1])
+          import identity_gate
+
+          policy = identity_gate.load_public_policy(sys.argv[2])
+          failed = 0
+          with open(sys.argv[4], encoding="utf-8") as stream:
+              for tag_sha in stream.read().split():
+                  try:
+                      issues = identity_gate.check_pushed_tags(
+                          policy,
+                          sys.argv[3],
+                          f"tag {tag_sha} tag {identity_gate.ZERO_OID}\n",
+                      )
+                  except Exception:
+                      issues = ["タグ: タグを読めない"]
+                  for issue in issues:
+                      print("失敗:", issue)
+                      failed = 1
+          sys.exit(failed)
+          PY
+            then
+              python "$work/summarize.py" issues "$work/tags.out" "注釈付きタグ"
+              failed=1
+            fi
+          fi
+          # ref ごとに別の作業場へ、その ref の履歴とデフォルト枝の commit だけを入れる。
+          # 他の ref が入ると全履歴の検査（--all）が他の枝の中身を見てしまう（#2 の原因）。
+          # git の出力は $gitlog へだけ書く。作業場を作れない ref も赤にして、次の ref へ進む。
+          prepare() {
+            local scan="$1" sha="$2"
+            quiet git init -q "$scan" &&
+              quiet git -C "$target" update-ref refs/all-refs-scan/one "$sha" &&
+              quiet git -C "$target" update-ref refs/all-refs-scan/default "$DEFAULT_SHA" &&
+              quiet git -C "$scan" fetch -q --no-tags --no-write-fetch-head "$target" refs/all-refs-scan/default refs/all-refs-scan/one &&
+              quiet git -C "$target" update-ref -d refs/all-refs-scan/one &&
+              quiet git -C "$target" update-ref -d refs/all-refs-scan/default &&
+              test -z "$(git -C "$scan" for-each-ref --format='%(refname)' 2>> "$gitlog")" &&
+              quiet git -C "$scan" remote add origin "$ORIGIN_URL" &&
+              quiet git -C "$scan" config core.symlinks false &&
+              mkdir -p "$scan/.git/info" &&
+              printf '* -filter\n' > "$scan/.git/info/attributes"
+          }
+          # 取り出しは、.gitattributes の filter（LFS を含む。外のコマンドを動かす）を切って行う。
+          # working-tree-encoding・改行の変換は git 自身が行うので残す（失敗すれば下で赤になる）。
+          # シンボリックリンクは中身がリンク先の文字列の普通のファイルとして置く（作業場の外を指させない）。
+          # git が1文字でも出力したら（失敗・警告。ファイル名を含みうる）取り出せなかったものとして扱う。
+          checkout_quietly() {
+            local scan="$1" sha="$2" out="$work/checkout.out"
+            GIT_LFS_SKIP_SMUDGE=1 git -C "$scan" -c filter.lfs.process= -c filter.lfs.smudge=cat -c filter.lfs.clean=cat \
+              -c filter.lfs.required=false -c advice.detachedHead=false checkout -q --detach "$sha" > "$out" 2>&1 || return 1
+            ! test -s "$out"
+          }
+          # 同じ commit を指す ref はまとめて1回だけ検査する。ログでは何番目かと ref の件数だけで示す。
+          index=0
+          for sha in $commits; do
+            index=$((index + 1))
+            nrefs="$(grep -cx "$sha" "$work/refs.txt" || true)"
+            where="検査 ${index}/${total}（ref ${nrefs} 件）"
+            scan="$work/repo-$index"
+            echo "== ${where}"
+            if ! prepare "$scan" "$sha"; then
+              echo "赤: ${where}: 作業場を作れない ref 1 件" >&2
+              failed=1
+              quiet git -C "$target" update-ref -d refs/all-refs-scan/one || true
+              quiet git -C "$target" update-ref -d refs/all-refs-scan/default || true
+              rm -rf "$scan" > /dev/null 2>&1 || true
+              continue
+            fi
+            checked_out=1
+            if ! checkout_quietly "$scan" "$sha"; then
+              # 履歴を読む検査（名義・鍵）は続ける。作業ツリーを読む preflight_ratchet は回さない。
+              echo "赤: ${where}: checkout できない ref 1 件" >&2
+              failed=1
+              checked_out=0
+              quiet git -C "$scan" update-ref --no-deref HEAD "$sha" || true
+            fi
+            # LFS のポインタ（履歴にあるものも）。中身は検査できないので1件でも赤（取り出しでは LFS を動かさない）。
+            if lfs_count="$(python "$work/lfs_pointers.py" "$scan" 2>> "$gitlog")"; then
+              if [ "$lfs_count" -gt 0 ]; then
+                echo "赤: ${where}: LFS のポインタの形をした blob（履歴を含む）${lfs_count} 件" >&2
+                failed=1
+              fi
+            else
+              echo "赤: ${where}: LFS のポインタを数えられない ref 1 件" >&2
+              failed=1
+            fi
+            # デフォルト枝との分かれ目。整合性の比較元（preflight-gate の preflight-event-base と同じ形）と、
+            # identity_gate の範囲（デフォルト枝に無い commit）に使う。分かれ目は HEAD の祖先なので、全履歴の範囲は広がらない。
+            ratchet_args=(--repo "$scan" --allowed-identities "$policy" --baseline-base-ref "$DEFAULT_SHA")
+            if mb="$(git -C "$scan" merge-base "$DEFAULT_SHA" HEAD 2>/dev/null)"; then
+              quiet git -C "$scan" update-ref refs/remotes/origin/all-refs-scan-base "$mb" || true
+              ratchet_args+=(--consistency-base-ref refs/remotes/origin/all-refs-scan-base)
+              id_range="${mb}..HEAD"
+            else
+              # デフォルト枝と共通の祖先が無い ref は、全履歴を足した commit として見る
+              id_range=HEAD
+            fi
+            # 名義・本文・足した行の形。例外一覧は tool 側（デフォルト枝の版）だけを読む。
+            # デフォルト枝の commit は、その push の CI（preflight-gate）が当時の固定した版で見ている。
+            # 例外一覧はファイルの最新の中身の SHA256 だけを持つので、今の一覧で古い中身を見直すと必ず赤になる。
+            if ! python "$tool/scripts/identity_gate.py" --public --repo "$scan" --allowed-identities "$policy" --range "$id_range" > "$work/identity.out" 2>&1; then
+              python "$work/summarize.py" issues "$work/identity.out" "${where}: identity_gate"
+              failed=1
+            fi
+            # 秘密・個人パス・名義の件数（全履歴）。基準値はその ref の版を使い、デフォルト枝の版より緩めていれば赤。
+            if [ "$checked_out" -eq 1 ] && ! python "$tool/scripts/preflight_ratchet.py" "${ratchet_args[@]}" > "$work/ratchet.out" 2>&1; then
+              python "$work/summarize.py" ratchet "$work/ratchet.out" "${where}: preflight_ratchet"
+              failed=1
+            fi
+            # 鍵。値は report にだけ伏せ字で書き、ログには規則の種類と件数だけを出す。
+            report="$work/gitleaks-$index.json"
+            if ! gitleaks git --no-banner --redact --log-level error --config "$tool/.gitleaks.toml" \
+                --log-opts=HEAD --report-format json --report-path "$report" "$scan" > /dev/null 2>&1; then
+              python "$work/summarize.py" gitleaks "$report" "${where}: gitleaks"
+              failed=1
+            fi
+            rm -rf "$scan" "$report" "$work/identity.out" "$work/ratchet.out" "$work/checkout.out" > /dev/null 2>&1 || true
+          done
+          if [ "$failed" -eq 0 ]; then echo "緑: 全 ref"; fi
+          exit "$failed"
