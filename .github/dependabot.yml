@@ -25,3 +25,6 @@ updates:
       time: "09:00"
       timezone: "Asia/Tokyo"
     open-pull-requests-limit: 5
+    # nexus-ai-2045 の自前 workflow・action（ai-ratchet-gate など）は固定先を人が上げるので、ここでは上げない。
+    ignore:
+      - dependency-name: "nexus-ai-2045/*"
