@@ -47,6 +47,8 @@ adapter・callback normalizer・policyだけでなくdecoder版/利用可否もc
 
 PDFはPython 3.10以上、pypdf 6.21.2とpdfminer.six 20260107（MIT）をoptional依存とする。core Python 3.9は維持し、3.9のPDF検査はdependency unavailableで停止する。内部stream読取り・primitive decoder・tokenizerのsource hashも束縛し、版や実装が違えば停止する。
 
+ASCII85DecodeとFlateDecodeの順のfilter chainは、Python標準のASCII85復号とzlibを使い、各段の全消費と展開上限を確認してから既存pypdfへ渡す。PDFの空白以外を捨てず、ASCII85の終端欠落・終端後のデータ・不正なgroup・Flate終端後のデータは拒否する。元PDFを変換・再保存せず、展開された本文・metadataのidentity検査を維持する。他の未証明filter chainへ一般化しない。
+
 pypdfが原本streamから読んだpstart・declared length・read bytes・data dictionaryを、その初期化済StreamObject identityへ結ぶ。補正・fallback・別memory stream・不整合・重なりは拒否し、同一payloadを持つ別objectも別offsetとして扱う。検証済みの圧縮区間だけraw照合から外す。Flateは標準zlibのeof・unused/unconsumed bytesで完全消費を確認する。未証明filter chainは停止する。XRef streamは既存readerのentry decoderを使い、W3幅・Size・Indexの型/範囲/非重複・exact decoded lengthとFlate全消費を確認する。余剰・不足・unknown entryは拒否する。
 
 過去版は既存readerのstartxref selectorだけを変え、同一原本I/Oへ全linked component（最大64）を結ぶ。Prev/XRefStmの位置・edge・cycleを検査し、訂正/rebuildは拒否する。現在版の完全Root/pagesを必須とし、Rootを持たないlinked partial componentを独立した完全PDFとは扱わない。全componentの全object・metadata・streamを所有readerの文脈ごとに検査する。物理rangeの一致を理由に古い版の意味検査を省かない。最終raw補集合だけexact source read/range/bytesの重複を統合し、partial overlap・bytes不一致は拒否する。object/page/decoded/read/timeの上限は全context合算する。
