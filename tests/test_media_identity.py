@@ -1400,3 +1400,29 @@ def test_partial_source_overlap_remains_refused():
         second.update(raw=region, range=(start + 1, end), reads=[(start + 1, region)])
         with pytest.raises(MEDIA.MediaError, match="unsupported_region"):
             source.inspect_remaining(objects, MEDIA._Extracted())
+
+
+@requires_pdf
+def test_pdf_synthetic_padding_does_not_exhaust_text_budget():
+    from pypdf import PdfReader
+
+    writer = PdfWriter()
+    writer.add_blank_page(100, 100)
+    stream = EncodedStreamObject()
+    stream._data = zlib.compress(b"a" * 300000, level=0)
+    stream[NameObject("/Filter")] = NameObject("/FlateDecode")
+    writer._root_object[NameObject("/Probe")] = writer._add_object(stream)
+    writer.add_metadata(
+        {"/Before": "original before " + DENIED, "/After": "original after " + DENIED}
+    )
+    data = io.BytesIO()
+    writer.write(data)
+    with MEDIA._PDFSource(data.getvalue()) as source:
+        reader = PdfReader(source.stream, strict=True)
+        obj = reader.root_object["/Probe"].get_object()
+        obj.get_data()
+        output = MEDIA._Extracted()
+        source.inspect_remaining([obj], output)
+    assert output.text_bytes < 10000
+    assert any("original before " + DENIED in value for value in output.texts)
+    assert any("original after " + DENIED in value for value in output.texts)
