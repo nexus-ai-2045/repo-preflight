@@ -1,6 +1,7 @@
 """Synthetic fixtures only; original user media never enters this repository."""
 
 import importlib.util
+import base64
 import io
 import hashlib
 import json
@@ -8,11 +9,14 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import zlib
 
 import pytest
 from pypdf import PdfWriter
 from pypdf.generic import (
     DecodedStreamObject,
+    EncodedStreamObject,
+    ArrayObject,
     DictionaryObject,
     NameObject,
     TextStringObject,
@@ -118,6 +122,72 @@ def test_pdf_readable_metadata_and_body_preserve_original_bytes():
     assert data == original
     assert result["decoder_versions"]["pypdf"]
     assert len(result["adapter_sha256"]) == 64
+
+
+def ascii85_pdf(body="Public text", *, transform=lambda value: value):
+    writer = PdfWriter()
+    page = writer.add_blank_page(100, 100)
+    content = EncodedStreamObject()
+    content._data = transform(
+        base64.a85encode(zlib.compress(("(" + body + ") Tj").encode())) + b"~>"
+    )
+    content[NameObject("/Filter")] = ArrayObject(
+        [NameObject("/ASCII85Decode"), NameObject("/FlateDecode")]
+    )
+    page[NameObject("/Contents")] = writer._add_object(content)
+    output = io.BytesIO()
+    writer.write(output)
+    return output.getvalue()
+
+
+@requires_pdf
+@pytest.mark.parametrize("body,expected", [("Public text", "pass"), (DENIED, "fail")])
+def test_pdf_ascii85_flate_chain_checks_decoded_text(body, expected):
+    original = ascii85_pdf(body)
+    assert scan(original, "pdf")["status"] == expected
+
+
+@requires_pdf
+@pytest.mark.parametrize(
+    "transform",
+    [
+        lambda value: value[:-2],
+        lambda value: value + b"hidden-tail",
+        lambda value: b"<~" + value,
+        lambda value: b"!~>",
+        lambda value: b"!z~>",
+        lambda value: base64.a85encode(zlib.compress(b"() Tj") + b"tail") + b"~>",
+    ],
+)
+def test_pdf_ascii85_chain_rejects_unconsumed_and_malformed_bytes(transform):
+    with pytest.raises(ValueError, match="private_identity_media_"):
+        scan(ascii85_pdf(transform=transform), "pdf")
+
+
+def test_pdf_ascii85_expansion_is_bounded_before_decode(monkeypatch):
+    monkeypatch.setattr(MEDIA, "DATA_LIMIT", 7)
+    stream = EncodedStreamObject()
+    stream._data = b"zz~>"
+    with pytest.raises(MEDIA.MediaError, match="decoded_limit"):
+        MEDIA._pdf_validate_stream_encoding(stream, ["/ASCII85Decode", "/FlateDecode"])
+
+
+def test_pdf_ascii85_zero_groups_do_not_allocate_an_unbounded_list(monkeypatch):
+    import tracemalloc
+
+    monkeypatch.setattr(MEDIA, "DATA_LIMIT", 7)
+    stream = EncodedStreamObject()
+    stream._data = b"z" * 1_000_000 + b"~>"
+    tracemalloc.start()
+    try:
+        with pytest.raises(MEDIA.MediaError, match="decoded_limit"):
+            MEDIA._pdf_validate_stream_encoding(
+                stream, ["/ASCII85Decode", "/FlateDecode"]
+            )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 3 * len(stream._data)
 
 
 @requires_pdf
