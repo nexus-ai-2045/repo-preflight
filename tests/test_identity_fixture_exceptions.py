@@ -154,7 +154,12 @@ def test_exception_list_rejects_folders_wildcards_and_bad_lines(line):
 
 
 OTHER_REPO_REASON = re.compile(r"^他リポ [a-z0-9][a-z0-9-]* の\S")
-OTHER_REPO_EXTENSIONS = {"png", "jpg", "svg", "xmind", "ipynb"}
+OTHER_REPO_EXTENSIONS = {"png", "jpg", "gif", "svg", "xmind", "ipynb"}
+# 他リポの行に書く承認の記録。人が確かめた日付つきの書き方だけを通す。
+OTHER_REPO_APPROVALS = (
+    "人承認済み（2026-10-24 ",
+    "品質係が全コマを目視して OK（2026-10-25）",
+)
 
 
 def _bundled_lines() -> list[tuple[str, str, str]]:
@@ -173,7 +178,7 @@ def test_bundled_exception_list_matches_current_files_one_per_line():
     """同梱の一覧は1行1ファイルで理由つき。
 
     このリポのファイルは、書いたハッシュが今の中身と一致する。
-    このリポに無いファイルは、理由の頭に「他リポ <リポ名> の」を書いた画像・図・雛形・ノートだけ。
+    このリポに無いファイルは、理由の頭に「他リポ <リポ名> の」を書いた画像・図・雛形・ノートだけで、承認の記録を書く。
     """
     text = g.FIXTURE_EXCEPTIONS_FILE.read_text(encoding="utf-8")
     entries = g.parse_fixture_exceptions(text)
@@ -193,7 +198,7 @@ def test_bundled_exception_list_matches_current_files_one_per_line():
             continue
         assert not (ROOT / path).exists(), path
         assert path.rsplit(".", 1)[-1] in OTHER_REPO_EXTENSIONS, path
-        assert "人承認済み（2026-10-24 " in reason, path
+        assert any(a in reason for a in OTHER_REPO_APPROVALS), path
     assert "tests/test_identity_fixture_exceptions.py" not in entries
 
 
