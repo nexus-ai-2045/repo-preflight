@@ -15,8 +15,15 @@ license = "MIT"
 dependencies = []
 
 [project.optional-dependencies]
+media = ["hachoir==3.4.0", "pdfminer.six==20260107; python_version >= '3.10'", "pypdf==6.21.2", "mutagen>=1.48,<1.49; python_version >= '3.10'", "mutagen==1.47.0; python_version < '3.10'", "fonttools==4.67.0; python_version >= '3.11'", "Pillow>=11.3,<14"]
 images = ["Pillow>=11.3,<14", "simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
 test = [
+    "pdfminer.six==20260107; python_version >= '3.10'",
+    "pypdf==6.21.2",
+    "mutagen>=1.48,<1.49; python_version >= '3.10'",
+    "mutagen==1.47.0; python_version < '3.10'",
+    "hachoir==3.4.0",
+    "fonttools==4.67.0; python_version >= '3.11'",
     "black>=26.10.1,<27; python_version >= '3.10'",
     "pytest>=9.1.1,<10; python_version >= '3.10'",
     "pytest>=8.4,<9; python_version < '3.10'",

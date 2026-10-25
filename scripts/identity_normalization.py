@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bisect import bisect_right
 import re
+from urllib.parse import unquote
 
 # 相対path成分を除外し、URI・CLI option直後の絶対pathを維持する。
 # CLI optionは一般形で確認し、検出値/hashは絶対path部分だけへ束縛する。
@@ -18,6 +19,11 @@ _UNIX_PATH_START = (
 # rootだけを引用した検査用文字列と、引用を含む実pathを区別する。
 _QUOTED_WINDOWS_USER = r"(?:\"[^/\\\"\r\n]+\"(?=[/\\])|'[^/\\'\r\n]+'(?=[/\\]))"
 _QUOTED_UNIX_USER = r"(?:\"[^/\"\r\n]+\"(?=/)|'[^/'\r\n]+'(?=/))"
+from pathlib import PurePosixPath
+
+MACOS_SHARED_DIRECTORY = PurePosixPath("/", "Users", "Shared").as_posix()
+_MACOS_SHARED_COMPONENT = MACOS_SHARED_DIRECTORY.rsplit("/", 1)[-1]
+
 PATH_PATTERNS = (
     re.compile(
         r"[A-Za-z]:[/\\]+Us"
@@ -28,7 +34,9 @@ PATH_PATTERNS = (
     re.compile(
         _UNIX_PATH_START
         + r"(?P<personal_path>/Us"
-        + r"ers/(?:[^/\s'\"]+|"
+        + r"ers/"
+        + rf"(?!{re.escape(_MACOS_SHARED_COMPONENT)}(?:/|$))"
+        + r"(?:[^/\s'\"]+|"
         + _QUOTED_UNIX_USER
         + r"))"
     ),
@@ -50,6 +58,70 @@ LOCAL_ABSOLUTE_PATH_PATTERN = re.compile(
         for pattern in PATH_PATTERNS
     )
 )
+
+
+_SHARED_REFERENCE_PATTERN = re.compile(
+    _UNIX_PATH_START
+    + "(?P<personal_path>"
+    + re.escape(MACOS_SHARED_DIRECTORY)
+    + ")(?=/|$)"
+)
+_PARENT_COMPONENT_PATTERN = re.compile(r"[/\\]\.\.(?=[/\\]|$)")
+
+
+def macos_shared_parent_matches(value, *, entire_path=False):
+    """同じ参照の正規化結果だけでSharedの外へ戻るか判定する。"""
+    import posixpath
+
+    binary = isinstance(value, bytes)
+    shared = (
+        re.compile(_SHARED_REFERENCE_PATTERN.pattern.encode("ascii"))
+        if binary
+        else _SHARED_REFERENCE_PATTERN
+    )
+    text = value.decode("latin-1") if binary else value
+    results = []
+    consumed = 0
+    for match in shared.finditer(value):
+        start = match.start("personal_path")
+        if start < consumed:
+            continue
+        whole = entire_path and (start == 0 or text[:start] in ("file:", "file://"))
+        end = start
+        quote_char = text[start - 1] if start and text[start - 1] in "\"'`" else None
+        if whole:
+            end = len(text)
+        elif quote_char:
+            end = start
+            while end < len(text):
+                if text[end] == quote_char and (end == 0 or text[end - 1] != "\\"):
+                    break
+                end += 1
+        else:
+            while (
+                end < len(text)
+                and not text[end].isspace()
+                and text[end] not in "\"'`<>"
+            ):
+                end += 1
+        consumed = max(end, match.end())
+        reference = text[start:end]
+        normalized = posixpath.normpath(reference)
+        if normalized != MACOS_SHARED_DIRECTORY and not normalized.startswith(
+            MACOS_SHARED_DIRECTORY + "/"
+        ):
+            results.append(match)
+    return results
+
+
+def iter_private_path_matches(value):
+    for rule, pattern in zip(PATH_RULE_IDS, PATH_PATTERNS):
+        if isinstance(value, bytes):
+            pattern = re.compile(pattern.pattern.encode("ascii"))
+        for match in pattern.finditer(value):
+            yield rule, match
+    for match in macos_shared_parent_matches(value):
+        yield "macos_user_path", match
 
 
 def parse_denylist_text(text: str) -> list[str]:
@@ -121,7 +193,9 @@ def hit_patterns(
 
 def hit_local_absolute_path(text: str) -> bool:
 
-    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None
+    return LOCAL_ABSOLUTE_PATH_PATTERN.search(text) is not None or bool(
+        macos_shared_parent_matches(text)
+    )
 
 
 # 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。
@@ -328,7 +402,177 @@ def _source_line_utf8(line: str) -> bytes:
     return line.encode()
 
 
-def static_string_views(text: str) -> list[tuple[str, str]]:
+def _standard_regex_arguments(tree) -> set[int]:
+    """Recognize syntax roles, never import or execute the inspected source."""
+    import ast
+
+    if not any(
+        isinstance(node, ast.Import)
+        and any(alias.name == "re" and alias.asname is None for alias in node.names)
+        for node in tree.body
+    ):
+        return set()
+    parents = {
+        id(child): node
+        for node in ast.walk(tree)
+        for child in ast.iter_child_nodes(node)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == "re":
+            parent = parents.get(id(node))
+            if not isinstance(node.ctx, ast.Load) or not isinstance(
+                parent, ast.Attribute
+            ):
+                return set()
+        if isinstance(node, ast.arg) and node.arg == "re":
+            return set()
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and "re" in node.names:
+            return set()
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == "re"
+        ):
+            return set()
+        if isinstance(node, ast.ExceptHandler) and node.name == "re":
+            return set()
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*" or (
+                    isinstance(node, ast.Import)
+                    and alias.name == "re"
+                    and alias.asname is not None
+                ):
+                    return set()
+                bound = alias.asname or alias.name.split(".")[0]
+                if bound == "re" and not (
+                    isinstance(node, ast.Import)
+                    and alias.name == "re"
+                    and alias.asname is None
+                ):
+                    return set()
+        if isinstance(node, (ast.Attribute, ast.Subscript)):
+            root = node
+            while isinstance(root, (ast.Attribute, ast.Subscript)):
+                root = root.value
+            if (
+                isinstance(root, ast.Name)
+                and root.id == "re"
+                and (
+                    not isinstance(node.ctx, ast.Load)
+                    or isinstance(node, ast.Attribute)
+                    and node.attr.startswith("__")
+                )
+            ):
+                return set()
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"exec", "eval", "globals", "locals", "vars"}
+        ):
+            return set()
+        # Pattern captures are bindings too; these node classes do not exist on 3.9.
+        if type(node).__name__ in {"MatchAs", "MatchStar", "MatchMapping"} and (
+            getattr(node, "name", None) == "re" or getattr(node, "rest", None) == "re"
+        ):
+            return set()
+    return {
+        id(node.args[0])
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "re"
+        and node.func.attr == "compile"
+        and len(node.args) == 1
+        and not node.keywords
+    }
+
+
+_REGEX_HOME_ROOT = re.compile(r"(?:[A-Za-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)")
+_REGEX_USERNAME_CLASSES = (r"[^/\s]+", r"[^\\\s]+", r"[A-Za-z0-9._-]+")
+_REGEX_USERNAME_LOOKAHEAD = r"(?!USER\b|<)"
+
+
+def _generic_regex_path_spans(
+    value: str, *, source_token: bool = False
+) -> list[tuple[int, int]]:
+    """Only supported generic username atoms, never a concrete username prefix."""
+    spans = []
+    forms = (False, True) if source_token else (False,)
+    for match in LOCAL_ABSOLUTE_PATH_PATTERN.finditer(value):
+        root = _REGEX_HOME_ROOT.match(value, match.start())
+        if root is None:
+            continue
+        for escaped in forms:
+
+            def spelling(token):
+                return token.replace("\\", "\\\\") if escaped else token
+
+            start = root.end()
+            lookahead = spelling(_REGEX_USERNAME_LOOKAHEAD)
+            if value.startswith(lookahead, start):
+                start += len(lookahead)
+            for generic in _REGEX_USERNAME_CLASSES:
+                token = spelling(generic)
+                if not value.startswith(token, start):
+                    continue
+                end = start + len(token)
+                tail = value[end:]
+                boundary = not tail or tail[0] in "/\\|)$" or tail.startswith(r"\Z")
+                if source_token and tail[:1] in {"'", '"'}:
+                    boundary = True
+                if boundary:
+                    spans.append((match.start(), end))
+    return spans
+
+
+def _mask_path_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    if not spans:
+        return text
+    # Preserve boundaries: deleting a template must not join unrelated path pieces.
+    chars = list(text)
+    for first, last in spans:
+        chars[first:last] = " " * (last - first)
+    return "".join(chars)
+
+
+def _regex_source_token_spans(
+    original: str, source_start: int
+) -> list[tuple[int, int]]:
+    """Mask template syntax inside string tokens, preserving intervening comments."""
+    import ast
+    import io
+    import tokenize
+
+    lines = tuple(io.StringIO(original, newline=""))
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    spans = []
+    try:
+        for token in tokenize.generate_tokens(
+            io.StringIO(original, newline="").readline
+        ):
+            if token.type != tokenize.STRING:
+                continue
+            decoded = ast.literal_eval(token.string)
+            if not isinstance(decoded, str) or not _generic_regex_path_spans(decoded):
+                continue
+            offset = source_start + offsets[token.start[0] - 1] + token.start[1]
+            spans.extend(
+                (offset + first, offset + last)
+                for first, last in _generic_regex_path_spans(
+                    token.string, source_token=True
+                )
+            )
+    except (SyntaxError, ValueError, tokenize.TokenError, IndentationError):
+        return []
+    return spans
+
+
+def _static_string_views(
+    text: str, regex_roles: list[dict] | None = None
+) -> list[tuple[str, str]]:
     """静的に解釈できる最大のstring式と原文だけを返す。対象コードは実行しない。"""
     import ast
     import copy
@@ -355,19 +599,27 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
     if fence is not None:
         fragments.append("\n".join(block))
 
-    def string_list(node):
-        if isinstance(node, (ast.List, ast.Tuple)) and all(
-            isinstance(item, ast.Constant) and isinstance(item.value, str)
-            for item in node.elts
-        ):
-            return [item.value for item in node.elts]
+    def string_list(node, *, regex_expression=False):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            if regex_expression:
+                values = [
+                    static_string(item, regex_expression=True) for item in node.elts
+                ]
+                return values if all(value is not None for value in values) else None
+            if all(
+                isinstance(item, ast.Constant) and isinstance(item.value, str)
+                for item in node.elts
+            ):
+                return [item.value for item in node.elts]
         return None
 
-    def static_string(node):
+    def static_string(node, *, regex_expression=False):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            left, right = static_string(node.left), static_string(node.right)
+            left, right = static_string(
+                node.left, regex_expression=regex_expression
+            ), static_string(node.right, regex_expression=regex_expression)
             if left is not None and right is not None:
                 return left + right
         if (
@@ -378,20 +630,20 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
             and len(node.args) == 1
         ):
             # Python string.join(list) / JS list.join(string) の静的literalだけ。
-            separator, values = static_string(node.func.value), string_list(
-                node.args[0]
-            )
+            separator, values = static_string(
+                node.func.value, regex_expression=regex_expression
+            ), string_list(node.args[0], regex_expression=regex_expression)
             if separator is not None and values is not None:
                 return separator.join(values)
-            values, separator = string_list(node.func.value), static_string(
-                node.args[0]
-            )
+            values, separator = string_list(
+                node.func.value, regex_expression=regex_expression
+            ), static_string(node.args[0], regex_expression=regex_expression)
             if values is not None and separator is not None:
                 return separator.join(values)
         return None
 
     views = []
-    for fragment in fragments:
+    for fragment_index, fragment in enumerate(fragments):
         fragment = textwrap.dedent(fragment)
         try:
             tree = ast.parse(fragment)
@@ -414,11 +666,49 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
 
+        regex_arguments = (
+            _standard_regex_arguments(tree)
+            if regex_roles is not None and fragment_index == 0 and fragment == text
+            else set()
+        )
+
+        regex_nodes = set()
+        for argument in ast.walk(tree) if regex_arguments else ():
+            if id(argument) not in regex_arguments:
+                continue
+            try:
+                pattern = static_string(argument, regex_expression=True)
+            except RecursionError:
+                continue
+            if pattern is None or len(pattern) > 65536:
+                continue
+            try:
+                re.compile(pattern)
+            except (re.error, ValueError, RecursionError, OverflowError):
+                continue
+            # The role validator may reconstruct across join items that the public
+            # tuple API intentionally keeps separate. Scan that complete value too.
+            for normalized in dict.fromkeys((pattern, unquote(pattern))):
+                try:
+                    re.compile(normalized)
+                except (re.error, ValueError, RecursionError, OverflowError):
+                    spans = []
+                else:
+                    spans = _generic_regex_path_spans(normalized)
+                regex_roles.append(
+                    {"pattern": normalized, "pattern_spans": spans, "source_spans": []}
+                )
+            regex_nodes.update(id(node) for node in ast.walk(argument))
+
         # 単一行はUTF-8を行ごとに一度だけ作り、stdlibと同じbyte offsetで切る。
         # 複数行・位置が欠けたnodeは従来どおり対象行だけを標準APIへ渡す。
         # newline="" はCR/CRLFを保持し、form feed等を行区切りへ変えない。
         source_lines = tuple(io.StringIO(fragment, newline=""))
         line_utf8_cache: list[bytes | None] = [None] * len(source_lines)
+        source_offsets = [0]
+        if regex_nodes:
+            for line in source_lines:
+                source_offsets.append(source_offsets[-1] + len(line))
 
         def encoded_line(index: int) -> bytes:
             cached = line_utf8_cache[index]
@@ -454,6 +744,22 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
                     )
                 if original is None:
                     raise ValueError("private_identity_normalization_incomplete")
+                if id(node) in regex_nodes:
+                    path_spans = _generic_regex_path_spans(value)
+                    if path_spans:
+                        source_start = source_offsets[node.lineno - 1]
+                        source_start += len(
+                            encoded_line(node.lineno - 1)[: node.col_offset].decode()
+                        )
+                        regex_roles.append(
+                            {
+                                "index": len(views),
+                                "value_spans": path_spans,
+                                "source_spans": _regex_source_token_spans(
+                                    original, source_start
+                                ),
+                            }
+                        )
                 views.append((value, original))
             else:
                 for child in ast.iter_child_nodes(node):
@@ -464,6 +770,11 @@ def static_string_views(text: str) -> list[tuple[str, str]]:
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
     return views
+
+
+def static_string_views(text: str) -> list[tuple[str, str]]:
+    """Keep the public value/source tuple API; syntax-role metadata stays internal."""
+    return _static_string_views(text)
 
 
 # 一文字区切りの引用の必要条件。後段は literal_eval の値を split() し、1 文字の欠片が
@@ -524,20 +835,40 @@ def scan_private_text(text: str, patterns: list[str]) -> dict:
         isinstance(pattern, str) and pattern.strip() for pattern in patterns
     ):
         raise ValueError("private_identity_policy_empty")
-    views = static_string_views(text)
+    regex_roles: list[dict] = []
+    views = _static_string_views(text, regex_roles)
     # bare arrayの連結・空白除去は既知policy照合だけに使い、任意pathの意味まで推測しない。
     variants = [
         text,
         *(value for value, _ in views),
         *_reconstruct_literal_candidates(text, views),
+        *(role["pattern"] for role in regex_roles if "pattern" in role),
     ]
     hits = {pattern for value in variants for pattern in hit_patterns(value, patterns)}
-    path_match = hit_local_absolute_path(text) or any(
-        hit_local_absolute_path(value) for value, _ in views
+    source_spans = [span for role in regex_roles for span in role["source_spans"]]
+    value_spans = {
+        role["index"]: role["value_spans"] for role in regex_roles if "index" in role
+    }
+    regex_path_views = [
+        (_mask_path_spans(role["pattern"], role["pattern_spans"]), role["pattern"])
+        for role in regex_roles
+        if "pattern" in role
+    ]
+    path_views = [
+        _mask_path_spans(value, value_spans.get(index, []))
+        for index, (value, _) in enumerate(views)
+    ]
+    path_match = (
+        hit_local_absolute_path(_mask_path_spans(text, source_spans))
+        or any(hit_local_absolute_path(value) for value in path_views)
+        or any(hit_local_absolute_path(value) for value, _ in regex_path_views)
     )
     reconstructed_path = any(
-        hit_local_absolute_path(value) and value not in original
-        for value, original in views
+        hit_local_absolute_path(path_value) and value not in original
+        for path_value, (value, original) in zip(path_views, views)
+    ) or any(
+        hit_local_absolute_path(value) and original not in text
+        for value, original in regex_path_views
     )
     return {
         "status": "fail" if hits or path_match else "pass",
@@ -547,12 +878,35 @@ def scan_private_text(text: str, patterns: list[str]) -> dict:
     }
 
 
+_REPOSITORY_COMPONENT = re.compile(r"(?:[\w@+.\-]+|\([\w.\-]+\)|\[[\w.\-]+\])")
+
+
+def scan_private_repository_name(text: str, patterns: list[str]) -> dict:
+    """Git在庫の相対名だけを区別する。本文/URI/host埋込みには適用しない。"""
+    result = scan_private_text(text, patterns)
+    parts = text.split("/")
+    relative = len(parts) > 1 and all(
+        part not in {"", ".", ".."}
+        and not part.startswith("-")
+        and _REPOSITORY_COMPONENT.fullmatch(part)
+        for part in parts
+    )
+    if relative:
+        # 名前に含まれるdenylist literalはそのまま残す。安全な相対名はsource式ではない。
+        result["local_path_match"] = False
+        result["reconstructed_path_match"] = False
+        result["status"] = "fail" if result["literal_match_count"] else "pass"
+    return result
+
+
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_TEXT_LIMIT = 2_000_000
 PNG_IMAGE_LIMIT = 64_000_000
 
 
-def scan_private_png(data: bytes, patterns: list[str]) -> dict:
+def scan_private_png(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """PNG containerのraw照合とmetadata照合。圧縮画素をsource codeと解釈しない。"""
     import struct
     import zlib
@@ -561,6 +915,8 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
     if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(PNG_SIGNATURE):
+        raise ValueError("private_identity_png_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
         raise ValueError("private_identity_png_unverified")
     hits = set()
     path_match = reconstructed = metadata_path_match = False
@@ -571,24 +927,24 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
     palette_seen = False
 
     def text_views(raw):
-        values = {raw.decode("utf-8", errors="replace")}
-        try:
-            values.add(raw.decode("utf-16"))
-        except UnicodeDecodeError:
-            pass
+        values = {raw.decode("utf-8", errors="replace"), raw.decode("latin-1")}
+        # chunk payloads need both alignments: the former whole-container view
+        # could expose UTF-16 text whose code units start at either payload offset.
+        for codec in ("utf-16-le", "utf-16-be"):
+            for start in (0, 1):
+                values.add(raw[start:].decode(codec, errors="replace"))
         return {candidate for value in values for candidate in (value, unquote(value))}
 
-    # 全byteを従来と同じ文字viewで照合する。画素内のliteralも除外しない。
-    for value in text_views(data):
-        hits.update(hit_patterns(value, patterns))
-        path_match |= hit_local_absolute_path(value)
-
+    # Validated coding/pixel/CRC bytes are not text. Their structural checks below
+    # must complete before any result can pass; ancillary metadata is still scanned.
     def inspect_text(value):
         nonlocal path_match, reconstructed, metadata_path_match, metadata_size
         metadata_size += len(value.encode("utf-8"))
         if metadata_size > PNG_TEXT_LIMIT:
             raise ValueError("private_identity_png_text_limit")
         for candidate in {value, unquote(value)}:
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             views = static_string_views(candidate)
             variants = [
                 candidate,
@@ -648,6 +1004,12 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         if zlib.crc32(kind + payload) != crc:
             raise ValueError("private_identity_png_unverified")
         position = end
+        if kind not in {b"IHDR", b"PLTE", b"IDAT", b"IEND"}:
+            for value in text_views(payload):
+                hits.update(hit_patterns(value, patterns))
+                raw_path = hit_local_absolute_path(value)
+                path_match |= raw_path
+                metadata_path_match |= raw_path
         if not seen_header and kind != b"IHDR":
             raise ValueError("private_identity_png_unverified")
         if seen_pixels and kind != b"IDAT":
@@ -778,6 +1140,11 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
                 "local_path_match": bool(path_match),
                 "reconstructed_path_match": bool(reconstructed),
                 "metadata_path_match": bool(metadata_path_match),
+                **(
+                    {"metadata_observer_complete": True}
+                    if metadata_observer is not None
+                    else {}
+                ),
             }
         elif kind == b"PLTE":
             if (
@@ -797,6 +1164,12 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
             try:
                 key, rest = payload.split(b"\0", 1)
                 keyword(key)
+                if (
+                    metadata_observer is not None
+                    and key.lower() == b"xml:com.adobe.xmp"
+                ):
+                    # This image path has no bounded XML semantics decoder.
+                    raise ValueError("private_identity_png_unverified")
                 if kind == b"tEXt":
                     text = rest.decode("latin-1")
                 elif kind == b"zTXt":
@@ -831,6 +1204,10 @@ def scan_private_png(data: bytes, patterns: list[str]) -> dict:
         else:
             if not kind[0] & 32:
                 raise ValueError("private_identity_png_unverified")
+            if metadata_observer is not None:
+                # Only parsed text and validated core chunks have cover metadata
+                # semantics here. Raw ancillary views cannot certify structures.
+                raise ValueError("private_identity_png_unverified")
             # 未知の付加chunkは免除しない。既存の文字viewと正規化で調べる。
             for value in text_views(payload):
                 inspect_text(value)
@@ -862,7 +1239,9 @@ except Exception:
 """
 
 
-def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
+def scan_private_jpeg(
+    data: bytes, patterns: list[str], *, metadata_observer=None
+) -> dict:
     """JPEGの復号を分離processで検証し、画素以外の全segmentを文字検査する。"""
     import os
     import subprocess
@@ -872,6 +1251,8 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
     if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
         raise ValueError("private_identity_policy_empty")
     if not data.startswith(JPEG_SIGNATURE):
+        raise ValueError("private_identity_jpeg_unverified")
+    if metadata_observer is not None and not callable(metadata_observer):
         raise ValueError("private_identity_jpeg_unverified")
     if len(data) > JPEG_DATA_LIMIT:
         raise ValueError("private_identity_jpeg_image_limit")
@@ -892,9 +1273,7 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
                 pass
         return {v for text in values for v in (text, unquote(text))}
 
-    for value in views(data):
-        hits.update(hit_patterns(value, patterns))
-        path_match |= hit_local_absolute_path(value)
+    # Validated coding and entropy bytes are binary, not identity text.
     # Marker boundaries expose all non-pixel bytes, including between progressive scans.
     position = 2
     in_scan = seen_scan = False
@@ -944,6 +1323,19 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         total += len(payload)
         if total > JPEG_METADATA_LIMIT:
             raise ValueError("private_identity_jpeg_text_limit")
+        if (
+            metadata_observer is not None
+            and 0xE0 <= kind <= 0xEF
+            and not (
+                kind == 0xE0
+                and payload.startswith(b"JFIF\0")
+                or kind == 0xEE
+                and payload.startswith(b"Adobe")
+            )
+        ):
+            # Only the already shape-validated JFIF/Adobe APP headers are
+            # supported here. ICC/Exif/XMP/other APP need semantic decoders.
+            raise ValueError("private_identity_jpeg_unverified")
         if kind == 0xE0 and payload.startswith(b"JFIF\0"):
             if (
                 len(payload) < 14
@@ -987,12 +1379,16 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         raise ValueError("private_identity_jpeg_unverified")
     for raw in raw_segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             hits.update(hit_patterns(candidate, patterns))
             if hit_local_absolute_path(candidate):
                 metadata_match = True
                 path_match = True
     for raw in segments:
         for candidate in views(raw, metadata=True):
+            if metadata_observer is not None:
+                metadata_observer(candidate)
             result = scan_private_text(candidate, patterns)
             if result["literal_match_count"]:
                 literals = static_string_views(candidate)
@@ -1011,6 +1407,11 @@ def scan_private_jpeg(data: bytes, patterns: list[str]) -> dict:
         "local_path_match": bool(path_match),
         "reconstructed_path_match": bool(reconstructed),
         "metadata_path_match": bool(metadata_match),
+        **(
+            {"metadata_observer_complete": True}
+            if metadata_observer is not None
+            else {}
+        ),
     }
 
 
@@ -1428,3 +1829,149 @@ def scan_private_gif(data: bytes, patterns: list[str]) -> dict:
         "metadata_path_match": metadata_match,
         "reconstructed_path_match": reconstructed,
     }
+
+
+def scan_private_caff(data: bytes, patterns: list[str], image_cache=None) -> dict:
+    """CAFFの表・XML・全埋込み画像を、圧縮画素を式として評価せず検査する。"""
+    import hashlib
+    import json
+    from urllib.parse import unquote
+    import xml.etree.ElementTree as ET
+
+    if not patterns or not all(isinstance(p, str) and p.strip() for p in patterns):
+        raise ValueError("private_identity_policy_empty")
+    archive = _CAFF_MODULE.Archive(data)
+    hits = set()
+    path_match = metadata_match = reconstructed = False
+
+    def record(result, metadata=False):
+        nonlocal path_match, metadata_match, reconstructed
+        if result["literal_match_count"]:
+            hits.add("match")
+        path_match |= result["local_path_match"]
+        metadata_match |= metadata and result["local_path_match"]
+        reconstructed |= result.get("reconstructed_path_match", False)
+
+    def metadata_text(value, *, path_value=False):
+        nonlocal path_match, metadata_match
+        # XML sourceとscalarは同じ正規化を使う。scalarのpathは制御文字も含めて判定する。
+        for view in {value, unquote(value)}:
+            record(scan_private_text(view, patterns), True)
+            if path_value and macos_shared_parent_matches(view, entire_path=True):
+                path_match = metadata_match = True
+
+    def literal(raw):
+        nonlocal path_match
+        for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+            text = raw.decode(encoding, errors="replace")
+            for value in (text, unquote(text)):
+                hits.update(hit_patterns(value, patterns))
+                path_match |= hit_local_absolute_path(value)
+
+    # ファイル表を検証した後は、PNGの画素を外側で再び文字列扱いしない。
+    if archive.preview_size:
+        preview = data[
+            archive.preview_start : archive.preview_start + archive.preview_size
+        ]
+        record(scan_private_png(preview, patterns), True)
+    main_count = 0
+    for entry, content in archive.contents():
+        for value in (entry.name, entry.tag):
+            metadata_text(value, path_value=True)
+        if entry.tag == "main_xml":
+            main_count += 1
+            try:
+                xml_text = content.decode("utf-8", "strict")
+            except UnicodeError:
+                raise ValueError("private_identity_caff_unverified") from None
+            # UTF-16/32のASCII列はUTF-8 decodeに成功する場合がある。NULと別encoding宣言を拒否する。
+            declared_encoding = re.match(
+                r"^\ufeff?<\?xml\s+[^?]*?encoding\s*=\s*['\"]([^'\"]+)['\"]", xml_text
+            )
+            if "\0" in xml_text or (
+                declared_encoding
+                and declared_encoding.group(1).casefold().replace("-", "") != "utf8"
+            ):
+                raise ValueError("private_identity_caff_unverified")
+            if "<!DOCTYPE" in xml_text or "<!ENTITY" in xml_text:
+                raise ValueError("private_identity_caff_unverified")
+
+            class BoundedBuilder(ET.TreeBuilder):
+                count = 0
+
+                def start(self, tag, attrs):
+                    self.count += 1
+                    if self.count > _CAFF_MODULE.MAX_XML_NODES:
+                        raise ValueError("private_identity_caff_size_limit")
+                    return super().start(tag, attrs)
+
+            try:
+                root = ET.fromstring(
+                    xml_text, parser=ET.XMLParser(target=BoundedBuilder())
+                )
+            except ET.ParseError:
+                raise ValueError("private_identity_caff_unverified") from None
+            literal(content)
+            metadata_text(xml_text)
+            count = 0
+            for node in root.iter():
+                count += 1
+                if count > 100000:
+                    raise ValueError("private_identity_caff_size_limit")
+                for value in (
+                    node.tag,
+                    node.text,
+                    node.tail,
+                    *node.attrib.keys(),
+                    *node.attrib.values(),
+                ):
+                    if value:
+                        metadata_text(value, path_value=True)
+        elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+            digest = (
+                hashlib.sha256(content).hexdigest(),
+                hashlib.sha256(
+                    json.dumps(
+                        patterns, ensure_ascii=True, separators=(",", ":")
+                    ).encode()
+                ).hexdigest(),
+            )
+            result = image_cache.get(digest) if image_cache is not None else None
+            if result is None:
+                result = scan_private_png(content, patterns)
+                if image_cache is not None:
+                    if len(image_cache) >= 4096:
+                        image_cache.clear()
+                    image_cache[digest] = result
+            record(result, True)
+        else:
+            raise ValueError("private_identity_caff_unverified")
+    if main_count != 1:
+        raise ValueError("private_identity_caff_unverified")
+    return {
+        "status": "fail" if hits or path_match else "pass",
+        "literal_match_count": len(hits),
+        "local_path_match": path_match,
+        "metadata_path_match": metadata_match,
+        "reconstructed_path_match": reconstructed,
+    }
+
+
+import importlib.util as _caff_importlib
+import hashlib as _caff_hashlib
+from pathlib import Path as _CaffPath
+
+_CAFF_PATH = _CaffPath(__file__).with_name("caff_archive.py")
+_CAFF_SOURCE = _CAFF_PATH.read_bytes()
+CAFF_DECODER_SHA256 = _caff_hashlib.sha256(_CAFF_SOURCE).hexdigest()
+_CAFF_SPEC = _caff_importlib.spec_from_file_location(
+    "_identity_caff_archive", _CAFF_PATH
+)
+_CAFF_MODULE = _caff_importlib.module_from_spec(_CAFF_SPEC)
+import sys as _caff_sys
+
+_caff_sys.modules[_CAFF_SPEC.name] = _CAFF_MODULE
+exec(compile(_CAFF_SOURCE, str(_CAFF_PATH), "exec"), _CAFF_MODULE.__dict__)
+
+# 消費側は別のCAFFパーサを持たず、これを利用する。
+CaffArchive = _CAFF_MODULE.Archive

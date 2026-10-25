@@ -311,6 +311,7 @@ _DRIVE_OR_BACKSLASH_BEFORE = re.compile(r"(?:[A-Za-z]:|\\)$")
 def _mac_shared_dir(candidate: str, start: int) -> bool:
     return (
         _MAC_SHARED_DIR_RE.match(candidate, start) is not None
+        and not _PATH_GRAMMAR.macos_shared_parent_matches(candidate[start:])
         and _DRIVE_OR_BACKSLASH_BEFORE.search(candidate[max(0, start - 2) : start])
         is None
     )

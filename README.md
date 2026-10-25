@@ -15,7 +15,7 @@
 
 ## 使い方
 
-検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
+検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD・CMO3 を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
@@ -69,6 +69,8 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 操作intentでは非公開の名義設定・個人識別子リストが必要です。未設定・未確認・失敗なら、呼出側が外部操作を中止する必要があります。これらの設定を公開リポジトリへ置かないでください。
 
 対話の状態・全intent・非公開設定・PRレビュー確認は[CLI・AI連携の詳細](docs/cli-reference.md)にまとめています。skillを配置したことと、実際に呼ばれて操作を止めたことは別です。
+
+GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・merge queueの検査を保持します。古いPRとbranch pushの実行整理、およびreusable workflowとの責務分離は[既存のCI接続説明](docs/repository-consistency-gate.md#github-actions-接続例)に記します。ローカルの成功でhosted CIや人間レビューを省略しません。
 
 ## 制約
 

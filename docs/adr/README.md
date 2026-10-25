@@ -31,3 +31,6 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 
 | [0010](0010-strict-jpeg-private-scan.md) | Accepted | JPEGをstrict復号し、文字metadataの検査と検査不能時の停止を維持する |
 | [0011](0011-existing-jpeg-unverified-does-not-block-submission.md) | Accepted | 送信に含まれない既存JPEGの構造不正は、そのfileだけ未展開として送信全体を止めない |
+| [0012](0012-image-binary-and-repository-name-semantics.md) | Accepted | 検証済み画像の符号列・画素とmetadata、Git相対名の意味を区別する |
+| [0013](0013-regex-template-source-role.md) | Accepted | 検査用regexのusername classを具体的な個人pathと区別する |
+| [0014](0014-media-source-semantics.md) | Accepted | 形式decoderで媒体を検証し、本文・metadataを既存検査へ渡し、未知・未検証領域を拒否する |
