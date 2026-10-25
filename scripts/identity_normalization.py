@@ -696,7 +696,13 @@ def _static_string_views(
                 else:
                     spans = _generic_regex_path_spans(normalized)
                 regex_roles.append(
-                    {"pattern": normalized, "pattern_spans": spans, "source_spans": []}
+                    {
+                        "pattern": normalized,
+                        "pattern_spans": spans,
+                        "source_spans": [],
+                        "source": ast.get_source_segment(fragment, argument)
+                        or fragment,
+                    }
                 )
             regex_nodes.update(id(node) for node in ast.walk(argument))
 
@@ -787,14 +793,17 @@ _STRING_ARRAY_START = re.compile(r"""\[\s*['"]""")
 
 
 def _reconstruct_literal_candidates(
-    text: str, views: list[tuple[str, str]]
+    text: str,
+    views: list[tuple[str, str]],
+    *,
+    provenance: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """静的string-arrayと一文字ずつ区切ったliteralの照合候補。実行結果とは断定しない。"""
     import ast
 
     literal = _QUOTED_LITERAL
     candidates = []
-    values = [value for value, _ in views]
+    values = list(views)
     # 配列は開き括弧の直後に引用がある時だけ探す。引用は区切りの必要条件で絞ってから復元する。
     if _STRING_ARRAY_START.search(text):
         arrays = re.compile(
@@ -810,7 +819,10 @@ def _reconstruct_literal_candidates(
                 and pieces
                 and all(isinstance(piece, str) for piece in pieces)
             ):
-                candidates.append("".join(pieces))
+                candidate = "".join(pieces)
+                candidates.append(candidate)
+                if provenance is not None:
+                    provenance.append((candidate, match.group()))
     # 閉じないquoteの終端を別のgateで再探索せず、同じ有界iteratorで候補を読む。
     for match in _quoted_literals(text):
         source = match.group()
@@ -821,61 +833,190 @@ def _reconstruct_literal_candidates(
         except (SyntaxError, ValueError):
             continue
         if isinstance(value, str):
-            values.append(value)
-    for value in values:
+            values.append((value, source))
+    for value, original in values:
         pieces = value.split()
         if len(pieces) >= 4 and all(len(piece) == 1 for piece in pieces):
-            candidates.append("".join(pieces))
+            candidate = "".join(pieces)
+            candidates.append(candidate)
+            if provenance is not None:
+                provenance.append((candidate, original))
     return candidates
 
 
-def scan_private_text(text: str, patterns: list[str]) -> dict:
-    """既存identity規則で公開bytesを検査し、値を含まない結果を返す。"""
-    if not patterns or not all(
-        isinstance(pattern, str) and pattern.strip() for pattern in patterns
-    ):
-        raise ValueError("private_identity_policy_empty")
+def _private_text_analysis(text: str) -> dict:
     regex_roles: list[dict] = []
     views = _static_string_views(text, regex_roles)
-    # bare arrayの連結・空白除去は既知policy照合だけに使い、任意pathの意味まで推測しない。
-    variants = [
-        text,
-        *(value for value, _ in views),
-        *_reconstruct_literal_candidates(text, views),
-        *(role["pattern"] for role in regex_roles if "pattern" in role),
+    reconstructed: list[tuple[str, str]] = []
+    _reconstruct_literal_candidates(text, views, provenance=reconstructed)
+    literals = [
+        *views,
+        *reconstructed,
+        *(
+            (role["pattern"], role["source"])
+            for role in regex_roles
+            if "pattern" in role
+        ),
     ]
-    hits = {pattern for value in variants for pattern in hit_patterns(value, patterns)}
     source_spans = [span for role in regex_roles for span in role["source_spans"]]
     value_spans = {
         role["index"]: role["value_spans"] for role in regex_roles if "index" in role
     }
-    regex_path_views = [
-        (_mask_path_spans(role["pattern"], role["pattern_spans"]), role["pattern"])
+    paths = [
+        (
+            _mask_path_spans(value, value_spans.get(index, [])),
+            original,
+            value not in original,
+        )
+        for index, (value, original) in enumerate(views)
+    ]
+    paths.extend(
+        (
+            _mask_path_spans(role["pattern"], role["pattern_spans"]),
+            role["source"],
+            role["pattern"] not in text,
+        )
         for role in regex_roles
         if "pattern" in role
-    ]
-    path_views = [
-        _mask_path_spans(value, value_spans.get(index, []))
-        for index, (value, _) in enumerate(views)
-    ]
-    path_match = (
-        hit_local_absolute_path(_mask_path_spans(text, source_spans))
-        or any(hit_local_absolute_path(value) for value in path_views)
-        or any(hit_local_absolute_path(value) for value, _ in regex_path_views)
     )
-    reconstructed_path = any(
-        hit_local_absolute_path(path_value) and value not in original
-        for path_value, (value, original) in zip(path_views, views)
-    ) or any(
-        hit_local_absolute_path(value) and original not in text
-        for value, original in regex_path_views
+    return {
+        "literal_values": literals,
+        "path_values": paths,
+        "path_source": _mask_path_spans(text, source_spans),
+    }
+
+
+def _validate_private_patterns(patterns):
+    if not patterns or not all(
+        isinstance(pattern, str) and pattern.strip() for pattern in patterns
+    ):
+        raise ValueError("private_identity_policy_empty")
+
+
+def _private_text_result(literals, paths, patterns):
+    _validate_private_patterns(patterns)
+    hits = {pattern for value in literals for pattern in hit_patterns(value, patterns)}
+    path_match = any(hit_local_absolute_path(value) for value, _ in paths)
+    reconstructed = any(
+        flag and hit_local_absolute_path(value) for value, flag in paths
     )
     return {
         "status": "fail" if hits or path_match else "pass",
         "literal_match_count": len(hits),
         "local_path_match": path_match,
-        "reconstructed_path_match": reconstructed_path,
+        "reconstructed_path_match": reconstructed,
     }
+
+
+def scan_private_text(text: str, patterns: list[str]) -> dict:
+    """既存identity規則で公開bytesを検査し、値を含まない結果を返す。"""
+    _validate_private_patterns(patterns)
+    analysis = _private_text_analysis(text)
+    return _private_text_result(
+        [text, *(value for value, _ in analysis["literal_values"])],
+        [
+            (analysis["path_source"], False),
+            *(
+                (value, reconstructed)
+                for value, _, reconstructed in analysis["path_values"]
+            ),
+        ],
+        patterns,
+    )
+
+
+def private_text_delta_views(previous: str, text: str) -> dict:
+    import difflib
+
+    old_lines, new_lines = previous.splitlines(keepends=True), text.splitlines(
+        keepends=True
+    )
+    if (
+        len(previous) + len(text) > 2_000_000
+        or len(old_lines) * len(new_lines) > 16_000_000
+    ):
+        after = _private_text_analysis(text)
+        return {
+            "literal_values": [text, *(value for value, _ in after["literal_values"])],
+            "path_values": [
+                (after["path_source"], False),
+                *((value, flag) for value, _, flag in after["path_values"]),
+            ],
+            "full_fallback": True,
+        }
+    before, after = _private_text_analysis(previous), _private_text_analysis(text)
+    offsets = [0]
+    for line in new_lines:
+        offsets.append(offsets[-1] + len(line))
+    operations = difflib.SequenceMatcher(
+        a=old_lines, b=new_lines, autojunk=False
+    ).get_opcodes()
+    equal_ranges = [
+        (offsets[j1], offsets[j2]) for op, _, _, j1, j2 in operations if op == "equal"
+    ]
+    changed_ranges = [
+        (offsets[j1], offsets[j2])
+        for op, _, _, j1, j2 in operations
+        if op in {"insert", "replace"}
+    ]
+
+    source_unchanged_cache: dict[str, bool] = {}
+
+    def unchanged(candidate, old_candidates):
+        value, source = candidate[:2]
+        if (value, source) not in old_candidates or not source:
+            return False
+        if source in source_unchanged_cache:
+            return source_unchanged_cache[source]
+        found, offset = False, 0
+        while True:
+            position = text.find(source, offset)
+            if position < 0:
+                source_unchanged_cache[source] = found
+                return found
+            found = True
+            end = position + len(source)
+            if not any(
+                first <= position and end <= last for first, last in equal_ranges
+            ):
+                source_unchanged_cache[source] = False
+                return False
+            offset = position + 1
+
+    old_literals = set(before["literal_values"])
+    old_paths = {(value, source) for value, source, _ in before["path_values"]}
+    return {
+        "literal_values": [
+            *(text[first:last] for first, last in changed_ranges),
+            *(
+                value
+                for value, source in after["literal_values"]
+                if not unchanged((value, source), old_literals)
+            ),
+        ],
+        "path_values": [
+            *(
+                (after["path_source"][first:last], False)
+                for first, last in changed_ranges
+            ),
+            *(
+                (value, reconstructed)
+                for value, source, reconstructed in after["path_values"]
+                if not unchanged((value, source), old_paths)
+            ),
+        ],
+    }
+
+
+def scan_private_text_delta(previous: str, text: str, patterns: list[str]) -> dict:
+    _validate_private_patterns(patterns)
+    views = private_text_delta_views(previous, text)
+    result = _private_text_result(
+        views["literal_values"], views["path_values"], patterns
+    )
+    if views.get("full_fallback"):
+        result["delta_full_fallback"] = True
+    return result
 
 
 _REPOSITORY_COMPONENT = re.compile(r"(?:[\w@+.\-]+|\([\w.\-]+\)|\[[\w.\-]+\])")

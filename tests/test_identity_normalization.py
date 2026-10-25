@@ -3,6 +3,7 @@
 import importlib.util
 from pathlib import Path
 import pytest
+from synthetic_paths import synthetic_home_path
 
 SOURCE = Path(__file__).resolve().parents[1] / "scripts/identity_normalization.py"
 SPEC = importlib.util.spec_from_file_location("identity_normalization_tested", SOURCE)
@@ -1316,3 +1317,88 @@ def test_complete_regex_expression_keeps_detections_across_join_item_boundaries(
     assert result["status"] == "fail"
     if kind != "concrete-path":
         assert result["literal_match_count"] == 1
+
+
+def test_text_delta_ignores_only_unchanged_body():
+    previous = (
+        "CONTACT = "
+        + repr(DENIED)
+        + "\nPATH = "
+        + repr(synthetic_home_path("macos", "operator-fixture/work"))
+        + "\n"
+    )
+    current = previous + 'SAFE = "public"\n'
+    assert (
+        ENGINE.scan_private_text_delta(previous, current, [DENIED])["status"] == "pass"
+    )
+    assert ENGINE.scan_private_text(current, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        'CONTACT = "fixture-private-identity@example.invalid"\n',
+        "PATH = " + repr(synthetic_home_path("macos", "new-operator/work")) + "\n",
+    ],
+)
+def test_text_delta_new_values_are_not_excused_by_old_findings(addition):
+    previous = "OLD = " + repr(synthetic_home_path("macos", "old-operator/work")) + "\n"
+    assert (
+        ENGINE.scan_private_text_delta(previous, previous + addition, [DENIED])[
+            "status"
+        ]
+        == "fail"
+    )
+
+
+def test_text_delta_reconstructs_old_prefix_plus_new_piece():
+    previous = 'PATH = (\n    "/" + "Users/"\n)\n'
+    current = previous.replace("\n)", '\n    + "operator-fixture/work"\n)')
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["local_path_match"] is True
+    assert result["reconstructed_path_match"] is True
+
+
+def test_text_delta_same_value_elsewhere_does_not_hide_new_reconstruction():
+    expression = '"fixture-private-" + "identity@example.invalid"'
+    previous = "OLD = " + expression + '\nNEW = (\n    "fixture-private-"\n)\n'
+    current = previous.replace("\n)", '\n    + "identity@example.invalid"\n)')
+    assert (
+        ENGINE.scan_private_text_delta(previous, current, [DENIED])[
+            "literal_match_count"
+        ]
+        == 1
+    )
+
+
+def test_text_delta_generic_regex_role_is_preserved_for_added_lines():
+    previous = "import re\n"
+    current = (
+        previous
+        + "PATTERN = re.compile("
+        + repr(synthetic_home_path("macos", r"[^/\s]+/work"))
+        + ")\n"
+    )
+    assert (
+        ENGINE.scan_private_text_delta(previous, current, [DENIED])["status"] == "pass"
+    )
+
+
+def test_text_delta_removed_regex_binding_rechecks_new_path_role():
+    previous = (
+        "import re\nPATTERN = re.compile("
+        + repr(synthetic_home_path("macos", r"[^/\s]+/work"))
+        + ")\n"
+    )
+    current = previous.removeprefix("import re\n")
+    assert (
+        ENGINE.scan_private_text_delta(previous, current, [DENIED])["local_path_match"]
+        is True
+    )
+
+
+def test_text_delta_repetitive_input_has_bounded_full_fallback():
+    previous = "SAFE = 1\n" * 4001 + "CONTACT = " + repr(DENIED) + "\n"
+    result = ENGINE.scan_private_text_delta(previous, previous + "SAFE = 2\n", [DENIED])
+    assert result["status"] == "fail"
+    assert result["delta_full_fallback"] is True
