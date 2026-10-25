@@ -22,7 +22,7 @@ description: >
 
 ```bash
 # 既存 repo
-python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --base-ref origin/<BASE> --human
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --base-ref origin/<BASE> --private-submission --human
 
 # 新規 repo 作成前は --repo を付けない
 python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
@@ -32,6 +32,9 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 `create_repo` 以外は `--repo <TARGET_REPO>` が必須。
+既存private GitHub repoへの通常送信では `--private-submission` と `--base-ref` を併用する。
+live確認とcommit済み内容の範囲はclone rootの正本に従い、未送信の作業file本文を対象にしない。
+`--private-submission` なしではprivate identityの全在庫検査を維持する。
 `--base-ref` は既存 private repo の `push` / `open_pr` / `merge` で今回差分だけを検査する時に使う。
 base は HEAD の祖先であること。`publish` / `release` / `configure_settings` のrepo全体検査には使わない。
 `configure_settings` は GET / 比較 / preview まで。この skill から Settings は変更しない。
