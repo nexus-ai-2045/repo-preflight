@@ -599,9 +599,14 @@ class _PDFSource:
         # Every noncompressed byte still receives literal/path checking, even
         # for an uncompressed binary font. PDF syntax is applicable outside
         # streams and to decoded text-content streams, not to binary glyph data.
-        raw = bytearray(self.data)
-        for start, end in compressed_ranges:
-            raw[start:end] = b" " * (end - start)
+        # Padding is synthetic, not source text. One separator preserves the
+        # boundary without charging every compressed byte to each text codec.
+        raw, cursor = bytearray(), 0
+        for start, end in sorted(compressed_ranges):
+            raw.extend(self.data[cursor:start])
+            raw.extend(b" ")
+            cursor = end
+        raw.extend(self.data[cursor:])
         _pdf_text_bytes(bytes(raw), output)
         syntax = bytearray(self.data)
         for start, end in all_ranges:
