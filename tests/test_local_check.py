@@ -118,3 +118,37 @@ def test_full_always_runs_readme_gate(repo):
     assert "readme_release_gate" in _names(
         local_check.build_steps(repo, "full", "base")
     )
+
+
+def test_quick_includes_tests_of_indirect_consumers(repo):
+    (repo / "scripts" / "beta.py").write_text("import alpha\nY = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "beta uses alpha")
+    _git(repo, "branch", "-f", "base")
+    _commit(repo, "scripts/alpha.py", "X = 2\n")
+    steps = dict(local_check.build_steps(repo, "quick", "base"))
+    cmd = next(v for k, v in steps.items() if k.startswith("pytest"))
+    assert "tests/test_beta.py" in cmd and "tests/test_alpha.py" in cmd
+
+
+def test_log_path_in_linked_worktree_is_reported(repo, tmp_path):
+    wt = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", str(wt), "-b", "side")
+    _commit(wt, "README.md", "# side\n")
+    out = subprocess.run(
+        [
+            sys.executable,
+            str(Path(local_check.__file__)),
+            "--repo",
+            str(wt),
+            "--base-ref",
+            "base",
+            "--mode",
+            "quick",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert "Traceback" not in out.stderr
+    assert "全文のログ: ../" in out.stdout

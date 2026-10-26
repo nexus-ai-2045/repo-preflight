@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -51,6 +52,22 @@ def changed_files(repo: Path, base: str) -> list[str]:
     return sorted(names)
 
 
+def consumers_pattern(module: str, repo: Path) -> re.Pattern[str]:
+    """変えたモジュールと、それを（間接に）使う scripts/ のモジュール名すべてに当たる正規表現。"""
+    sources = {
+        p.stem: p.read_text(encoding="utf-8") for p in (repo / "scripts").rglob("*.py")
+    }
+    names = {module}
+    while True:
+        pattern = re.compile(
+            r"\b(?:" + "|".join(map(re.escape, sorted(names))) + r")\b"
+        )
+        grown = names | {stem for stem, text in sources.items() if pattern.search(text)}
+        if grown == names:
+            return pattern
+        names = grown
+
+
 def related_tests(repo: Path, files: list[str]) -> list[str] | None:
     """変えたファイルに関係する試験。None は「全部の試験に戻す」。"""
     tests: set[str] = set()
@@ -67,8 +84,7 @@ def related_tests(repo: Path, files: list[str]) -> list[str] | None:
                 continue
             return None  # 試験の共有部品は、どの試験が使うか分からないので全部に戻す
         if name.startswith("scripts/") and name.endswith(".py"):
-            module = Path(name).stem
-            pattern = re.compile(rf"\b{re.escape(module)}\b")
+            pattern = consumers_pattern(Path(name).stem, repo)
             hits = [
                 t
                 for t in all_tests
@@ -218,7 +234,8 @@ def main(argv: list[str] | None = None) -> int:
             if rc != 0:
                 failed.append(name)
     total = time.monotonic() - started
-    rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path.name
+    # linked worktree では git-dir が repo の外にあるので相対パスで示す（実ホームパスを出さない）
+    rel = Path(os.path.relpath(log_path, repo)).as_posix()
     status = "合格" if not failed else "不合格"
     print(
         f"{status}（{ns.mode}）: {len(steps) - len(failed)}/{len(steps)} 項目 {total:.1f}秒"
