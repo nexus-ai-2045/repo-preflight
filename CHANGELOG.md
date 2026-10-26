@@ -18,8 +18,7 @@
 
 ### その他の変更
 
-- 手元の検査の入口 `scripts/local_check.py` を追加。既定は CI と同じ全部（full）、途中の作業用に差分に関係する検査だけを回す quick を用意。個人情報の検査はどのモードでも全差分で回し、要約だけを画面に出して全文はログファイルへ落とす。
-- 自己リポへの documented intent 試験から、`runtime_smoke` と `test_dialogue_gate` が見ている create_repo の場合を外した（約19秒）。
+- 手元の検査の入口 `scripts/local_check.py` を追加。既定の full は、CI が回す試験と検査のうち手元で回せるものを全部回す（PR 本文の検査・base_guard・全 ref の走査は CI でだけ回る）。途中の作業用に、差分に関係する検査だけを回す quick を用意（CI の代わりではない）。個人情報の検査はどのモードでも、コミット済みの全差分・ステージ・未ステージ・未追跡の全部を見る。要約だけを画面に出し、全文はログファイルへ落とす。
 
 - PR 本文の日本語ひな形（変更点・なぜ・確かめたこと・影響範囲）の写し元を `templates/github/pull_request_template.md` に追加。新しいリポへ写す元で、このリポ自身は既存の `.github/PULL_REQUEST_TEMPLATE.md` を使い続ける。
 - 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポ note-publishing-suite の README 用の画面 GIF を2件足した（品質係が全コマを目視して OK、2026-10-25）。SHA256 で固定し、そのパスでその中身のときだけ外す。試験で他リポの行に GIF を許し、承認の記録として決まった書き方だけを通す。

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""手元で回す CI 相当の検査の入口。途中の作業は差分に絞り、PR 前とマージ前は全部回す。
+"""手元で回す検査の入口。途中の作業は差分に絞り、PR 前とマージ前は全部回す。
 
 モード:
-- full（既定）: CI（ci.yml・documentation-contract.yml）と同じ項目を全部回す。PR を出す前とマージ前に使う。
-- quick: 途中の作業（commit・push の前など）用。変えたファイルに関係する検査だけを回す。
+- full（既定）: CI（ci.yml・documentation-contract.yml）が回す試験と検査のうち、手元で回せるものを全部回す。
+  PR を出す前とマージ前に使う。PR 本文の検査（--pr-event）・base_guard・全 ref の走査は
+  GitHub 側でしか回らないので、ここでは回らない。CI の代わりにはならない。
+- quick: 途中の作業（commit・push の前など）用。変えたファイルに関係する検査だけを回す。CI の代わりではない。
 
-どちらのモードでも、名義と個人情報の検査（identity_gate --public）は比較元から HEAD までの
-全差分と、ステージした差分の全部を見る。ここは絞らない。CI の必須チェックの中身は変えない。
+どちらのモードでも、名義と個人情報の検査（identity_gate --public）は、比較元から HEAD までの
+全差分、ステージした差分、まだステージしていない変更と未追跡のファイル（作業ツリー）の全部を見る。
+ここは絞らない。CI の必須チェックの中身は変えない。
 
 画面には要約（合否・件数・失敗した項目名）だけを出し、全文のログは .git/local-check/ に落とす。
 """
@@ -17,9 +20,12 @@ import argparse
 import getpass
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -140,6 +146,51 @@ def redact(text: str, repo: Path) -> str:
     return text
 
 
+def worktree_dirty(repo: Path) -> bool:
+    """まだステージしていない変更か、未追跡のファイルがあるか。"""
+    unstaged = git(repo, "diff", "--name-only", "-z")
+    untracked = git(repo, "ls-files", "-z", "--others", "--exclude-standard")
+    return bool(unstaged.strip("\0") or untracked.strip("\0"))
+
+
+@contextmanager
+def worktree_index_env(repo: Path):
+    """作業ツリーの全部（未ステージ・未追跡を含む）を載せた一時の索引を作り、それを指す環境変数を返す。
+
+    本物の索引（ステージの状態）は変えない。identity_gate の --staged は GIT_INDEX_FILE を
+    そのまま使うので、この索引を渡すと「HEAD から作業ツリーまで」の足した行とファイル名を見る。
+    """
+    real = Path(git(repo, "rev-parse", "--git-path", "index").strip())
+    if not real.is_absolute():
+        real = repo / real
+    with tempfile.TemporaryDirectory(prefix="local-check-") as tmp:
+        index = Path(tmp) / "index"
+        if real.exists():
+            shutil.copyfile(real, index)
+        env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        subprocess.run(
+            ["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True
+        )
+        yield env
+
+
+def identity_worktree(repo: Path) -> int:
+    """作業ツリーの全部を identity_gate --public --staged で見る（--identity-worktree の中身）。"""
+    with worktree_index_env(repo) as env:
+        return subprocess.run(
+            [
+                sys.executable,
+                "scripts/identity_gate.py",
+                "--public",
+                "--repo",
+                ".",
+                "--staged",
+            ],
+            cwd=repo,
+            env=env,
+        ).returncode
+
+
 def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]:
     py = sys.executable
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
@@ -160,6 +211,20 @@ def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]
             (
                 "identity_gate（ステージ）",
                 [py, "scripts/identity_gate.py", "--public", "--repo", ".", "--staged"],
+            )
+        )
+    if worktree_dirty(repo):
+        # 未ステージと未追跡も素通りさせない（一時の索引に載せて見る。本物の索引は変えない）
+        steps.append(
+            (
+                "identity_gate（作業ツリー）",
+                [
+                    py,
+                    "scripts/local_check.py",
+                    "--repo",
+                    ".",
+                    "--identity-worktree",
+                ],
             )
         )
     consistency = [
@@ -231,15 +296,23 @@ def main(argv: list[str] | None = None) -> int:
         "--mode",
         choices=("full", "quick"),
         default="full",
-        help="full（既定・PR 前とマージ前）／quick（途中の作業）",
+        help="full（既定・PR 前とマージ前。CI が回す試験と検査のうち手元で回せるもの全部。"
+        "PR 本文の検査・base_guard・全 ref の走査は回らない）／quick（途中の作業。CI の代わりではない）",
     )
     ap.add_argument(
         "--base-ref", default="origin/main", help="比較元（既定 origin/main）"
     )
     ap.add_argument("--repo", type=Path, default=ROOT)
     ap.add_argument("--dry-run", action="store_true", help="回す項目だけを出す")
+    ap.add_argument(
+        "--identity-worktree",
+        action="store_true",
+        help="内部用: 未ステージ・未追跡を含む作業ツリーの全部を identity_gate で見る",
+    )
     ns = ap.parse_args(argv)
     repo = ns.repo.resolve()
+    if ns.identity_worktree:
+        return identity_worktree(repo)
     try:
         steps = build_steps(repo, ns.mode, ns.base_ref)
     except subprocess.CalledProcessError:
@@ -288,6 +361,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     if failed:
         print("失敗した項目: " + "、".join(failed))
+    if ns.mode == "quick":
+        print(
+            "quick は途中の確認用で、CI の代わりではありません（PR 前とマージ前は full）"
+        )
+    else:
+        print("PR 本文の検査・base_guard・全 ref の走査は CI でだけ回ります")
     print(f"全文のログ: {rel}")
     return 0 if not failed else 1
 

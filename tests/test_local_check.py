@@ -1,11 +1,14 @@
 """scripts/local_check.py：途中の作業は差分に絞り、個人情報ゲートはどのモードでも全差分で回す。"""
 
+import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from synthetic_paths import synthetic_home_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import local_check  # noqa: E402
@@ -224,3 +227,129 @@ def test_non_ascii_and_space_filenames_are_kept(repo):
     (repo / "tests" / "test_回帰.py").write_text("\n", encoding="utf-8")
     (repo / "b c.txt").write_text("\n", encoding="utf-8")
     assert local_check.changed_files(repo, "base") == ["b c.txt", "tests/test_回帰.py"]
+
+
+# ---- 作業ツリー（未ステージ・未追跡）も個人情報の検査に載せる（品質係 2026-10-26） ----
+ROOT = Path(__file__).resolve().parents[1]
+GATE = ROOT / "scripts" / "identity_gate.py"
+FIXTURE_ID = "Fixture Bot <fixture@example.invalid>"
+needs_gitleaks = pytest.mark.skipif(
+    shutil.which("gitleaks") is None, reason="--staged は固定した gitleaks で動く"
+)
+
+
+def _home_path_line():
+    # 実行時に組み立てる（このファイル自身が検査に掛からないように）
+    return "P = '" + synthetic_home_path("linux", "alice/proj") + "'\n"
+
+
+@pytest.mark.parametrize("mode", ["full", "quick"])
+@pytest.mark.parametrize("kind", ["unstaged", "untracked"])
+def test_worktree_changes_are_checked_in_every_mode(repo, mode, kind):
+    if kind == "unstaged":
+        (repo / "scripts" / "alpha.py").write_text("X = 4\n", encoding="utf-8")
+    else:
+        (repo / "notes.txt").write_text("x\n", encoding="utf-8")
+    steps = dict(local_check.build_steps(repo, mode, "base"))
+    cmd = steps["identity_gate（作業ツリー）"]
+    assert cmd[-1] == "--identity-worktree"
+
+
+@pytest.mark.parametrize("mode", ["full", "quick"])
+def test_clean_worktree_adds_no_worktree_step(repo, mode):
+    assert "identity_gate（作業ツリー）" not in _names(
+        local_check.build_steps(repo, mode, "base")
+    )
+
+
+def test_worktree_index_holds_unstaged_and_untracked_without_touching_index(repo):
+    (repo / "scripts" / "alpha.py").write_text("X = 5\n", encoding="utf-8")
+    (repo / "notes.txt").write_text("x\n", encoding="utf-8")
+    with local_check.worktree_index_env(repo) as env:
+        names = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.split()
+    assert names == ["notes.txt", "scripts/alpha.py"]
+    real = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    ).stdout
+    assert real == ""
+
+
+def _gate_on_worktree(repo, tmp_path):
+    policy = tmp_path / "policy.json"
+    policy.write_text(
+        json.dumps(
+            {"schema": "public-commit-identities/v1", "identities": [FIXTURE_ID]}
+        ),
+        encoding="utf-8",
+    )
+    with local_check.worktree_index_env(repo) as env:
+        env.update(
+            GIT_AUTHOR_NAME="Fixture Bot",
+            GIT_AUTHOR_EMAIL="fixture@example.invalid",
+            GIT_COMMITTER_NAME="Fixture Bot",
+            GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        )
+        return subprocess.run(
+            [
+                sys.executable,
+                str(GATE),
+                "--public",
+                "--allowed-identities",
+                str(policy),
+                "--repo",
+                str(repo),
+                "--staged",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+        )
+
+
+@needs_gitleaks
+@pytest.mark.parametrize("kind", ["unstaged", "untracked"])
+def test_worktree_home_path_is_red(repo, tmp_path, kind):
+    target = repo / "scripts" / "alpha.py" if kind == "unstaged" else repo / "notes.py"
+    target.write_text(_home_path_line(), encoding="utf-8")
+    result = _gate_on_worktree(repo, tmp_path)
+    assert result.returncode == 1, result.stderr
+
+
+@needs_gitleaks
+def test_worktree_plain_change_is_green(repo, tmp_path):
+    (repo / "scripts" / "alpha.py").write_text("X = 6\n", encoding="utf-8")
+    (repo / "notes.txt").write_text("plain\n", encoding="utf-8")
+    result = _gate_on_worktree(repo, tmp_path)
+    assert result.returncode == 0, result.stderr
+
+
+def test_quick_summary_says_it_is_not_a_ci_substitute(repo):
+    out = subprocess.run(
+        [
+            sys.executable,
+            str(Path(local_check.__file__)),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "base",
+            "--mode",
+            "quick",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=_ENV,
+    )
+    assert "CI の代わりではありません" in out.stdout
