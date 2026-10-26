@@ -166,7 +166,10 @@ def worktree_index_env(repo: Path):
     with tempfile.TemporaryDirectory(prefix="local-check-") as tmp:
         index = Path(tmp) / "index"
         if real.exists():
-            shutil.copyfile(real, index)
+            # copy2 で時刻も写す。copyfile だと索引の時刻が「今」になり、git の racy 判定
+            # （索引と同じ時刻に書き換えたファイルは中身を読み直す）が効かず、同じ大きさで
+            # 書き換えたファイルを「変更なし」と見落とす
+            shutil.copy2(real, index)
         env = {**os.environ, "GIT_INDEX_FILE": str(index)}
         subprocess.run(
             ["git", "add", "-A"], cwd=repo, env=env, check=True, capture_output=True

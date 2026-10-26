@@ -284,6 +284,27 @@ def test_worktree_index_holds_unstaged_and_untracked_without_touching_index(repo
     assert real == ""
 
 
+def test_worktree_index_sees_same_size_rewrite_in_racy_window(repo):
+    """コミット直後と同じ時刻・同じ大きさの書き換えも一時の索引に載る（時刻の粗い Mac・Windows の再現）。"""
+    _git(repo, "config", "core.trustctime", "false")
+    alpha = repo / "scripts" / "alpha.py"
+    index = repo / ".git" / "index"
+    t = 1_600_000_000 * 10**9
+    os.utime(alpha, ns=(t, t))
+    _git(repo, "update-index", "--refresh")  # 索引の記録も同じ時刻にする
+    alpha.write_text("X = 7\n", encoding="utf-8")  # 同じ大きさで書き換え
+    os.utime(alpha, ns=(t, t))
+    os.utime(index, ns=(t, t))  # 索引もファイルと同じ時刻（racy の窓）
+    with local_check.worktree_index_env(repo) as env:
+        names = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.split()
+    assert names == ["scripts/alpha.py"]
+
 def _gate_on_worktree(repo, tmp_path):
     policy = tmp_path / "policy.json"
     policy.write_text(
