@@ -1372,12 +1372,12 @@ def _rendered_text(source: str) -> str:
 
 
 def japanese_findings(
-    title: str, body: str, *, language_exempt: bool = False
+    title: str, body: str, *, body_language_exempt: bool = False
 ) -> list[str]:
     """題名に日本語、本文に日本語の見出し、英語だけの見出しなし。見出しの値は返さない。
 
-    language_exempt は Dependabot の作った PR だけ（is_dependabot_author）。
-    日本語かどうかの3つだけを外し、Markdown リンクの検査は残す。
+    body_language_exempt は Dependabot だけが触った PR だけ（dependabot_body_exempt）。
+    外すのは本文の日本語の2点だけ。題名の日本語と Markdown リンクの検査は残す。
     """
     rendered_body, visible_title = _rendered_text(body), _rendered_text(title)
     atx = _ATX.findall(rendered_body)
@@ -1385,11 +1385,11 @@ def japanese_findings(
     errors = []
     if _MD_LINK.search(visible_title):
         errors.append("PR題名にMarkdownリンクがある")
-    if not language_exempt and not _JAPANESE.search(visible_title):
+    if not _JAPANESE.search(visible_title):
         errors.append("PR題名に日本語がない")
     if any(_MD_LINK.search(h) for h in headings):
         errors.append("見出しにMarkdownリンクがある")
-    if language_exempt:
+    if body_language_exempt:
         return errors
     if not any(_JAPANESE.search(h) for h in atx):
         errors.append("PR本文に日本語の見出しがない")
@@ -1403,13 +1403,20 @@ def japanese_findings(
 # 3つ全部が合うときだけ Dependabot とみなす（login だけ・題名や枝名だけでは外さない）。
 DEPENDABOT_LOGIN = "dependabot[bot]"
 DEPENDABOT_USER_ID = 49699333
+# Dependabot が作るコミットの作者。コミッターは GitHub の署名用の名義になる。
+DEPENDABOT_COMMIT_AUTHOR = (
+    "dependabot[bot]",
+    "49699333+dependabot[bot]@users.noreply.github.com",
+)
+DEPENDABOT_COMMIT_COMMITTERS = frozenset(
+    {DEPENDABOT_COMMIT_AUTHOR, ("GitHub", "noreply@github.com")}
+)
+# Dependabot 自身が起こしうる PR イベント。ほかの action では外さない。
+DEPENDABOT_ACTIONS = frozenset({"opened", "synchronize", "reopened", "edited"})
 
 
-def is_dependabot_author(pr: object) -> bool:
-    """イベントの pull_request.user が Dependabot のボット作者かどうか。"""
-    if not isinstance(pr, dict):
-        return False
-    user = pr.get("user")
+def is_dependabot_user(user: object) -> bool:
+    """GitHub の利用者オブジェクトが Dependabot のボットかどうか（3つ全部が合うときだけ）。"""
     if not isinstance(user, dict):
         return False
     user_id = user.get("id")
@@ -1421,9 +1428,52 @@ def is_dependabot_author(pr: object) -> bool:
     )
 
 
-def _pr_japanese(path: str) -> list[str]:
+def is_dependabot_author(pr: object) -> bool:
+    """イベントの pull_request.user が Dependabot のボット作者かどうか。"""
+    return isinstance(pr, dict) and is_dependabot_user(pr.get("user"))
+
+
+def _range_only_dependabot(pr: dict, repo, rng, run_git) -> bool:
+    """比較範囲のコミットが全部 Dependabot の作で、数が PR のコミット数と合うか。"""
+    if not repo or not rng or ".." not in rng:
+        return False
+    count = pr.get("commits")
+    if type(count) is not int or count < 1:
+        return False
+    commits = list(raw_commits(repo, rng, run_git))
+    if len(commits) != count:
+        return False
+    return all(
+        (an, ae) == DEPENDABOT_COMMIT_AUTHOR
+        and (cn, ce) in DEPENDABOT_COMMIT_COMMITTERS
+        for _oid, an, ae, cn, ce, _body in commits
+    )
+
+
+def dependabot_body_exempt(ev: object, repo=None, rng=None, *, git_fn=None) -> bool:
+    """本文の日本語の検査を外してよいか。分からないときは外さない（fail-closed）。
+
+    全部そろうときだけ外す: PR の作者が Dependabot、このイベントを起こした sender も
+    Dependabot、action が Dependabot の起こしうるもの、比較範囲（--range）のコミットが
+    全部 Dependabot の作でコミット数も合う。人や係が編集・コミット追加・再オープンを
+    すると sender か作者が Dependabot でなくなり、外れる。
+    """
+    if not isinstance(ev, dict):
+        return False
+    pr = ev.get("pull_request")
+    if not is_dependabot_author(pr):
+        return False
+    if not is_dependabot_user(ev.get("sender")):
+        return False
+    if ev.get("action") not in DEPENDABOT_ACTIONS:
+        return False
+    return _range_only_dependabot(pr, repo, rng, git if git_fn is None else git_fn)
+
+
+def _pr_japanese(path: str, repo=None, rng=None) -> list[str]:
     with open(path, encoding="utf-8") as stream:
-        pr = json.load(stream).get("pull_request")
+        ev = json.load(stream)
+    pr = ev.get("pull_request")
     if not pr:
         return []
     return [
@@ -1431,7 +1481,7 @@ def _pr_japanese(path: str) -> list[str]:
         for e in japanese_findings(
             pr.get("title") or "",
             pr.get("body") or "",
-            language_exempt=is_dependabot_author(pr),
+            body_language_exempt=dependabot_body_exempt(ev, repo, rng),
         )
     ]
 
@@ -1488,7 +1538,7 @@ def public_main(ns) -> int:
         if ns.pr_event:
             for where, text in _pr_texts(ns.pr_event):
                 issues += check_public_text(policy, text, where)
-            issues += _pr_japanese(ns.pr_event)
+            issues += _pr_japanese(ns.pr_event, ns.repo, ns.range)
     except (
         OSError,
         UnicodeError,
