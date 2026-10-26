@@ -216,3 +216,42 @@ def test_shipped_example_is_already_current():
     assert plan["status"] == "pass"
     assert plan["reason"] == "already_current"
     assert plan["changed"] is False
+
+
+def test_markers_inside_backtick_fence_are_not_markers():
+    text = (
+        "# サンプル\n\n書き方の例:\n\n"
+        "```markdown\n"
+        f"{MODULE.START_MARKER}\n"
+        "ここに図\n"
+        f"{MODULE.END_MARKER}\n"
+        "```\n"
+    )
+    plan = MODULE.plan_readme_diagram(text)
+    assert plan["status"] == "pass"
+    assert plan["reason"] == "markers_absent"
+    assert plan["changed"] is False
+
+
+def test_markers_inside_tilde_fence_are_ignored_next_to_real_markers():
+    example = (
+        "~~~~\n" f"{MODULE.START_MARKER}\n" "```\n" f"{MODULE.END_MARKER}\n" "~~~~\n"
+    )
+    text = (
+        f"# サンプル\n\n{example}\n"
+        f"{MODULE.START_MARKER}\n古い図\n{MODULE.END_MARKER}\n"
+    )
+    plan = MODULE.plan_readme_diagram(text)
+    assert plan["status"] == "pass"
+    assert plan["changed"] is True
+    rendered = plan["rendered"]
+    assert rendered.startswith(f"# サンプル\n\n{example}\n")
+    assert "古い図" not in rendered
+    assert "flowchart TD" in rendered.split(example, 1)[1]
+
+
+def test_unclosed_fence_hides_following_markers():
+    text = "```\n" f"{MODULE.START_MARKER}\n" "図\n" f"{MODULE.END_MARKER}\n"
+    plan = MODULE.plan_readme_diagram(text)
+    assert plan["reason"] == "markers_absent"
+    assert plan["changed"] is False
