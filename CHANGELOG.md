@@ -18,6 +18,7 @@
 
 ### その他の変更
 
+- PR 本文の日本語ひな形（変更点・なぜ・確かめたこと・影響範囲）を `templates/github/pull_request_template.md` に追加し、このリポ自身も `docs/pull_request_template.md` で使う。
 - 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポ note-publishing-suite の README 用の画面 GIF を2件足した（品質係が全コマを目視して OK、2026-10-25）。SHA256 で固定し、そのパスでその中身のときだけ外す。試験で他リポの行に GIF を許し、承認の記録として決まった書き方だけを通す。
 - 旧履歴 `719dc3a` の本人採用済みADR-0012を再構築後のmain `ad1531f` へ移植。検証済みPNG/JPEGのcoding・pixel・CRC領域とGit相対名を本文から区別し、metadataの全UTF-16 alignment・strict復号・不正入力の停止を維持する。現行PSD/GIF対応と公開名義policyは変更しない。
 
