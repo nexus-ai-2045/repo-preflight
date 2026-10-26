@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import re
 import subprocess
@@ -93,13 +94,47 @@ def related_tests(repo: Path, files: list[str]) -> list[str] | None:
             if not hits:
                 return None  # 関係する試験が見つからない変更は、安全側で全部に戻す
             tests.update(hits)
-        elif (
-            name.endswith(".md")
-            or name.startswith(("runtime/", "assets/"))
-            or name == "SKILL.md"
-        ):
-            tests.add(NARRATIVE_TEST)
+        else:
+            # 文書・データ：そのファイル名を見ている試験（digest や配布写しの一致など）も回す
+            base_name = Path(name).name
+            hits = [
+                t
+                for t in all_tests
+                if base_name in (repo / t).read_text(encoding="utf-8")
+            ]
+            tests.update(hits)
+            if (
+                name.endswith(".md")
+                or name.startswith(("runtime/", "assets/"))
+                or name == "SKILL.md"
+            ):
+                tests.add(NARRATIVE_TEST)
+            elif not hits:
+                return None  # 何が見ているか決まらないファイルは、安全側で全部に戻す
     return sorted(tests)
+
+
+def redact(text: str, repo: Path) -> str:
+    """ログに実ホームパス・アカウント名・作業場所の絶対パスを残さない。"""
+    pairs = [
+        (sys.executable, "<python>"),
+        (sys.prefix, "<python-prefix>"),
+        (sys.base_prefix, "<python-base>"),
+        (str(repo), "<repo>"),
+        (str(Path.home()), "~"),
+    ]
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001 - 取れない環境では置き換えない
+        user = ""
+    for old, new in pairs:
+        if old and old not in ("/", "."):
+            text = text.replace(old, new)
+    if len(user) >= 3:
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(user)}(?![A-Za-z0-9_])", "<user>", text
+        )
+    return text
 
 
 def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]:
@@ -224,11 +259,19 @@ def main(argv: list[str] | None = None) -> int:
     with log_path.open("w", encoding="utf-8") as log:
         for name, cmd in steps:
             t0 = time.monotonic()
-            log.write(f"===== {name}: {' '.join(cmd)}\n")
-            log.flush()
-            rc = subprocess.run(
-                cmd, cwd=repo, stdout=log, stderr=subprocess.STDOUT
-            ).returncode
+            # 実行したコマンドの絶対パス（Python の場所など）は書かず、出力も伏せてから残す
+            done = subprocess.run(
+                cmd,
+                cwd=repo,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="backslashreplace",
+            )
+            rc = done.returncode
+            log.write(f"===== {name}\n")
+            log.write(redact(done.stdout, repo))
             mark = "緑" if rc == 0 else "赤"
             print(f"{mark} {name} {time.monotonic() - t0:.1f}秒")
             if rc != 0:

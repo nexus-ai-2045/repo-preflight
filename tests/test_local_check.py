@@ -152,3 +152,59 @@ def test_log_path_in_linked_worktree_is_reported(repo, tmp_path):
     )
     assert "Traceback" not in out.stderr
     assert "全文のログ: ../" in out.stdout
+
+
+def test_log_redacts_home_user_and_repo_paths(repo):
+    text = f"{Path.home()}/x {repo}/scripts/a.py"
+    out = local_check.redact(text, repo)
+    assert str(Path.home()) not in out and str(repo) not in out
+    assert "<repo>/scripts/a.py" in out
+
+
+def test_log_does_not_contain_interpreter_path(repo):
+    _commit(repo, "README.md", "# t3\n")
+    subprocess.run(
+        [
+            sys.executable,
+            str(Path(local_check.__file__)),
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "base",
+            "--mode",
+            "quick",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    logs = list((repo / ".git" / "local-check").glob("*.log"))
+    assert logs
+    body = logs[0].read_text(encoding="utf-8")
+    assert sys.executable not in body
+    assert str(Path.home()) not in body
+
+
+def test_doc_change_selects_tests_that_watch_that_file(repo):
+    (repo / "docs").mkdir()
+    (repo / "docs" / "digests.txt").write_text("a\n", encoding="utf-8")
+    (repo / "tests" / "test_digest.py").write_text(
+        "P = 'docs/digests.txt'\n", encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "digests")
+    _git(repo, "branch", "-f", "base")
+    _commit(repo, "docs/digests.txt", "b\n")
+    cmd = next(
+        v
+        for k, v in local_check.build_steps(repo, "quick", "base")
+        if k.startswith("pytest")
+    )
+    assert "tests/test_digest.py" in cmd
+
+
+def test_unknown_non_python_file_falls_back_to_full(repo):
+    _commit(repo, "LICENSE", "x\n")
+    assert "pytest（全部・安全側）" in _names(
+        local_check.build_steps(repo, "quick", "base")
+    )
