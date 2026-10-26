@@ -697,9 +697,15 @@ def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
             continue
         extra = Counter()
         for value, original in normalizer.static_string_views(text):
+            # Valid source can describe an unpaired surrogate in a test literal.
+            # Keep that derived view UTF-8 scannable, without dropping text or
+            # losing the boundary before an adjacent/URL-encoded absolute path.
+            # Raw bytes and the strict source decoders above remain unchanged.
             extra += personal_path_matches(
-                value.encode("utf-8")
-            ) - personal_path_matches(original.encode("utf-8"))
+                value.encode("utf-8", errors="xmlcharrefreplace")
+            ) - personal_path_matches(
+                original.encode("utf-8", errors="xmlcharrefreplace")
+            )
         matches |= raw + extra
     return matches
 

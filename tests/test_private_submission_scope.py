@@ -44,6 +44,51 @@ def run_scan(repo, base, **kwargs):
     )
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_history_inventory_accepts_valid_source_with_surrogate_negative_fixture(
+    submission, scoped
+):
+    repo, base, _, _ = submission
+    commit(repo, "unicode_case.py", 'VALUE = "\\ud800"\n')
+    policy = repo.parent / "empty-reviewed-fixture.json"
+    policy.write_text('{"version":1,"entries":[]}', encoding="utf-8")
+    options = {"reviewed_secret_exceptions": policy}
+    report = (
+        run_scan(repo, base, **options)
+        if scoped
+        else MODULE.scan(repo, require_private_identity=True, **options)
+    )
+    assert report["status"] == "pass"
+    for gate in ("secret_scan", "personal_path_scan", "private_identity_scan"):
+        assert report["checks"][gate]["status"] == "pass"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_surrogate_fixture_does_not_hide_real_positive_path_and_secret(
+    submission, scoped
+):
+    repo, base, _, _ = submission
+    body = (
+        'VALUE = "\\ud800"\nPATH = '
+        + repr(synthetic_home_path("linux", "fixture-user/work"))
+        + '\nKEY = "sk-'
+        + "A" * 48
+        + '"\n'
+    )
+    commit(repo, "unicode_case.py", body)
+    policy = repo.parent / "empty-reviewed-fixture.json"
+    policy.write_text('{"version":1,"entries":[]}', encoding="utf-8")
+    options = {"reviewed_secret_exceptions": policy}
+    report = (
+        run_scan(repo, base, **options)
+        if scoped
+        else MODULE.scan(repo, require_private_identity=True, **options)
+    )
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
 @pytest.mark.parametrize("body", [b"name: missing jobs\n", b"\xff"])
 def test_private_workflow_diagnostics_never_disclose_filename(submission, body):
     import json

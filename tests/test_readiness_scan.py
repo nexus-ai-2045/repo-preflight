@@ -28,6 +28,22 @@ assert SPEC.loader
 SPEC.loader.exec_module(MODULE)
 
 
+@pytest.mark.parametrize("escape", [r"\ud800", r"\udfff", r"\ud83d\ude00"])
+def test_normalized_path_scan_accepts_surrogates_in_valid_source_literals(escape):
+    data = ('VALUE = "' + escape + '"\n').encode("utf-8")
+    assert MODULE.normalized_personal_path_matches(data) == {}
+
+
+@pytest.mark.parametrize("escape", [r"\ud800", r"\udfff"])
+def test_normalized_surrogate_does_not_hide_a_reconstructed_encoded_home_path(escape):
+    path = quote(synthetic_home_path("linux", "fixture-user/work"), safe="")
+    data = (
+        'VALUE = "' + escape + '" + ' + repr(path[:5]) + " + " + repr(path[5:]) + "\n"
+    ).encode("utf-8")
+    assert not MODULE.personal_path_matches(data)
+    assert MODULE.normalized_personal_path_matches(data)
+
+
 def git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
