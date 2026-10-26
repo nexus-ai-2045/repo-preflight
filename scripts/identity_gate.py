@@ -1433,14 +1433,55 @@ def is_dependabot_author(pr: object) -> bool:
     return isinstance(pr, dict) and is_dependabot_user(pr.get("user"))
 
 
+_FULL_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def _pr_head_sha(pr: dict) -> str | None:
+    """イベントの pull_request.head.sha（完全な SHA のときだけ）。"""
+    head = pr.get("head")
+    sha = head.get("sha") if isinstance(head, dict) else None
+    if type(sha) is not str or not _FULL_OID.fullmatch(sha):
+        return None
+    return sha
+
+
+def _range_end_is_pr_head(repo, end: str, head_sha: str, run_git) -> bool:
+    """範囲の終わりが PR の枝先か、GitHub の仮マージ（第2親が枝先）か。
+
+    pull_request の CI は github.sha（仮マージコミット）を checkout するので、
+    HEAD は枝先そのものではなく「base の先端と枝先のマージ」になる。
+    """
+    line = run_git(repo, "rev-list", "--parents", "-n", "1", end, "--")
+    if not isinstance(line, str):
+        raise ValueError("identity_commit_list_invalid")
+    oids = line.removesuffix("\n").split(" ")
+    if any(not _FULL_OID.fullmatch(oid) for oid in oids):
+        raise ValueError("identity_commit_list_invalid")
+    if oids[0] == head_sha:
+        return True
+    return len(oids) == 3 and oids[2] == head_sha
+
+
 def _range_only_dependabot(pr: dict, repo, rng, run_git) -> bool:
-    """比較範囲のコミットが全部 Dependabot の作で、数が PR のコミット数と合うか。"""
-    if not repo or not rng or ".." not in rng:
+    """比較範囲のコミットが全部 Dependabot の作で、数が PR のコミット数と合うか。
+
+    数えるのは「基準..pull_request.head.sha」。範囲の終わり（CI では仮マージの HEAD）は、
+    枝先そのものか、第2親が枝先の仮マージのときだけ受け入れる。
+    """
+    if not repo or type(rng) is not str or ".." not in rng:
+        return False
+    base, _sep, end = rng.partition("..")
+    if not base or not end or end.startswith((".", "-")) or base.startswith("-"):
         return False
     count = pr.get("commits")
     if type(count) is not int or count < 1:
         return False
-    commits = list(raw_commits(repo, rng, run_git))
+    head_sha = _pr_head_sha(pr)
+    if head_sha is None:
+        return False
+    if not _range_end_is_pr_head(repo, end, head_sha, run_git):
+        return False
+    commits = list(raw_commits(repo, f"{base}..{head_sha}", run_git))
     if len(commits) != count:
         return False
     return all(
@@ -1455,7 +1496,8 @@ def dependabot_body_exempt(ev: object, repo=None, rng=None, *, git_fn=None) -> b
 
     全部そろうときだけ外す: PR の作者が Dependabot、このイベントを起こした sender も
     Dependabot、action が Dependabot の起こしうるもの、比較範囲（--range）のコミットが
-    全部 Dependabot の作でコミット数も合う。人や係が編集・コミット追加・再オープンを
+    全部 Dependabot の作でコミット数も合う（範囲は基準..pull_request.head.sha で数え、
+    HEAD が仮マージなら第2親が head.sha であることを確かめる）。人や係が編集・コミット追加・再オープンを
     すると sender か作者が Dependabot でなくなり、外れる。
     """
     if not isinstance(ev, dict):

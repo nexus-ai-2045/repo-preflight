@@ -137,7 +137,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 開発道具が本文へ付ける `Claude-Session` 行と、Claude Code のセッションURLも止めます。コミット本文は `public_attribution` と `identity_gate`、PR題名・本文・コメントは `identity_gate.py` のPRイベント検査、ファイルの中身は `secret_scan`（規則 `claude_session`）で数えます。値は出しません。
 
-PRイベント検査は、PR題名に日本語があること・本文に日本語の見出しがあること・英語だけの見出しが無いことも見ます。Dependabot だけが触った PR に限って、本文の2点（日本語の見出し・英語だけの見出し）を外します。外すのは次が全部そろうときだけです: イベントの `pull_request.user` と `sender` がどちらも login `dependabot[bot]`・type `Bot`・id `49699333` の3つとも一致する、action が `opened`・`synchronize`・`reopened`・`edited` のどれか、比較範囲（`基準..HEAD` の形）のコミットが全部 Dependabot の作で、数が `pull_request.commits` と合う。人や係が題名・本文を編集した（sender が人）、コミットを足した、比較範囲が無いなど、決められないときは外しません。PR題名の日本語は Dependabot の PR でも要ります。Markdown リンクの検査と、名義・実ホームパス・個人メール・鍵の形などの検査もそのまま効きます。外部の API は呼ばないので、前の実行で人が本文を編集し、そのあと Dependabot が自分でイベントを起こした場合は、そのイベントだけでは見分けられません。
+PRイベント検査は、PR題名に日本語があること・本文に日本語の見出しがあること・英語だけの見出しが無いことも見ます。Dependabot だけが触った PR に限って、本文の2点（日本語の見出し・英語だけの見出し）を外します。外すのは次が全部そろうときだけです: イベントの `pull_request.user` と `sender` がどちらも login `dependabot[bot]`・type `Bot`・id `49699333` の3つとも一致する、action が `opened`・`synchronize`・`reopened`・`edited` のどれか、比較範囲（`基準..HEAD` の形）の終わりが `pull_request.head.sha` そのものか、第2親が `pull_request.head.sha` の仮マージ（pull_request の CI が checkout する `github.sha`）で、`基準..pull_request.head.sha` のコミットが全部 Dependabot の作で、数が `pull_request.commits` と合う。人や係が題名・本文を編集した（sender が人）、コミットを足した、比較範囲が無い、`pull_request.head.sha` が無いか合わないなど、決められないときは外しません。PR題名の日本語は Dependabot の PR でも要ります。Markdown リンクの検査と、名義・実ホームパス・個人メール・鍵の形などの検査もそのまま効きます。外部の API は呼ばないので、前の実行で人が本文を編集し、そのあと Dependabot が自分でイベントを起こした場合は、そのイベントだけでは見分けられません。
 
 ## CIから使う
 

@@ -37,6 +37,7 @@ BOT_BODY = (
     "<blockquote>\n<h2>What's Changed</h2>\n</blockquote>\n</details>\n"
 )
 RANGE = "main..HEAD"
+AUTO = object()
 
 
 def _git(repo, *args, author, committer):
@@ -60,6 +61,15 @@ def _commit(repo, name, author, committer):
     _git(repo, "commit", "-q", "-m", "Bump " + name, author=author, committer=committer)
 
 
+def _rev(repo, spec):
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--verify", spec + "^{commit}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 @pytest.fixture
 def bot_repo(tmp_path):
     """main の上に Dependabot の作ったコミットが1つある枝。"""
@@ -81,8 +91,14 @@ def _event(
     sender=DEPENDABOT,
     action="opened",
     commits=1,
+    head_sha=AUTO,
 ):
+    """head_sha は既定で tmp_path/r の HEAD（枝先）。None なら head を入れない。"""
     pr = {"title": title, "body": body, "commits": commits}
+    if head_sha is AUTO:
+        head_sha = _rev(tmp_path / "r", "HEAD")
+    if head_sha is not None:
+        pr["head"] = {"sha": head_sha, "ref": "dependabot/github_actions/x"}
     if user is not None:
         pr["user"] = user
     ev = {"action": action, "pull_request": pr}
@@ -252,8 +268,121 @@ def test_dependabot_words_in_title_or_branch_do_not_exempt(tmp_path, bot_repo):
     """題名や枝名に dependabot とあっても、作者が人なら外さない。"""
     path = _event(tmp_path, title="依存を上げる (dependabot)", user=HUMAN, sender=HUMAN)
     ev = json.loads(open(path, encoding="utf-8").read())
-    ev["pull_request"]["head"] = {
-        "ref": "dependabot/github_actions/actions/checkout-4.2.0"
-    }
+    ev["pull_request"]["head"][
+        "ref"
+    ] = "dependabot/github_actions/actions/checkout-4.2.0"
     open(path, "w", encoding="utf-8").write(json.dumps(ev))
     _assert_body_japanese_red(_run(bot_repo, path))
+
+
+# --- CI の仮マージ（github.sha）を HEAD にした場合（品質係の指摘 2026-10-26）---
+# pull_request の CI は「base の先端と枝先の仮マージ」を checkout する。範囲は
+# 基準..pull_request.head.sha で数え、HEAD の第2親が head.sha であることを確かめる。
+
+
+def _test_merge(repo, *, advance_main=True, first="main", second="dep"):
+    """GitHub の仮マージを真似て、切り離した HEAD にマージコミットを作る。"""
+    if advance_main:
+        _git(repo, "checkout", "-q", "main", author=NEXUS_ID, committer=NEXUS_ID)
+        _commit(repo, "m.txt", NEXUS_ID, NEXUS_ID)
+    _git(repo, "checkout", "-q", "--detach", first, author=NEXUS_ID, committer=NEXUS_ID)
+    _git(
+        repo,
+        "merge",
+        "-q",
+        "--no-ff",
+        "-m",
+        "Merge into main",
+        second,
+        author=BOT_AUTHOR,
+        committer=WEB_COMMITTER,
+    )
+
+
+@pytest.mark.parametrize("advance_main", [True, False], ids=["main前進", "main同じ"])
+def test_ci_merge_head_is_exempt(tmp_path, bot_repo, advance_main):
+    """仮マージが HEAD でも、第2親が head.sha なら本物の Dependabot は外れる。"""
+    head = _rev(bot_repo, "dep")
+    _test_merge(bot_repo, advance_main=advance_main)
+    assert _rev(bot_repo, "HEAD^2") == head
+    proc = _run(bot_repo, _event(tmp_path, head_sha=head))
+    assert proc.returncode == 0 and '"status": "pass"' in proc.stdout, proc.stderr
+
+
+def test_ci_merge_head_with_old_base_is_exempt(tmp_path, bot_repo):
+    """基準が main の進む前の SHA（イベントの base.sha が古い）でも数は合う。"""
+    old_base = _rev(bot_repo, "main")
+    head = _rev(bot_repo, "dep")
+    _test_merge(bot_repo)
+    proc = _run(bot_repo, _event(tmp_path, head_sha=head), f"{old_base}..HEAD")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_ci_merge_head_still_checks_title(tmp_path, bot_repo):
+    head = _rev(bot_repo, "dep")
+    _test_merge(bot_repo)
+    proc = _run(bot_repo, _event(tmp_path, title=EN_TITLE, head_sha=head))
+    assert proc.returncode == 1 and "PR題名に日本語がない" in proc.stderr
+    assert "PR本文に日本語の見出しがない" not in proc.stderr
+
+
+def test_ci_merge_head_with_human_commit_is_red(tmp_path, bot_repo):
+    """枝に人のコミットがあれば、仮マージでも外れる。"""
+    _git(bot_repo, "checkout", "-q", "dep", author=NEXUS_ID, committer=NEXUS_ID)
+    _commit(bot_repo, "c.txt", NEXUS_ID, NEXUS_ID)
+    head = _rev(bot_repo, "dep")
+    _test_merge(bot_repo)
+    _assert_body_japanese_red(
+        _run(bot_repo, _event(tmp_path, commits=2, head_sha=head))
+    )
+
+
+def test_ci_merge_head_with_reversed_parents_is_red(tmp_path, bot_repo):
+    """head.sha が第1親（枝先に main を取り込んだ形）なら仮マージとみなさない。"""
+    head = _rev(bot_repo, "dep")
+    _git(bot_repo, "checkout", "-q", "main", author=NEXUS_ID, committer=NEXUS_ID)
+    _commit(bot_repo, "m.txt", NEXUS_ID, NEXUS_ID)
+    _test_merge(bot_repo, advance_main=False, first="dep", second="main")
+    assert _rev(bot_repo, "HEAD^1") == head
+    _assert_body_japanese_red(_run(bot_repo, _event(tmp_path, head_sha=head)))
+
+
+def test_commit_beyond_head_sha_is_red(tmp_path, bot_repo):
+    """HEAD が head.sha の先の別コミット（マージでない）なら外さない。"""
+    head = _rev(bot_repo, "dep")
+    _commit(bot_repo, "c.txt", NEXUS_ID, NEXUS_ID)
+    _assert_body_japanese_red(_run(bot_repo, _event(tmp_path, head_sha=head)))
+
+
+@pytest.mark.parametrize(
+    "head_sha",
+    [None, "", "0" * 40, "main", 12345, "SHORT"],
+    ids=["headなし", "空", "存在しないSHA", "SHAでない名前", "数値", "短い"],
+)
+def test_bad_head_sha_on_ci_merge_is_red(tmp_path, bot_repo, head_sha):
+    if head_sha == "SHORT":
+        head_sha = _rev(bot_repo, "dep")[:12]
+    _test_merge(bot_repo)
+    _assert_body_japanese_red(_run(bot_repo, _event(tmp_path, head_sha=head_sha)))
+
+
+def test_head_sha_of_other_branch_is_red(tmp_path, bot_repo):
+    """head.sha が main の SHA（第2親と違う）なら外さない。"""
+    _test_merge(bot_repo)
+    other = _rev(bot_repo, "main")
+    _assert_body_japanese_red(_run(bot_repo, _event(tmp_path, head_sha=other)))
+
+
+@pytest.mark.parametrize("rng", ["main...HEAD", "..HEAD", "main..", "main..-HEAD"])
+def test_odd_range_shapes_are_not_exempt(tmp_path, bot_repo, rng):
+    """三点・片側・オプションに見える範囲では外さない（赤か tool_error）。"""
+    proc = _run(bot_repo, _event(tmp_path), rng)
+    assert proc.returncode in (1, 2) and '"status": "pass"' not in proc.stdout
+
+
+def test_missing_base_is_tool_error(tmp_path, bot_repo):
+    """存在しない基準の範囲は従来どおり rc=2。"""
+    head = _rev(bot_repo, "dep")
+    _test_merge(bot_repo)
+    proc = _run(bot_repo, _event(tmp_path, head_sha=head), "0" * 40 + "..HEAD")
+    assert proc.returncode == 2 and "tool_error" in proc.stdout
