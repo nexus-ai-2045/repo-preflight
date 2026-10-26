@@ -31,6 +31,14 @@ release準備では `--release` を省略しません。`readme_release_design` 
 
 浅い clone では履歴個人pathが無く `pass` になり得ます。完全履歴では `personal_path_scan` で `blocked` になり得ますが、それは別件です。整合性の `tool_error`（`change_sensitive_scope_unavailable`）にはしない、というのがこの Smoke の契約です。
 
+## 手元の検査の範囲
+
+- 途中の作業（commit・push の前など）は `python scripts/local_check.py --mode quick` を使う。変えたファイルに関係する試験・black・文書検査だけを回す。関係する試験が決まらない変更（試験の共有部品・依存・設定・`.github` など）は、安全側で全部の試験に戻す。quick は CI の代わりではない。
+- PR を出す前とマージ前は `python scripts/local_check.py`（既定 `--mode full`）で、CI が回す試験と検査のうち手元で回せるものを全部回す。PR 本文の検査（`--pr-event`）・`base_guard`・全 ref の走査は GitHub 側でしか回らないので、full でも回らない。full が緑でも CI の結果は別に確かめる。
+- 名義と個人情報の検査（`identity_gate --public`）は、どのモードでも、比較元から HEAD までの全差分、ステージした差分、まだステージしていない変更と未追跡のファイル（作業ツリー）の全部を見る。作業ツリーは一時の索引に載せて見るので、本物のステージの状態は変わらない。GitHub の必須チェックと CI の中身は変えない。
+- 画面には合否・件数・失敗した項目名だけを出し、全文のログは `.git/local-check/` に落とす。
+- release 準備の README 更新の検査（`--intent release` / `--release`）は、このモードとは別に、今までどおり省略しない。
+
 ## リリース
 
 1. 版上げの PR で `pyproject.toml` の version、`CHANGELOG.md` 先頭の `## X.Y.Z - YYYY-MM-DD`（日付は JST）、リリースノート `docs/releases/vX.Y.Z.md`（1行目が `# タイトル`）をそろえて merge する。
