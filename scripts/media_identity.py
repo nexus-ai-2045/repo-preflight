@@ -599,9 +599,14 @@ class _PDFSource:
         # Every noncompressed byte still receives literal/path checking, even
         # for an uncompressed binary font. PDF syntax is applicable outside
         # streams and to decoded text-content streams, not to binary glyph data.
-        raw = bytearray(self.data)
-        for start, end in compressed_ranges:
-            raw[start:end] = b" " * (end - start)
+        # Padding is synthetic, not source text. One separator preserves the
+        # boundary without charging every compressed byte to each text codec.
+        raw, cursor = bytearray(), 0
+        for start, end in sorted(compressed_ranges):
+            raw.extend(self.data[cursor:start])
+            raw.extend(b" ")
+            cursor = end
+        raw.extend(self.data[cursor:])
         _pdf_text_bytes(bytes(raw), output)
         syntax = bytearray(self.data)
         for start, end in all_ranges:
@@ -854,6 +859,54 @@ def _pdf_contents(source, output):
         logger.removeHandler(handler)
 
 
+def _pdf_validate_stream_encoding(stream, filters):
+    """Bind each admitted filter to all original bytes before pypdf decodes it."""
+    data = stream._data
+    if filters == ["/ASCII85Decode", "/FlateDecode"]:
+        # PDF ASCII85 uses a mandatory terminator and no PostScript opener.
+        # Only PDF whitespace may be ignored; trailing bytes cannot disappear.
+        compact = data.translate(None, b"\x00\t\n\x0c\r ")
+        if not compact.endswith(b"~>") or compact.startswith(b"<~"):
+            raise MediaError("unsupported_region")
+        bound = group_length = 0
+        for index in range(len(compact) - 2):
+            value = compact[index]
+            if value == 122:  # z abbreviates one complete zero-valued group.
+                if group_length:
+                    raise MediaError("unsupported_region")
+                bound += 4
+            elif 33 <= value <= 117:
+                group_length += 1
+                if group_length == 5:
+                    bound += 4
+                    group_length = 0
+            else:
+                raise MediaError("unsupported_region")
+            if bound > DATA_LIMIT:
+                raise MediaError("decoded_limit")
+        if group_length == 1:
+            raise MediaError("unsupported_region")
+        bound += max(0, group_length - 1)
+        if bound > DATA_LIMIT:
+            raise MediaError("decoded_limit")
+        try:
+            data = base64.a85decode(compact, adobe=True, ignorechars=b"")
+        except ValueError as exc:
+            raise MediaError("unsupported_region") from exc
+        filters = ["/FlateDecode"]
+    if filters == ["/FlateDecode"]:
+        import zlib
+
+        decoder = zlib.decompressobj()
+        expanded = decoder.decompress(data, DATA_LIMIT + 1)
+        if len(expanded) > DATA_LIMIT or decoder.unconsumed_tail:
+            raise MediaError("decoded_limit")
+        if not decoder.eof or decoder.unused_data:
+            raise MediaError("unsupported_region")
+    elif filters not in ([None], ["/DCTDecode"]):
+        raise MediaError("unsupported_stream")
+
+
 def _pdf_context(reader, output, budget):
     from pypdf.generic import (
         ArrayObject,
@@ -1063,19 +1116,7 @@ def _pdf_context(reader, output, budget):
                 raise MediaError("unsupported_image")
         filters = stream.get("/Filter")
         filters = filters if isinstance(filters, list) else [filters]
-        if filters == ["/FlateDecode"]:
-            import zlib
-
-            decoder = zlib.decompressobj()
-            expanded = decoder.decompress(stream._data, DATA_LIMIT + 1)
-            if len(expanded) > DATA_LIMIT or decoder.unconsumed_tail:
-                raise MediaError("decoded_limit")
-            if not decoder.eof or decoder.unused_data:
-                raise MediaError("unsupported_region")
-        elif filters not in ([None], ["/DCTDecode"]):
-            # No source-byte exemption for chains whose decoder consumption
-            # cannot be bound. This release supports only the proven subset.
-            raise MediaError("unsupported_stream")
+        _pdf_validate_stream_encoding(stream, filters)
         data = stream.get_data()
         budget["decoded"] += len(data)
         if budget["decoded"] > DATA_LIMIT:

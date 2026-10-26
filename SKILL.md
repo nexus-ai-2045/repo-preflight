@@ -35,7 +35,7 @@ public化は到達点のひとつであり、唯一の終点ではない。priva
 
 ```bash
 # 例: 既存private repoで、今回のPR差分を検査する
-python scripts/readiness_scan.py --repo <path> --intent open_pr --base-ref origin/<base> --human
+python scripts/readiness_scan.py --repo <path> --intent open_pr --base-ref origin/<base> --private-submission --human
 
 # 例: リポジトリ新規作成の直前 (path 未作成でも可)
 python scripts/readiness_scan.py --intent create_repo --human
@@ -49,6 +49,12 @@ python scripts/readiness_scan.py --repo <path> --intent configure_settings --git
 
 stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stderr に番号付きの質問文も出る。
 
+既存private GitHub repoへの通常送信は `--private-submission` と `--base-ref` を併用する。
+liveのprivate状態・実push先・比較元SHAを照合し、未送信の作業fileと既存の不変本文を除外して、
+途中で削除した情報と改名による形式変更も含めcommit済みの送信内容を検査する。
+公開・release・public repoにはこの選択を使わない。確認不能なら停止し、全体監査済みとは表示しない。
+
+`--private-submission` を付けない `--base-ref` は、private identityの全在庫検査を維持する従来のmode。
 `--base-ref` は `push` / `open_pr` / `merge` 専用。指定したbaseからHEADまでの変更fileとcommit範囲を検査し、
 既存repoのbaseline問題と今回差分を分離する。baseはHEADの祖先でなければfail-closed。
 個人pathは各commitと現在worktreeの追加行だけを検査し、変更file内の既存行は再検出しない。

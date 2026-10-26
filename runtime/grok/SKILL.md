@@ -21,7 +21,7 @@ This file is a runtime adapter. Canonical steps live in the clone root `SKILL.md
 
 ```bash
 # existing target repo
-python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --base-ref origin/<BASE> --human
+python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent open_pr --base-ref origin/<BASE> --private-submission --human
 
 # before creating a repo: omit --repo
 python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
@@ -31,8 +31,11 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
+For normal updates to an existing private GitHub repo, use `--private-submission` with `--base-ref`.
+The canonical skill defines the live private/base/push checks and committed-content scope; unsent worktree content is excluded.
+Without `--private-submission`, the private identity gate retains its full-inventory behavior.
 Use `--base-ref` only for target-diff checks before `push` / `open_pr` / `merge` in an existing private repo
-(JSON `scan_scope.mode` is `target_diff`; there is no `--target-diff` CLI flag).
+(JSON `scan_scope.mode` is `private_committed_submission` with the private flag, otherwise `target_diff`; there is no `--target-diff` CLI flag).
 The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` / `release` / `configure_settings`.
 `configure_settings` is GET/compare/preview only. Do not change GitHub settings from this skill.
 
