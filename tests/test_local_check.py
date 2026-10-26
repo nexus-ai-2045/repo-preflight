@@ -305,6 +305,7 @@ def test_worktree_index_sees_same_size_rewrite_in_racy_window(repo):
         ).stdout.split()
     assert names == ["scripts/alpha.py"]
 
+
 def _gate_on_worktree(repo, tmp_path):
     policy = tmp_path / "policy.json"
     policy.write_text(
