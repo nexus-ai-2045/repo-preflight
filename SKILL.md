@@ -130,6 +130,8 @@ tagはHEADの祖先に限り、push / PR / merge用の `--base-ref` はoriginの
 `historical_identity_audit`の件数として残す。比較元はHEADの祖先に限る。
 secret・個人pathの全履歴検査は狭めない。publishの全履歴名義判定にも適用しない。
 scannerはREADMEを自動編集しない。agentが既存READMEへ必要な説明を更新し、再検査する。
+構成・流れの mermaid 区画（`<!-- diagram:start -->` / `<!-- diagram:end -->`）があるときは
+`python scripts/readme_diagram.py --repo . --apply` で印の間だけを埋めてから再検査する（印が無ければ触らない）。
 
 1. repo root、対象成果、owner、non-goals、成功条件を確定する。曖昧さが結果を変えない限り質問せず進める。
 2. ローカル実装中は read-only scan で現状把握してよい:

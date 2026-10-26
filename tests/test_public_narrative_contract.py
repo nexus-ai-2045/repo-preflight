@@ -39,6 +39,7 @@ SCRIPT_OWNERS = (
     "run_preflight.py",
     "consistency_gate.py",
     "readme_release_gate.py",
+    "readme_diagram.py",
     "install_runtime_skills.py",
     "runtime_smoke.py",
     "dialogue_gate.py",

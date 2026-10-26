@@ -40,6 +40,14 @@
       "requires_any": ["README.md", "tests/test_readme_release_gate.py"]
     },
     {
+      "change": ["scripts/readme_diagram.py"],
+      "requires_any": [
+        "docs/examples/README-with-diagram.md",
+        "tests/test_readme_diagram.py",
+        "references/artifacts.md"
+      ]
+    },
+    {
       "change": ["scripts/consistency_gate.py", "schemas/repository-consistency.schema.json", ".github/workflows/documentation-contract.yml"],
       "requires_any": ["docs/repository-consistency-gate.md", "docs/adr/**", "tests/test_consistency_gate.py"],
       "allow_github_action_ref_updates": true
