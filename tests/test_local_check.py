@@ -208,3 +208,9 @@ def test_unknown_non_python_file_falls_back_to_full(repo):
     assert "pytest（全部・安全側）" in _names(
         local_check.build_steps(repo, "quick", "base")
     )
+
+
+def test_non_ascii_and_space_filenames_are_kept(repo):
+    (repo / "tests" / "test_回帰.py").write_text("\n", encoding="utf-8")
+    (repo / "b c.txt").write_text("\n", encoding="utf-8")
+    assert local_check.changed_files(repo, "base") == ["b c.txt", "tests/test_回帰.py"]

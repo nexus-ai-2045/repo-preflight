@@ -50,6 +50,7 @@ def changed_files(repo: Path, base: str) -> list[str]:
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
     names = set(git(repo, "diff", "--name-only", merge_base).split())
     names |= set(git(repo, "ls-files", "--others", "--exclude-standard").split())
+    names.discard("")
     return sorted(names)
 
 
