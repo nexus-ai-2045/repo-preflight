@@ -19,7 +19,7 @@
 ### その他の変更
 
 - 手元の検査の入口 `scripts/local_check.py` を追加。既定の full は、CI が回す試験と検査のうち手元で回せるものを全部回す（PR 本文の検査・base_guard・全 ref の走査は CI でだけ回る）。途中の作業用に、差分に関係する検査だけを回す quick を用意（CI の代わりではない）。個人情報の検査はどのモードでも、コミット済みの全差分・ステージ・未ステージ・未追跡の全部を見る。要約だけを画面に出し、全文はログファイルへ落とす。
-- リリース準備の README 更新に、構成・流れを mermaid で置く図区画（`<!-- diagram:start -->` / `<!-- diagram:end -->`）を追加。印の間だけを `scripts/readme_diagram.py` が埋め、印が無い README は触らない。印は行全体がそれのときだけ数え（本文中の言及は数えない）、印の外は改行の形も含めて元のまま残す。図の文字列にも identity_gate（実ホームパス・個人メール）を掛け、公開／非公開で挙動を分けず、繰り返し実行しても同じ結果になる。例は `docs/examples/README-with-diagram.md`。
+- リリース準備の README 更新に、構成・流れを mermaid で置く図区画（`<!-- diagram:start -->` / `<!-- diagram:end -->`）を追加。印の間だけを `scripts/readme_diagram.py` が埋め、印が無い README は触らない。印は行全体がそれのときだけ数え（本文中の言及と、``` / ~~~ のコードブロックの中の例は数えない）、印の外は改行の形も含めて元のまま残す。図の文字列にも identity_gate（実ホームパス・個人メール）を掛け、公開／非公開で挙動を分けず、繰り返し実行しても同じ結果になる。例は `docs/examples/README-with-diagram.md`。
 
 - PR 本文の日本語ひな形（変更点・なぜ・確かめたこと・影響範囲）の写し元を `templates/github/pull_request_template.md` に追加。新しいリポへ写す元で、このリポ自身は既存の `.github/PULL_REQUEST_TEMPLATE.md` を使い続ける。
 - 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポ note-publishing-suite の README 用の画面 GIF を2件足した（品質係が全コマを目視して OK、2026-10-25）。SHA256 で固定し、そのパスでその中身のときだけ外す。試験で他リポの行に GIF を許し、承認の記録として決まった書き方だけを通す。

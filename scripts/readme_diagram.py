@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,17 +68,52 @@ def check_diagram_identity(text: str) -> list[str]:
     return list(gate.shape_findings(text))
 
 
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _fence_open(content: str) -> tuple[str, int] | None:
+    """コードブロックの開きなら (文字, 長さ)。CommonMark の fenced code に合わせる。"""
+    match = _FENCE.match(content)
+    if match is None:
+        return None
+    fence, info = match.group(1), match.group(2)
+    if fence[0] == "`" and "`" in info:
+        return None
+    return fence[0], len(fence)
+
+
+def _fence_closes(content: str, char: str, length: int) -> bool:
+    match = _FENCE.match(content)
+    if match is None:
+        return False
+    fence, rest = match.group(1), match.group(2)
+    return fence[0] == char and len(fence) >= length and rest.strip() == ""
+
+
 def _marker_lines(text: str) -> tuple[list[int], list[int]]:
     """行全体が印のときだけ数える（本文中の `印` の言及は数えない）。
 
-    返すのは各印の行の先頭と末尾（改行を含まない）の位置。
+    ``` や ~~~ のコードブロックの中にある印（書き方の例）も数えない。
+    閉じていないコードブロックは文書の終わりまで続くものとして扱う。
+    返すのは start 印の行の次の位置と、end 印の行の先頭の位置。
     """
     starts: list[int] = []
     ends: list[int] = []
     offset = 0
+    fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
         content = line.rstrip("\r\n")
         stripped = content.strip()
+        if fence is not None:
+            if _fence_closes(content, *fence):
+                fence = None
+            offset += len(line)
+            continue
+        opened = _fence_open(content)
+        if opened is not None:
+            fence = opened
+            offset += len(line)
+            continue
         if stripped == START_MARKER:
             starts.append(offset + len(line))
         elif stripped == END_MARKER:
