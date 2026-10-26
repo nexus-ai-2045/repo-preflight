@@ -1,6 +1,7 @@
 <!--
 PR 本文のひな形。見出しは日本語のまま使う。
-新しいリポでは docs/pull_request_template.md に写す（.github/ に置くと base-guard が赤になるリポがあるため）。
+新しいリポへ写す元。写し先は docs/pull_request_template.md（.github/ に置くと base-guard が赤になるリポがあるため）。
+GitHub は .github/ → ルート → docs/ の順に1つだけ使う。写す前に .github/ やルートにひな形が無いか確かめ、あれば写さない（二重に持たない）。
 本文に個人名・個人アカウント・メール・手元の絶対パス・トークンを書かない。
 -->
 
