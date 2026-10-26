@@ -1371,23 +1371,54 @@ def _rendered_text(source: str) -> str:
     return _HTML_COMMENT.sub("", "\n".join(visible))
 
 
-def japanese_findings(title: str, body: str) -> list[str]:
-    """題名に日本語、本文に日本語の見出し、英語だけの見出しなし。見出しの値は返さない。"""
+def japanese_findings(
+    title: str, body: str, *, language_exempt: bool = False
+) -> list[str]:
+    """題名に日本語、本文に日本語の見出し、英語だけの見出しなし。見出しの値は返さない。
+
+    language_exempt は Dependabot の作った PR だけ（is_dependabot_author）。
+    日本語かどうかの3つだけを外し、Markdown リンクの検査は残す。
+    """
     rendered_body, visible_title = _rendered_text(body), _rendered_text(title)
     atx = _ATX.findall(rendered_body)
     headings = atx + _SETEXT.findall(rendered_body)
     errors = []
     if _MD_LINK.search(visible_title):
         errors.append("PR題名にMarkdownリンクがある")
-    if not _JAPANESE.search(visible_title):
+    if not language_exempt and not _JAPANESE.search(visible_title):
         errors.append("PR題名に日本語がない")
     if any(_MD_LINK.search(h) for h in headings):
         errors.append("見出しにMarkdownリンクがある")
+    if language_exempt:
+        return errors
     if not any(_JAPANESE.search(h) for h in atx):
         errors.append("PR本文に日本語の見出しがない")
     if any(re.search(r"[A-Za-z]", h) and not _JAPANESE.search(h) for h in headings):
         errors.append("英語だけの見出しがある")
     return errors
+
+
+# GitHub が PR の作者として記録する Dependabot のボット利用者。
+# login は人が取れない「[bot]」付き、type は Bot、id は GitHub 全体で固定の番号。
+# 3つ全部が合うときだけ Dependabot とみなす（login だけ・題名や枝名だけでは外さない）。
+DEPENDABOT_LOGIN = "dependabot[bot]"
+DEPENDABOT_USER_ID = 49699333
+
+
+def is_dependabot_author(pr: object) -> bool:
+    """イベントの pull_request.user が Dependabot のボット作者かどうか。"""
+    if not isinstance(pr, dict):
+        return False
+    user = pr.get("user")
+    if not isinstance(user, dict):
+        return False
+    user_id = user.get("id")
+    return (
+        user.get("login") == DEPENDABOT_LOGIN
+        and user.get("type") == "Bot"
+        and type(user_id) is int
+        and user_id == DEPENDABOT_USER_ID
+    )
 
 
 def _pr_japanese(path: str) -> list[str]:
@@ -1397,7 +1428,11 @@ def _pr_japanese(path: str) -> list[str]:
         return []
     return [
         f"PR本文: {e}"
-        for e in japanese_findings(pr.get("title") or "", pr.get("body") or "")
+        for e in japanese_findings(
+            pr.get("title") or "",
+            pr.get("body") or "",
+            language_exempt=is_dependabot_author(pr),
+        )
     ]
 
 

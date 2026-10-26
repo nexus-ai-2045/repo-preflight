@@ -137,6 +137,8 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 開発道具が本文へ付ける `Claude-Session` 行と、Claude Code のセッションURLも止めます。コミット本文は `public_attribution` と `identity_gate`、PR題名・本文・コメントは `identity_gate.py` のPRイベント検査、ファイルの中身は `secret_scan`（規則 `claude_session`）で数えます。値は出しません。
 
+PRイベント検査は、PR題名に日本語があること・本文に日本語の見出しがあること・英語だけの見出しが無いことも見ます。作者が Dependabot の PR（イベントの `pull_request.user` が login `dependabot[bot]`・type `Bot`・id `49699333` の3つとも一致）に限って、この日本語の3点だけを外します。題名や枝名、login だけでは外しません。Markdown リンクの検査と、名義・実ホームパス・個人メール・鍵の形などの検査は Dependabot の PR でもそのまま効きます。
+
 ## CIから使う
 
 `--repo` だけを渡すと、質問をせずに検査結果だけを返します。CIから使うときはこの形です。

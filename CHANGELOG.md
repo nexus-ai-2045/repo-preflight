@@ -18,6 +18,7 @@
 
 ### その他の変更
 
+- PRイベント検査の日本語の3点（題名に日本語・本文に日本語の見出し・英語だけの見出しなし）を、作者が Dependabot の PR だけ外した（人の決定 2026-10-26）。作者はイベントの `pull_request.user` の login・type・id の3つが全部合うときだけ Dependabot とみなす（login だけ・題名や枝名では外さない）。Markdown リンクの検査と、名義・実ホームパス・個人メール・鍵の形などのほかの検査は外さない。試験に、Dependabot は通る・ほかの検査は赤・人の PR は従来どおり日本語が要る・login を似せただけや別ボットでは外さない、を足した。
 - 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポ note-publishing-suite の README 用の画面 GIF を2件足した（品質係が全コマを目視して OK、2026-10-25）。SHA256 で固定し、そのパスでその中身のときだけ外す。試験で他リポの行に GIF を許し、承認の記録として決まった書き方だけを通す。
 - 旧履歴 `719dc3a` の本人採用済みADR-0012を再構築後のmain `ad1531f` へ移植。検証済みPNG/JPEGのcoding・pixel・CRC領域とGit相対名を本文から区別し、metadataの全UTF-16 alignment・strict復号・不正入力の停止を維持する。現行PSD/GIF対応と公開名義policyは変更しない。
 
