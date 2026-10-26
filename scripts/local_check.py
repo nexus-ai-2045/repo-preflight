@@ -48,8 +48,10 @@ def git(repo: Path, *args: str) -> str:
 def changed_files(repo: Path, base: str) -> list[str]:
     """比較元との分岐点から作業ツリーまで（コミット済み・ステージ・未ステージ・未追跡）。"""
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
-    names = set(git(repo, "diff", "--name-only", merge_base).split())
-    names |= set(git(repo, "ls-files", "--others", "--exclude-standard").split())
+    names = set(git(repo, "diff", "--name-only", "-z", merge_base).split("\0"))
+    names |= set(
+        git(repo, "ls-files", "-z", "--others", "--exclude-standard").split("\0")
+    )
     names.discard("")
     return sorted(names)
 
