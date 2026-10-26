@@ -1,5 +1,6 @@
 """scripts/local_check.py：途中の作業は差分に絞り、個人情報ゲートはどのモードでも全差分で回す。"""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,9 +10,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import local_check  # noqa: E402
 
+# 呼び出し元の GIT_DIR などを引き継ぐと一時リポの外を書き換えるので外す
+_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@pytest.fixture(autouse=True)
+def _isolated_git_env(monkeypatch):
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+
 
 def _git(repo, *args):
-    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, env=_ENV)
 
 
 @pytest.fixture
