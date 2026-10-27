@@ -56,7 +56,7 @@
       "actor": "local repo-preflight execution",
       "event_time": "2026-10-27T13:22:42.921304+00:00",
       "observed_at": "2026-10-27T13:22:42.921304+00:00",
-      "claim_scope": "16,097,366/19,438,616 byteの2動画がoversize未検査。追加した全byte pattern検査とmetadata検査は一致0件だったがstrict passへ変更しなかった。"
+      "claim_scope": "一括予算を超える動画がoversize未検査となった。補足検査と既存strict判定を分け、strict passへ変更しなかった。"
     }
   ],
   "patterns": [

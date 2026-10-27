@@ -14,6 +14,7 @@ DATA_LIMIT = 64_000_000
 SAMPLE_SIZE = 64 * 1024
 TEXT_LIMIT = 2_000_000
 NODE_LIMIT = 100_000
+EXIF_USER_COMMENT_TAG = 37510
 
 
 class MediaMetadataError(ValueError):
@@ -24,6 +25,18 @@ def _fail(code: str) -> None:
     raise MediaMetadataError(code)
 
 
+def _decode_user_comment(value: bytes):
+    if value.startswith(b"ASCII\x00\x00\x00"):
+        return value[8:].rstrip(b"\x00").decode("ascii", "replace")
+    if value.startswith(b"UNICODE\x00"):
+        payload = value[8:].rstrip(b"\x00")
+        encoding = (
+            "utf-16" if payload.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-16-be"
+        )
+        return payload.decode(encoding, "replace")
+    return None
+
+
 def _flatten(value, *, depth=0, count=None):
     if count is None:
         count = [0]
@@ -31,6 +44,7 @@ def _flatten(value, *, depth=0, count=None):
     if count[0] > NODE_LIMIT or depth > 32:
         _fail("metadata_limit")
     if isinstance(value, bytes):
+        yield value
         yield b"base64:" + base64.b64encode(value)
     elif isinstance(value, str):
         yield value.encode("utf-8", "replace")
@@ -40,6 +54,14 @@ def _flatten(value, *, depth=0, count=None):
         for key, item in value.items():
             yield from _flatten(str(key), depth=depth + 1, count=count)
             yield from _flatten(item, depth=depth + 1, count=count)
+            if key in (
+                EXIF_USER_COMMENT_TAG,
+                str(EXIF_USER_COMMENT_TAG),
+                "UserComment",
+            ) and isinstance(item, bytes):
+                decoded = _decode_user_comment(item)
+                if decoded is not None:
+                    yield from _flatten(decoded, depth=depth + 1, count=count)
     elif isinstance(value, (list, tuple)):
         for item in value:
             yield from _flatten(item, depth=depth + 1, count=count)

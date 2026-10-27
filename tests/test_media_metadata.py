@@ -38,6 +38,43 @@ def video_probe_json():
     return b'{"format":{},"streams":[{"codec_type":"video","disposition":{"attached_pic":0}}],"chapters":[]}'
 
 
+def jpeg_with_middle_exif_user_comment(user_comment):
+    image = Image.new("RGB", (2, 2), "white")
+    base_output = io.BytesIO()
+    image.save(base_output, format="JPEG")
+    base = base_output.getvalue()
+
+    profile_part_size = 32_750
+    profile = bytearray(profile_part_size * 6)
+    profile[:4] = len(profile).to_bytes(4, "big")
+    profile[8:12] = b"\x04\x30\x00\x00"
+    profile[12:16] = b"mntr"
+    profile[16:20] = b"RGB "
+    profile[20:24] = b"XYZ "
+    profile[36:40] = b"acsp"
+    profile[128:132] = b"\x00\x00\x00\x00"
+
+    def app2(sequence):
+        start = (sequence - 1) * profile_part_size
+        data = (
+            b"ICC_PROFILE\x00"
+            + bytes((sequence, 6))
+            + bytes(profile[start : start + profile_part_size])
+        )
+        return b"\xff\xe2" + (len(data) + 2).to_bytes(2, "big") + data
+
+    exif = Image.Exif()
+    exif[reader.EXIF_USER_COMMENT_TAG] = user_comment
+    exif_data = exif.tobytes()
+    app1 = b"\xff\xe1" + (len(exif_data) + 2).to_bytes(2, "big") + exif_data
+    middle = (
+        b"".join(app2(i) for i in range(1, 4))
+        + app1
+        + b"".join(app2(i) for i in range(4, 7))
+    )
+    return base[:2] + middle + base[2:]
+
+
 def test_png_hash_metadata_and_lazy_pixel_access(tmp_path, monkeypatch):
     path = tmp_path / "sample.png"
     raw = png_bytes()
@@ -306,3 +343,31 @@ def test_jpeg_metadata_is_read_without_loading_pixels(tmp_path, monkeypatch):
     result = reader.inspect_media_metadata(path, ())
     assert result["source_sha256"] == hashlib.sha256(raw).hexdigest()
     assert result["kind"] == "image"
+
+
+@pytest.mark.parametrize(
+    "user_comment",
+    [
+        b"ASCII\x00\x00\x00dummy-secret-ascii",
+        b"UNICODE\x00" + "dummy-secret-unicode".encode("utf-16-be"),
+    ],
+)
+def test_jpeg_middle_exif_user_comment_is_decoded_without_pixel_load(
+    tmp_path, monkeypatch, user_comment
+):
+    marker = b"dummy-secret"
+    raw = jpeg_with_middle_exif_user_comment(user_comment)
+    exif_offset = raw.index(b"Exif\x00\x00")
+    assert exif_offset > reader.SAMPLE_SIZE
+    assert exif_offset < len(raw) - reader.SAMPLE_SIZE
+    path = tmp_path / "middle-comment.jpg"
+    path.write_bytes(raw)
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("unexpected pixel decode")
+    )
+
+    result = reader.inspect_media_metadata(path, ())
+    views = b"\n".join(result["metadata_views"])
+    assert marker in views
+    assert marker not in result["head_sample"]
+    assert marker not in result["tail_sample"]
