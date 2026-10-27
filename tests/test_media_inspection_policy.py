@@ -124,3 +124,35 @@ def test_changed_git_object_bytes_are_not_accepted(submission, monkeypatch):
     monkeypatch.setattr(MODULE, "run_subprocess", corrupt)
     result = run_scan(repo, base, media_inspection="metadata")
     assert result["checks"]["private_identity_scan"]["status"] == "tool_error"
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
+@pytest.mark.parametrize("alignment", [0, 1])
+def test_raw_metadata_identity_is_decoded_before_joining(
+    submission, encoding, alignment, monkeypatch
+):
+    repo, base, _, _ = submission
+    marker = "synthetic-private-identity-marker"
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add(b"vpAg", b"q" * alignment + marker.encode(encoding))
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    raw = output.getvalue()
+    assert marker.encode(encoding) not in raw[:65536] + raw[-65536:]
+    (repo / "encoded.png").write_bytes(raw)
+    git(repo, "add", "encoded.png")
+    git(repo, "commit", "-m", "synthetic encoded metadata")
+    result = run_scan(repo, base, media_inspection="metadata")
+    assert result["status"] == "blocked"
+    assert result["checks"]["private_identity_scan"]["status"] == "fail"
+    assert marker not in json.dumps(result)
+
+
+def test_expanded_metadata_views_are_bounded(submission, monkeypatch):
+    repo, base, _, _ = submission
+    add_png(repo)
+    monkeypatch.setattr(MODULE, "_MEDIA_METADATA_DECODED_BUDGET_BYTES", 64)
+    result = run_scan(repo, base, media_inspection="metadata")
+    assert result["checks"]["private_identity_scan"]["status"] == "tool_error"

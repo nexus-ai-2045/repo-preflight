@@ -10,7 +10,7 @@
 
 既存の`strict`を既定として維持し、`--media-inspection metadata`を`--private-submission`と同時に明示したときだけ使う。対象はliveで確認した非公開originへ送るcommit済みのMP4・PNG・JPEG。公開・release、未知のprivate状態、例外ファイルとの併用には使わない。
 
-Git objectを固定OIDから一時ファイルへ取り出し、Git object hash、全ファイルのSHA-256、サイズを照合する。形式、既知metadata、先頭・末尾各64 KiBを検査する。ffprobeとPillowの既存ライブラリを使い、元の画素・映像・音声は変更しない。1媒体64,000,000 byte、metadata 2,000,000 byte、時間・出力量・件数を制限する。
+Git objectを固定OIDから一時ファイルへ取り出し、Git object hash、全ファイルのSHA-256、サイズを照合する。形式、既知metadata、先頭・末尾各64 KiBを検査する。ffprobeとPillowの既存ライブラリを使い、元の画素・映像・音声は変更しない。1媒体64,000,000 byte、metadata 2,000,000 byte、文字コード別の展開viewは合計16,000,000 byte、時間・出力量・件数を制限する。
 
 結果には`metadata_private_only`、媒体の全payload未検査、内容の個人情報判定が未実証であること、対象SHAと検査器SHAを残す。`pass`は明示した検査範囲を通過した意味で、映像の文字や音声の意味、steganography、malware、権利まで確認した意味ではない。ローカルの合格をGitHub CI成功へ読み替えない。CIから使う場合も同じ関数・対象revisionを確認する。
 

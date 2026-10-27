@@ -1556,6 +1556,7 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
 # 通常objectのbatch予算。超過は原則として未検査に残す。
 # 同じbyteを既にCAFF形式の上限内で検証したblobだけ、単独batchで読み直す。
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
+_MEDIA_METADATA_DECODED_BUDGET_BYTES = 16_000_000
 
 
 def _metadata_media_names(names) -> bool:
@@ -1620,10 +1621,31 @@ def _inspect_history_media(repo, object_id, size, names, identity):
             raise RuntimeError("media_metadata_source_changed")
     if source.read_bytes() != source_bytes or media_source.read_bytes() != media_bytes:
         raise RuntimeError("media_metadata_provider_changed")
-    views = [b"\n".join(result["metadata_views"])]
-    views.extend(
-        b"media sample\n" + result[key] for key in ("head_sample", "tail_sample")
-    )
+    # Decode each raw item before joining: byte order/alignment must not depend
+    # on adjacent binary fields or the single-byte separator.
+    decoded_views = []
+    seen_views = set()
+    decoded_size = 0
+    raw_views = [
+        *result["metadata_views"],
+        result["head_sample"],
+        result["tail_sample"],
+    ]
+    for raw in raw_views:
+        candidates = [("utf-8", 0), ("latin-1", 0)]
+        candidates.extend(
+            (codec, offset) for codec in ("utf-16-le", "utf-16-be") for offset in (0, 1)
+        )
+        for codec, offset in candidates:
+            value = raw[offset:].decode(codec, "replace").encode("utf-8")
+            if value in seen_views:
+                continue
+            decoded_size += len(value) + 1
+            if decoded_size > _MEDIA_METADATA_DECODED_BUDGET_BYTES:
+                raise RuntimeError("media_metadata_decoded_limit")
+            seen_views.add(value)
+            decoded_views.append(value)
+    views = [b"\n".join(decoded_views)]
     secret_found = path_found = False
     for view in views:
         secret_found |= bool(secret_matches(view))
