@@ -592,6 +592,7 @@ def test_png_ancillary_metadata_is_preserved_independently_of_info(tmp_path):
 def test_xmp_character_references_are_decoded_without_pixel_load(
     tmp_path, monkeypatch, kind
 ):
+    monkeypatch.setattr(reader.shutil, "which", lambda _name: "/ffprobe")
     marker = "dummy-secret-xmp"
     entities = "".join("&#" + str(ord(c)) + ";" for c in marker)
     xml = (
@@ -663,6 +664,7 @@ def test_xmp_packets_stop_processing_at_aggregate_metadata_limit(
         output.text("y" * 6000)
 
     monkeypatch.setattr(reader, "TEXT_LIMIT", 10000)
+    monkeypatch.setattr(reader.shutil, "which", lambda _name: "/ffprobe")
     with pytest.raises(reader.MediaMetadataError, match="^metadata_limit$"):
         reader.inspect_media_metadata(
             path,
