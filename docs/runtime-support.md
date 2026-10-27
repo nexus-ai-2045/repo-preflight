@@ -308,3 +308,14 @@ Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3
 媒体依存のPython 3.9互換版はMutagen 1.47.0（上流Requires-Python >=3.7）、3.10+は1.48系（>=3.10）を使う。FFmpeg/FFprobe不足は検査成功ではなくdependency unavailableで停止する。fontTools 4.67.0のsource pinは既存LF SHAを維持し、配布SHAを照合した公式Windows wheelの完全一致CRLF SHAだけを追加する。任意の改行正規化・混在改行・コード変更は受理しない。
 
 媒体coverのPNG/JPEGは、既存parserが意味を検査できるmetadataだけでobserver完了を返し、復号した文字をidentityとsecretの両検査へ渡す。PNGは検証済みIHDR/PLTE/IDAT/IENDと解析済みtEXt/zTXt/iTXtだけを扱い、宣言済みXMP・iCCP・Exif・数値項目を含む未解析の付加chunkは停止する。JPEGは既存の形状検証済みJFIF/Adobe項目とCOMを扱い、単一segmentを含む全ICC・Exif・Photoshop・XMP・未知APP metadataは停止する。observer未対応も停止し、検証済みの画素・codewordを文字検査へ戻さない。この限定はobserverを使う媒体cover経路だけで、従来の2引数画像検査APIは維持する。PDFのXMLは上限付きExpatで文字参照・本文・属性・namespaceを検査し、DTD・外部entity・不正XMLを拒否する。 PDFのICCBased色空間から参照されるICC v4は、desc/cprtの全locale文字列（mluc）、白色点・原色（XYZ）、色順応行列（sf32）、パラメトリック曲線（para）に限定して解析する。タグ表・範囲・予約領域・余剰バイト・成分数を検査し、未知タグ、部分的な重なり、範囲外、非ゼロの未解析領域は停止する。単にICCヘッダーに一致する未参照streamは許可しない。これは色変換の正しさを保証するものではなく、画像coverのICC未対応方針も変更しない。CFFは未使用glyph名を含むName/String INDEXもmetadataとして検査する。
+
+
+### PDFの抽出テキスト量
+
+解析済みのcontent/Form/pattern/function streamでは、数値と既知のPDF演算子を文字列として再解釈しません。hex・literal文字列は既存parserで復元した値を検査し、その表記上の桁やescapeを別の本文として重複保持しません。名前・コメント・未知tokenは保持し、NULを含む曖昧なcontentは元bytesをそのまま検査します。[ISO 32000-1の数値・文字列・演算子の定義](https://opensource.adobe.com/dc-acrobat-sdk-docs/standards/pdfstandards/pdf/PDF32000_2008.pdf)に従う構文分類であり、数値を偶然UTF-16へ変換して生じる文字は本文と扱いません。
+
+PDFの元bytesは内部packetへ一度だけ格納し、親processでUTF-8/Latin-1/UTF-16 LE・BEと両alignmentの観測を逐次行います。2,000,000-byteの予算は、通常の文字列と、各bytes sourceの最大UTF-8 viewの合計に適用し、親側でも再計算します。全viewの合計を複数の本文として保持する方式から変更しました。件数・出力・画像・時間・復号量の上限と、真に大きい本文の停止は維持します。MP4のbyte-text処理は変更しません。
+
+FontDescriptorから参照されるCIDSetは最大65,536 CIDのbit表として、encoding以外の辞書項目・サイズを検証したうえで全byte-text viewも検査します。content/font/CMap/ICCと同じstreamを兼用する場合は停止します。未分類streamに一般的な除外を追加するものではありません。
+
+ページの文字抽出・画像確認・operand確認では同じ解析結果を再利用し、そのページの確認が終わると解放します。全ページの解析treeは保持しません。元readerの辞書と元stream bytesは変更せず、配列や複数の宣言roleを持つstreamは個別検査を維持します。

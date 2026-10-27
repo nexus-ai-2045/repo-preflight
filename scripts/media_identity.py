@@ -96,6 +96,7 @@ def _run(arguments, *, timeout=DECODE_TIMEOUT, limit=OUTPUT_LIMIT, group=False):
 class _Extracted:
     def __init__(self):
         self.texts = set()
+        self.pdf_byte_texts = {}
         self.images = {}
         self.text_bytes = self.image_bytes = 0
         self.versions = {}
@@ -110,9 +111,29 @@ class _Extracted:
         if not value or value in self.texts:
             return
         self.text_bytes += len(value.encode("utf-8"))
-        if self.text_bytes > TEXT_LIMIT or len(self.texts) >= OBJECT_LIMIT:
+        if (
+            self.text_bytes > TEXT_LIMIT
+            or len(self.texts) + len(self.pdf_byte_texts) >= OBJECT_LIMIT
+        ):
             raise MediaError("text_limit")
         self.texts.add(value)
+
+    def pdf_bytes(self, value):
+        if len(value) > TEXT_LIMIT:
+            raise MediaError("text_limit")
+        digest = hashlib.sha256(value).hexdigest()
+        if not value or digest in self.pdf_byte_texts:
+            return
+        # Reserve the largest UTF-8 view, not their sum: the parent checks them
+        # sequentially instead of retaining six documents. The parent recomputes
+        # this bound and still enforces the same TEXT_LIMIT and item/time limits.
+        self.text_bytes += _pdf_source_weight(value)
+        if (
+            self.text_bytes > TEXT_LIMIT
+            or len(self.texts) + len(self.pdf_byte_texts) >= OBJECT_LIMIT
+        ):
+            raise MediaError("text_limit")
+        self.pdf_byte_texts[digest] = base64.b64encode(value).decode("ascii")
 
     def image(self, value):
         digest = hashlib.sha256(value).hexdigest()
@@ -150,6 +171,9 @@ class _Extracted:
     def packet(self):
         return {
             "texts": sorted(self.texts),
+            "pdf_byte_texts": [
+                self.pdf_byte_texts[key] for key in sorted(self.pdf_byte_texts)
+            ],
             "images": list(self.images.values()),
             "versions": self.versions,
             "pdf_known_free_references": self.pdf_known_free_references,
@@ -333,10 +357,22 @@ def _pdf_dependencies(output):
     output.versions.update(pypdf=pypdf.__version__, pdfminer=pdfminer.__version__)
 
 
-def _pdf_text_bytes(data, output):
+def _byte_text_views(data):
     for codec in ("utf-8", "latin-1", "utf-16-le", "utf-16-be"):
         for offset in ((0, 1) if codec.startswith("utf-16") else (0,)):
-            output.text(data[offset:].decode(codec, errors="replace"))
+            yield data[offset:].decode(codec, errors="replace")
+
+
+def _pdf_source_weight(data):
+    return max(len(value.encode("utf-8")) for value in _byte_text_views(data))
+
+
+def _pdf_text_bytes(data, output, *, compact=False):
+    if compact:
+        output.pdf_bytes(data)
+    else:
+        for value in _byte_text_views(data):
+            output.text(value)
 
 
 def _pdf_xml_metadata(data, output):
@@ -427,9 +463,20 @@ def _pdf_xml_metadata(data, output):
     output.text("".join(text))
 
 
-def _pdf_metadata(data, output, *, inspect_raw=True):
+PDF_CONTENT_OPERATORS = frozenset(
+    b"""w J j M d ri i gs q Q cm m l c v y h re S s f F f* B B* b b* n
+    W W* BT ET Tc Tw Tz TL Tf Tr Ts Td TD Tm T* Tj TJ ' " d0 d1 CS cs
+    SC SCN sc scn G g RG rg K k sh Do MP DP BMC BDC EMC BX EX""".split()
+)
+PDF_NUMBER_TOKEN = re.compile(
+    rb"[+-]?(?:[0-9]+\.[0-9]*|\.[0-9]+|[0-9]+)(?=[\x00\t\n\f\r ()<>\[\]{}/%]|$)"
+)
+PDF_WHITESPACE = b"\x00\t\n\f\r "
+
+
+def _pdf_metadata(data, output, *, inspect_raw=True, content_syntax=False):
     """Raw comments plus existing lexer positions and authoritative PDF primitives."""
-    from pdfminer.psparser import PSBaseParser, PSEOF, PSLiteral
+    from pdfminer.psparser import PSBaseParser, PSEOF, PSKeyword, PSLiteral
     from pypdf.generic import NameObject
     from pypdf.generic._utils import (
         read_hex_string_from_stream,
@@ -438,8 +485,23 @@ def _pdf_metadata(data, output, *, inspect_raw=True):
 
     if len(data) > TEXT_LIMIT:
         raise MediaError("text_limit")
-    if inspect_raw:
-        _pdf_text_bytes(data, output)
+    # NUL-separated unknown bytes can be UTF-16, not drawing operators.
+    # Keep the complete source in that ambiguous case.
+    content_syntax = content_syntax and b"\x00" not in data
+    if inspect_raw and not content_syntax:
+        _pdf_text_bytes(data, output, compact=True)
+    raw_parts, raw_cursor = [], 0
+
+    def omit_syntax(start, end):
+        nonlocal raw_cursor
+        while start > raw_cursor and data[start - 1] in PDF_WHITESPACE:
+            start -= 1
+        if start > raw_cursor:
+            raw_parts.extend((data[raw_cursor:start], b" "))
+        raw_cursor = end
+        while raw_cursor < len(data) and data[raw_cursor] in PDF_WHITESPACE:
+            raw_cursor += 1
+
     deadline = time.monotonic() + DECODE_TIMEOUT
 
     class LimitedParser(PSBaseParser):
@@ -458,10 +520,31 @@ def _pdf_metadata(data, output, *, inspect_raw=True):
         except PSEOF:
             if lexer._parse1.__name__ not in {"_parse_main", "_parse_comment"}:
                 raise MediaError("unverified")
+            if inspect_raw and content_syntax:
+                _pdf_text_bytes(
+                    b"".join(raw_parts) + data[raw_cursor:], output, compact=True
+                )
             return
         count += 1
         if count > OBJECT_LIMIT or time.monotonic() > deadline:
             raise MediaError("object_limit")
+        # ISO 32000-1 7.3.3 / Table 51: coordinates and fixed operators are
+        # syntax, not UTF-16 prose. Keep comments, names, strings and unknown
+        # tokens verbatim; their decoded values are also inspected below.
+        end = None
+        if content_syntax and type(token) in (int, float):
+            numeric = PDF_NUMBER_TOKEN.match(data, position)
+            if numeric is not None:
+                end = numeric.end()
+        elif content_syntax and isinstance(token, PSKeyword):
+            if (
+                token.name in PDF_CONTENT_OPERATORS
+                and data[position : position + len(token.name)] == token.name
+            ):
+                end = position + len(token.name)
+        if end is not None:
+            omit_syntax(position, end)
+            continue
         stream = io.BytesIO(data)
         stream.seek(position)
         if isinstance(token, PSLiteral):
@@ -478,12 +561,17 @@ def _pdf_metadata(data, output, *, inspect_raw=True):
         else:
             continue
         if isinstance(value, bytes):
-            _pdf_text_bytes(value, output)
+            _pdf_text_bytes(value, output, compact=True)
         else:
             output.text(str(value))
             original = getattr(value, "original_bytes", None)
             if original is not None:
-                _pdf_text_bytes(original, output)
+                _pdf_text_bytes(original, output, compact=True)
+        if content_syntax and isinstance(token, bytes):
+            # String source syntax (hex digits / octal escapes) is not another
+            # character encoding. All views of its authoritative decoded bytes
+            # were inspected above; preserve source comments and unknowns only.
+            omit_syntax(position, stream.tell())
 
 
 class _PDFSource:
@@ -562,7 +650,7 @@ class _PDFSource:
         StreamObject.initialize_from_dictionary = staticmethod(self.original_init)
         self.stream.close()
 
-    def inspect_remaining(self, streams, output):
+    def inspect_remaining(self, streams, output, *, text_streams=()):
         all_ranges, compressed_ranges = [], []
         compression_roles = {}
         for obj in streams:
@@ -582,10 +670,9 @@ class _PDFSource:
             ):
                 raise MediaError("unsupported_region")
             all_ranges.append((start, end))
-            compression_roles[(start, end)] = (
-                compression_roles.get((start, end), True)
-                and obj.get("/Filter") is not None
-            )
+            compression_roles[(start, end)] = compression_roles.get(
+                (start, end), True
+            ) and (obj.get("/Filter") is not None or id(obj) in text_streams)
         all_ranges = sorted(set(all_ranges))
         compressed_ranges = [
             span for span, compressed in compression_roles.items() if compressed
@@ -596,8 +683,10 @@ class _PDFSource:
             if start < cursor:
                 raise MediaError("unsupported_region")
             cursor = end
-        # Every noncompressed byte still receives literal/path checking, even
-        # for an uncompressed binary font. PDF syntax is applicable outside
+        # Every unclassified noncompressed byte still receives literal/path
+        # checking, even for a binary font. Fully inspected content streams
+        # already supplied their textual projection; do not decode their
+        # numeric drawing syntax again. PDF syntax is applicable outside
         # streams and to decoded text-content streams, not to binary glyph data.
         # Padding is synthetic, not source text. One separator preserves the
         # boundary without charging every compressed byte to each text codec.
@@ -607,7 +696,7 @@ class _PDFSource:
             raw.extend(b" ")
             cursor = end
         raw.extend(self.data[cursor:])
-        _pdf_text_bytes(bytes(raw), output)
+        _pdf_text_bytes(bytes(raw), output, compact=True)
         syntax = bytearray(self.data)
         for start, end in all_ranges:
             syntax[start:end] = b" " * (end - start)
@@ -849,10 +938,10 @@ def _pdf_contents(source, output):
         if visited != offsets:
             raise MediaError("unsupported_region")
         budget = {"objects": 0, "visited": 0, "decoded": 0, "pages": 0}
-        streams = []
+        streams, text_streams = [], set()
         for reader in readers:
-            streams.extend(_pdf_context(reader, output, budget))
-        source.inspect_remaining(streams, output)
+            streams.extend(_pdf_context(reader, output, budget, text_streams))
+        source.inspect_remaining(streams, output, text_streams=text_streams)
         if diagnostics:
             raise MediaError("unverified")
     finally:
@@ -1023,7 +1112,7 @@ def _icc_profile(data, output, components):
             raise MediaError("unsupported_stream")
 
 
-def _pdf_context(reader, output, budget):
+def _pdf_context(reader, output, budget, text_streams=None):
     from pypdf.generic import (
         ArrayObject,
         ByteStringObject,
@@ -1034,6 +1123,9 @@ def _pdf_context(reader, output, budget):
         StreamObject,
         TextStringObject,
     )
+
+    if text_streams is None:
+        text_streams = set()
 
     if reader.is_encrypted:
         raise MediaError("encrypted")
@@ -1088,7 +1180,7 @@ def _pdf_context(reader, output, budget):
             raise MediaError("page_limit")
     stack = [reader.trailer, *objects, *reader.resolved_objects.values()]
     seen, streams, fonts = set(), [], {}
-    icc_streams = set()
+    icc_streams, cid_sets = set(), set()
     dictionaries, action_entries, cmap_objects = [], [], set()
     glyph_dictionaries, glyph_streams, forbidden_dictionaries = set(), set(), []
     forbidden = {
@@ -1135,6 +1227,11 @@ def _pdf_context(reader, output, budget):
                         raise MediaError("unsupported_font")
                     glyph_streams.add(id(glyph))
             dictionaries.append(obj)
+            if obj.get("/Type") == "/FontDescriptor" and "/CIDSet" in obj:
+                target = obj["/CIDSet"].get_object()
+                if not isinstance(target, StreamObject):
+                    raise MediaError("unsupported_font")
+                cid_sets.add(id(target))
             if isinstance(obj, StreamObject):
                 if "/F" in obj or "/FFilter" in obj:
                     raise MediaError("external_reference")
@@ -1259,6 +1356,32 @@ def _pdf_context(reader, output, budget):
                 lengths = [int(value) for value in values]
             _font(data, subtype, output, lengths=lengths)
     image_objects, content_objects = set(), set(glyph_streams)
+    verified_contents = set()
+
+    from pypdf import PageObject
+
+    class ParsedPage(PageObject):
+        def get_contents(self):
+            return self.parsed_contents
+
+    def inspect_content(stream, contents):
+        _pdf_metadata(decoded[id(stream)], output, content_syntax=True)
+        for operands, operator in contents.operations:
+            if operator == b"INLINE IMAGE":
+                raise MediaError("unsupported_image")
+            stack = list(operands)
+            while stack:
+                value = stack.pop()
+                if isinstance(value, (TextStringObject, NameObject, str)):
+                    output.text(str(value))
+                elif isinstance(value, (ByteStringObject, bytes)):
+                    output.text(bytes(value).decode("latin-1"))
+                elif isinstance(value, (ArrayObject, list, tuple)):
+                    stack.extend(value)
+                elif isinstance(value, DictionaryObject):
+                    stack.extend(value.values())
+        text_streams.add(id(stream))
+
     for stream in streams:
         if (
             stream.get("/Subtype") == "/Image"
@@ -1277,16 +1400,59 @@ def _pdf_context(reader, output, budget):
         content = page.get_contents()
         if content is not None and len(content.get_data()) > 8_000_000:
             raise MediaError("decoded_limit")
-        output.text(page.extract_text())
-        for image in page.images:
+        if content is not None:
+            # Match extract_text's byte-string parsing. This isolated page view
+            # lets text extraction and image discovery share the same parse;
+            # original reader objects and original stream bindings stay intact.
+            content.forced_encoding = "bytes"
+        view = ParsedPage(reader, page.indirect_reference)
+        view.update(page)
+        view.parsed_contents = content
+        if content is not None:
+            view[NameObject("/Contents")] = content
+        output.text(view.extract_text())
+        for image in view.images:
             image.image.load()
             output.image(image.data)
             if image.indirect_reference is not None:
                 image_objects.add(id(image.indirect_reference.get_object()))
+        if (
+            content is not None
+            and not isinstance(page_content, ArrayObject)
+            and page_content.get("/Type") is None
+            and page_content.get("/Subtype") is None
+            and "/FunctionType" not in page_content
+            and id(page_content) not in fonts
+            and id(page_content) not in cid_sets
+            and id(page_content) not in icc_streams
+            and id(page_content) not in cmap_objects
+        ):
+            inspect_content(page_content, content)
+            verified_contents.add(id(page_content))
+        # Retain only successful IDs across pages, not every parsed operand tree.
+        del view, content
     for stream in streams:
         data = decoded[id(stream)]
         kind = stream.get("/Type")
+        if id(stream) in cid_sets and (
+            id(stream) in fonts
+            or id(stream) in content_objects
+            or id(stream) in cmap_objects
+            or id(stream) in icc_streams
+        ):
+            raise MediaError("unsupported_font")
         if id(stream) in fonts:
+            continue
+        if id(stream) in cid_sets:
+            # ISO 32000-1 9.8.3: CID membership bitmap, up to 65536 CIDs.
+            # Still inspect all byte-text views; a binary declaration must not
+            # conceal literal private data or credentials in this side stream.
+            if (
+                set(stream) - {"/Length", "/Filter", "/DecodeParms"}
+                or not 0 < len(data) <= 8192
+            ):
+                raise MediaError("unsupported_font")
+            _pdf_text_bytes(data, output, compact=True)
             continue
         if id(stream) in icc_streams:
             if set(stream) - {
@@ -1330,29 +1496,14 @@ def _pdf_context(reader, output, budget):
             # Standard graphics source is inspected as inert text, never run.
             # Declared binary/unknown roles do not acquire a text exemption.
             data.decode("ascii", errors="strict")
-            _pdf_metadata(data, output)
+            _pdf_metadata(data, output, content_syntax=True)
+            text_streams.add(id(stream))
             if kind == "/Pattern":
                 ContentStream(stream, reader).operations
         elif id(stream) in content_objects or stream.get("/Subtype") == "/Form":
             # PDF syntax is parsed by pypdf, never evaluated as source code here.
-            _pdf_metadata(data, output)
-            contents = ContentStream(stream, reader)
-            for operands, _operator in contents.operations:
-                if _operator == b"INLINE IMAGE":
-                    # Inline image metadata cannot be bound to original image
-                    # container bytes by this adapter; never certify a conversion.
-                    raise MediaError("unsupported_image")
-                stack = list(operands)
-                while stack:
-                    value = stack.pop()
-                    if isinstance(value, (TextStringObject, NameObject, str)):
-                        output.text(str(value))
-                    elif isinstance(value, (ByteStringObject, bytes)):
-                        output.text(bytes(value).decode("latin-1"))
-                    elif isinstance(value, (ArrayObject, list, tuple)):
-                        stack.extend(value)
-                    elif isinstance(value, DictionaryObject):
-                        stack.extend(value.values())
+            if id(stream) not in verified_contents:
+                inspect_content(stream, ContentStream(stream, reader))
         else:
             raise MediaError("unsupported_stream")
     output.pdf_known_free_references += reader.known_free_references
@@ -1974,6 +2125,13 @@ def scan_private_media(data, patterns, *, kind, check_text, check_image):
             isinstance(value, str) for value in packet["texts"] + packet["images"]
         ):
             raise MediaError("unverified")
+        pdf_sources = packet.get("pdf_byte_texts", [])
+        if (
+            not isinstance(pdf_sources, list)
+            or not all(isinstance(value, str) for value in pdf_sources)
+            or (kind != "pdf" and pdf_sources)
+        ):
+            raise MediaError("unverified")
         versions = packet.get("versions")
         if not isinstance(versions, dict) or not all(
             isinstance(key, str) and isinstance(value, str) and len(value) <= 200
@@ -1981,14 +2139,42 @@ def scan_private_media(data, patterns, *, kind, check_text, check_image):
         ):
             raise MediaError("unverified")
         size = sum(len(text.encode("utf-8")) for text in packet["texts"])
-        if size > TEXT_LIMIT or len(packet["images"]) > 256:
+        if (
+            size > TEXT_LIMIT
+            or len(packet["images"]) > 256
+            or len(packet["texts"]) + len(pdf_sources) > OBJECT_LIMIT
+        ):
             raise MediaError("text_limit")
-        image_size = 0
         deadline = time.monotonic() + EXTRACT_TIMEOUT
-        for kind_, values in (("text", packet["texts"]), ("image", packet["images"])):
+        decoded_sources = []
+        for value in pdf_sources:
+            if time.monotonic() > deadline:
+                raise MediaError("timeout")
+            if len(value) > 4 * ((TEXT_LIMIT + 2) // 3):
+                raise MediaError("text_limit")
+            source_bytes = base64.b64decode(value, validate=True)
+            size += _pdf_source_weight(source_bytes)
+            if not source_bytes or size > TEXT_LIMIT:
+                raise MediaError("text_limit")
+            decoded_sources.append(source_bytes)
+
+        def text_values():
+            yield from packet["texts"]
+            for source_bytes in decoded_sources:
+                yield from _byte_text_views(source_bytes)
+
+        image_size, seen_texts = 0, set()
+        for kind_, values in (("text", text_values()), ("image", packet["images"])):
             for value in values:
                 if time.monotonic() > deadline:
                     raise MediaError("timeout")
+                if kind_ == "text":
+                    digest = hashlib.sha256(value.encode("utf-8")).digest()
+                    if not value or digest in seen_texts:
+                        continue
+                    if len(seen_texts) >= OBJECT_LIMIT:
+                        raise MediaError("text_limit")
+                    seen_texts.add(digest)
                 if kind_ == "image":
                     value = base64.b64decode(value, validate=True)
                     image_size += len(value)
