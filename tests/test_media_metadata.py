@@ -38,7 +38,7 @@ def video_probe_json():
     return b'{"format":{},"streams":[{"codec_type":"video","disposition":{"attached_pic":0}}],"chapters":[]}'
 
 
-def jpeg_with_middle_exif_user_comment(user_comment):
+def jpeg_with_middle_exif_user_comment(user_comment, nested=False):
     image = Image.new("RGB", (2, 2), "white")
     base_output = io.BytesIO()
     image.save(base_output, format="JPEG")
@@ -64,7 +64,10 @@ def jpeg_with_middle_exif_user_comment(user_comment):
         return b"\xff\xe2" + (len(data) + 2).to_bytes(2, "big") + data
 
     exif = Image.Exif()
-    exif[reader.EXIF_USER_COMMENT_TAG] = user_comment
+    if nested:
+        exif[34665] = {reader.EXIF_USER_COMMENT_TAG: user_comment}
+    else:
+        exif[reader.EXIF_USER_COMMENT_TAG] = user_comment
     exif_data = exif.tobytes()
     app1 = b"\xff\xe1" + (len(exif_data) + 2).to_bytes(2, "big") + exif_data
     middle = (
@@ -371,3 +374,17 @@ def test_jpeg_middle_exif_user_comment_is_decoded_without_pixel_load(
     assert marker in views
     assert marker not in result["head_sample"]
     assert marker not in result["tail_sample"]
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-16"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_middle_exif_unicode_byte_orders(tmp_path, encoding, nested):
+    marker = "dummy-secret-ending-z"
+    raw = jpeg_with_middle_exif_user_comment(
+        b"UNICODE\x00" + (marker + "\x00").encode(encoding), nested=nested
+    )
+    path = tmp_path / "nested-comment.jpg"
+    path.write_bytes(raw)
+    result = reader.inspect_media_metadata(path, ())
+    assert marker.encode() in b"\n".join(result["metadata_views"])
+    assert marker.encode() not in result["head_sample"] + result["tail_sample"]

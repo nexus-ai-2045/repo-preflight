@@ -27,13 +27,22 @@ def _fail(code: str) -> None:
 
 def _decode_user_comment(value: bytes):
     if value.startswith(b"ASCII\x00\x00\x00"):
-        return value[8:].rstrip(b"\x00").decode("ascii", "replace")
+        return (value[8:].decode("ascii", "replace").rstrip("\x00"),)
     if value.startswith(b"UNICODE\x00"):
-        payload = value[8:].rstrip(b"\x00")
-        encoding = (
-            "utf-16" if payload.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-16-be"
+        payload = value[8:]
+        if len(payload) % 2:
+            _fail("metadata_encoding_invalid")
+        encodings = (
+            ("utf-16",)
+            if payload.startswith((b"\xff\xfe", b"\xfe\xff"))
+            else ("utf-16-be", "utf-16-le")
         )
-        return payload.decode(encoding, "replace")
+        # Both byte orders are scanned when no BOM disambiguates the comment.
+        return tuple(
+            payload.decode(encoding, "replace").rstrip("\x00") for encoding in encodings
+        )
+    if value.startswith(b"JIS\x00\x00\x00\x00\x00"):
+        return (value[8:].decode("shift_jis", "replace").rstrip("\x00"),)
     return None
 
 
@@ -286,6 +295,13 @@ def _image_metadata(path, ext):
                 exif = image.getexif()
                 if exif:
                     metadata["exif"] = dict(exif)
+                    # Pillow exposes these IFDs separately from the top-level map.
+                    for ifd_tag in (34665, 34853):
+                        if ifd_tag in exif:
+                            child = exif.get_ifd(ifd_tag)
+                            metadata[f"exif_ifd_{ifd_tag}"] = dict(child)
+                            if ifd_tag == 34665 and 40965 in child:
+                                metadata["exif_interop"] = dict(exif.get_ifd(40965))
             return _views(metadata)
     except MediaMetadataError:
         raise
