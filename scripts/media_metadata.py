@@ -1,0 +1,338 @@
+"""Bounded metadata-only reader for private media identity checks."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import shutil
+import struct
+from pathlib import Path
+
+DATA_LIMIT = 64_000_000
+SAMPLE_SIZE = 64 * 1024
+TEXT_LIMIT = 2_000_000
+NODE_LIMIT = 100_000
+
+
+class MediaMetadataError(ValueError):
+    """A sanitized, fixed-code error from the metadata reader."""
+
+
+def _fail(code: str) -> None:
+    raise MediaMetadataError(code)
+
+
+def _flatten(value, *, depth=0, count=None):
+    if count is None:
+        count = [0]
+    count[0] += 1
+    if count[0] > NODE_LIMIT or depth > 32:
+        _fail("metadata_limit")
+    if isinstance(value, bytes):
+        yield b"base64:" + base64.b64encode(value)
+    elif isinstance(value, str):
+        yield value.encode("utf-8", "replace")
+    elif value is None or isinstance(value, (bool, int, float)):
+        yield str(value).encode("ascii", "replace")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield from _flatten(str(key), depth=depth + 1, count=count)
+            yield from _flatten(item, depth=depth + 1, count=count)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _flatten(item, depth=depth + 1, count=count)
+    else:
+        _fail("unsupported_metadata")
+
+
+def _views(value):
+    values = []
+    total = 0
+    for item in _flatten(value):
+        total += len(item)
+        if total > TEXT_LIMIT:
+            _fail("metadata_limit")
+        values.append(item)
+    return tuple(values)
+
+
+def _snapshot(path: Path):
+    try:
+        st = path.lstat()
+    except OSError:
+        _fail("input_unavailable")
+    if path.is_symlink() or not path.is_file() or not os.path.isfile(path):
+        _fail("input_type")
+    if st.st_size < 0 or st.st_size > DATA_LIMIT:
+        _fail("size_limit")
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _digest_and_samples(path: Path, expected_size: int):
+    digest = hashlib.sha256()
+    head = bytearray()
+    tail = bytearray()
+    total = 0
+    try:
+        with path.open("rb") as source:
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                digest.update(block)
+                if len(head) < SAMPLE_SIZE:
+                    head.extend(block[: SAMPLE_SIZE - len(head)])
+                tail.extend(block)
+                if len(tail) > SAMPLE_SIZE:
+                    del tail[:-SAMPLE_SIZE]
+    except OSError:
+        _fail("input_unavailable")
+    if total != expected_size:
+        _fail("input_changed")
+    return digest.hexdigest(), bytes(head), bytes(tail)
+
+
+def _check_mp4_boxes(path: Path, size: int):
+    metadata = []
+    metadata_size = 0
+    try:
+        with path.open("rb") as source:
+            header = source.read(16)
+            if len(header) < 8 or header[4:8] != b"ftyp":
+                _fail("format_mismatch")
+            first_size = struct.unpack(">I", header[:4])[0]
+            if first_size == 1:
+                if len(header) < 16 or struct.unpack(">Q", header[8:16])[0] < 16:
+                    _fail("format_invalid")
+            elif first_size < 8:
+                _fail("format_invalid")
+            offset = 0
+            boxes = 0
+            while offset < size:
+                boxes += 1
+                if boxes > NODE_LIMIT:
+                    _fail("metadata_limit")
+                source.seek(offset)
+                box = source.read(16)
+                if len(box) < 8:
+                    _fail("format_invalid")
+                box_size = struct.unpack(">I", box[:4])[0]
+                header_size = 8
+                if box_size == 1:
+                    if len(box) < 16:
+                        _fail("format_invalid")
+                    box_size = struct.unpack(">Q", box[8:16])[0]
+                    header_size = 16
+                elif box_size == 0:
+                    box_size = size - offset
+                if box_size < header_size or offset + box_size > size:
+                    _fail("format_invalid")
+                box_type = box[4:8]
+                if box_type != b"mdat":
+                    content_size = box_size - header_size
+                    metadata_size += len(box_type) + content_size
+                    if metadata_size > TEXT_LIMIT:
+                        _fail("metadata_limit")
+                    source.seek(offset + header_size)
+                    content = source.read(content_size)
+                    if len(content) != content_size:
+                        _fail("format_invalid")
+                    metadata.append(box_type + content)
+                offset += box_size
+    except OSError:
+        _fail("input_unavailable")
+    return tuple(metadata)
+
+
+def _bounded_views(*groups):
+    values = []
+    total = 0
+    for group in groups:
+        for value in group:
+            total += len(value)
+            if total > TEXT_LIMIT:
+                _fail("metadata_limit")
+            values.append(value)
+    return tuple(values)
+
+
+def _mp4_metadata(path, probe_runner):
+    probe = shutil.which("ffprobe")
+    if not probe:
+        _fail("dependency_unavailable")
+    args = [
+        probe,
+        "-v",
+        "error",
+        "-protocol_whitelist",
+        "file,pipe",
+        "-f",
+        "mov",
+        "-enable_drefs",
+        "0",
+        "-use_absolute_path",
+        "0",
+        "-show_format",
+        "-show_streams",
+        "-show_chapters",
+        "-of",
+        "json",
+        str(path),
+    ]
+    try:
+        code, raw, error = probe_runner(args, limit=TEXT_LIMIT)
+    except Exception as exc:
+        code = str(exc)
+        if code in {"timeout", "output_limit"}:
+            _fail(code)
+        _fail("probe_failed")
+    if code or error:
+        _fail("probe_failed")
+    try:
+        data = json.loads(raw)
+        streams = data.get("streams") if isinstance(data, dict) else None
+        if not isinstance(streams, list) or not any(
+            isinstance(stream, dict)
+            and stream.get("codec_type") == "video"
+            and not stream.get("disposition", {}).get("attached_pic")
+            for stream in streams
+        ):
+            _fail("format_invalid")
+        if isinstance(data.get("format"), dict):
+            data["format"].pop("filename", None)
+        return _views(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        _fail("format_invalid")
+
+
+def _png_metadata_chunks(path, size):
+    """Reject trailing PNG metadata without decoding image pixels."""
+    metadata_types = {b"tEXt", b"iTXt", b"zTXt", b"eXIf"}
+    try:
+        with path.open("rb") as source:
+            source.seek(8)
+            offset = 8
+            count = 0
+            after_idat = False
+            saw_iend = False
+            while offset < size:
+                count += 1
+                if count > NODE_LIMIT:
+                    _fail("metadata_limit")
+                header = source.read(8)
+                if len(header) != 8:
+                    _fail("format_invalid")
+                length = struct.unpack(">I", header[:4])[0]
+                chunk_type = header[4:]
+                end = offset + 12 + length
+                if end > size:
+                    _fail("format_invalid")
+                if after_idat and chunk_type in metadata_types:
+                    _fail("metadata_after_image_data")
+                if chunk_type == b"IDAT":
+                    after_idat = True
+                elif chunk_type == b"IEND":
+                    if length != 0 or end != size:
+                        _fail("format_invalid")
+                    saw_iend = True
+                source.seek(end)
+                offset = end
+                if saw_iend:
+                    break
+            if not saw_iend:
+                _fail("format_invalid")
+    except OSError:
+        _fail("input_unavailable")
+
+
+def _image_metadata(path, ext):
+    try:
+        from PIL import Image
+    except ImportError:
+        _fail("dependency_unavailable")
+    try:
+        with Image.open(path) as image:
+            if (ext == ".png" and image.format != "PNG") or (
+                ext in {".jpg", ".jpeg"} and image.format != "JPEG"
+            ):
+                _fail("format_mismatch")
+            metadata = {"format": image.format, "info": image.info}
+            if ext in {".jpg", ".jpeg"}:
+                exif = image.getexif()
+                if exif:
+                    metadata["exif"] = dict(exif)
+            return _views(metadata)
+    except MediaMetadataError:
+        raise
+    except Exception:
+        _fail("format_invalid")
+
+
+def inspect_media_metadata(
+    path: Path, source_names: tuple[str, ...], *, probe_runner=None
+) -> dict:
+    """Read bounded metadata and samples without decoding image pixels or video frames."""
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext not in {".mp4", ".png", ".jpg", ".jpeg"}:
+        _fail("unsupported_extension")
+    if not isinstance(source_names, tuple) or any(
+        not isinstance(name, str) for name in source_names
+    ):
+        _fail("source_name_mismatch")
+    expected_family = "jpeg" if ext in {".jpg", ".jpeg"} else ext
+    for name in source_names:
+        named_ext = Path(name).suffix.lower()
+        named_family = "jpeg" if named_ext in {".jpg", ".jpeg"} else named_ext
+        if named_family != expected_family:
+            _fail("source_name_mismatch")
+    before = _snapshot(path)
+    digest, head, tail = _digest_and_samples(path, before[2])
+    if ext == ".mp4":
+        container_views = _check_mp4_boxes(path, before[2])
+        if head[4:8] != b"ftyp":
+            _fail("format_mismatch")
+        if probe_runner is None:
+            try:
+                from .media_identity import MediaError, _run
+            except ImportError:  # Direct execution with scripts/ on sys.path.
+                from media_identity import MediaError, _run
+
+            def probe_runner(arguments, *, limit):
+                try:
+                    return _run(arguments, limit=limit)
+                except MediaError:
+                    raise
+
+        views = _bounded_views(container_views, _mp4_metadata(path, probe_runner))
+        kind = "mp4"
+    else:
+        magic_ok = (
+            head.startswith(b"\x89PNG\r\n\x1a\n")
+            if ext == ".png"
+            else head.startswith(b"\xff\xd8\xff")
+        )
+        if not magic_ok:
+            _fail("format_mismatch")
+        if ext == ".png":
+            _png_metadata_chunks(path, before[2])
+        views = _image_metadata(path, ext)
+        kind = "image"
+    after = _snapshot(path)
+    if after != before:
+        _fail("input_changed")
+    final_digest, _head, _tail = _digest_and_samples(path, before[2])
+    if final_digest != digest or _snapshot(path) != before:
+        _fail("input_changed")
+    return {
+        "source_sha256": digest,
+        "size_bytes": before[2],
+        "kind": kind,
+        "metadata_views": views,
+        "head_sample": head,
+        "tail_sample": tail,
+        "payload_inspected": False,
+    }

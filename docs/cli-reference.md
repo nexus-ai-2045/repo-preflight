@@ -247,3 +247,8 @@ python scripts/runtime_smoke.py --repo .
 明示private送信では、同じpathの直前の比較親と現在commitから得たtextだけを比較します。変更text内の不変行と不変の正規化候補は再判定せず、追加本文と新しい正規化値を調べます。変更部分に依存する再構成は、同値が親の別箇所にもあっても検査します。正規表現の役割に基づく既存のmaskは保持します。新規・copy・renameで同pathの比較元が無い場合、binary・media、commit metadataは全文検査のままです。全中間commitを調べるため、途中で追加後に削除した値も対象です。外部providerで差分の同等性を証明できない場合は全文側へ倒します。
 
 text比較は合計200万文字またはold/new行数の積1600万を上限にし、超えた変更fileだけを全文検査します。`private_identity_scan.text_delta_full_fallbacks` がその回数を記録します。不変性を証明できない候補も検査側へ倒します。公開・fullの検査方針、画像・媒体のstrict decoderと既存上限は変更しません。
+
+
+## 非公開の制作媒体をmetadata中心に確認する方針（提案）
+
+`--private-submission --base-ref origin/main --media-inspection metadata`は、live確認した非公開originへの`push`・`open_pr`・`merge`に限る明示的な方針です。既定の`strict`や公開・releaseには適用しません。SHAは全ファイルで計算し、形式・既知metadata・先頭末尾sampleを確認します。圧縮payloadの全走査、映像・音声の意味や個人情報の判定は行わず、その範囲をJSONへ記録します。依存不足、壊れた形式、Git OIDやSHAの不一致、制限超過は成功にしません。

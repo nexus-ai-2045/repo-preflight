@@ -1,0 +1,137 @@
+{
+  "schema_version": "implementation-precedent-research/v1",
+  "research_question": "生成済み媒体を、圧縮payload全体の文字列検査と内容一致検査を混同せず非公開へ送信できるか。",
+  "current_design": "既存strict scanを維持し、live確認したprivate committed submissionに限る明示metadata方針を追加するローカル案。",
+  "recorded_at": "2026-10-27T13:22:42.921304+00:00",
+  "recorded_by": "codex",
+  "scope": "repo-preflight local candidate; no visibility/hook/auth changes",
+  "sources": [
+    {
+      "id": "ffprobe",
+      "kind": "official_spec",
+      "title": "FFprobe output and metadata options",
+      "url": "https://github.com/FFmpeg/FFmpeg/blob/master/doc/ffprobe.texi",
+      "actor": "FFmpeg",
+      "event_time": "unknown",
+      "observed_at": "2026-10-27T13:22:42.921304+00:00",
+      "claim_scope": "format/stream/chapter情報のJSON出力。全frame decodeの保証とは分ける。"
+    },
+    {
+      "id": "hashlib",
+      "kind": "official_spec",
+      "title": "Python hashlib file hashing",
+      "url": "https://docs.python.org/3/library/hashlib.html#file-hashing",
+      "actor": "Python",
+      "event_time": "unknown",
+      "observed_at": "2026-10-27T13:22:42.921304+00:00",
+      "claim_scope": "streamingでファイル全体のSHAを計算し、内容一致を確認する。機密性の判定ではない。"
+    },
+    {
+      "id": "pillow",
+      "kind": "official_spec",
+      "title": "Pillow lazy Image.open",
+      "url": "https://pillow.readthedocs.io/en/stable/reference/Image.html#PIL.Image.open",
+      "actor": "Pillow",
+      "event_time": "unknown",
+      "observed_at": "2026-10-27T13:22:42.921304+00:00",
+      "claim_scope": "画像の識別とpixel loadを分ける。後置metadataの取りこぼしは別途防ぐ。"
+    },
+    {
+      "id": "current",
+      "kind": "canonical_code",
+      "title": "repo-preflight current history batch budget",
+      "url": "https://github.com/nexus-ai-2045/repo-preflight/blob/7b41a00ad6d5d06592c631cf23543f955a7563fd/scripts/readiness_scan.py",
+      "revision": "7b41a00ad6d5d06592c631cf23543f955a7563fd",
+      "branch": "main",
+      "actor": "nexus-ai-2045/repo-preflight",
+      "event_time": "unknown",
+      "observed_at": "2026-10-27T13:22:42.921304+00:00",
+      "claim_scope": "16,000,000 byteの一括予算を超える一般blobがunknownとなる既存実装。"
+    },
+    {
+      "id": "failure",
+      "kind": "failure_evidence",
+      "title": "Generated video submission exceeds batch budget",
+      "url": "local://evidence/private-media-size-20261027",
+      "actor": "local repo-preflight execution",
+      "event_time": "2026-10-27T13:22:42.921304+00:00",
+      "observed_at": "2026-10-27T13:22:42.921304+00:00",
+      "claim_scope": "16,097,366/19,438,616 byteの2動画がoversize未検査。追加した全byte pattern検査とmetadata検査は一致0件だったがstrict passへ変更しなかった。"
+    }
+  ],
+  "patterns": [
+    {
+      "name": "private-media-metadata-v1",
+      "source_ids": [
+        "ffprobe",
+        "hashlib",
+        "pillow",
+        "current",
+        "failure"
+      ],
+      "completion_rule": "Git OIDと全SHAを照合し、形式・既知metadata・先頭末尾sampleを検査。payload未検査を結果へ明示する。",
+      "failure_modes": [
+        "public_scope_misuse",
+        "metadata_leak",
+        "oversize_memory",
+        "format_forgery",
+        "changed_source",
+        "late_png_metadata"
+      ],
+      "applicability": "revise"
+    }
+  ],
+  "decision": {
+    "status": "revise",
+    "recommended_pattern": "private-media-metadata-v1",
+    "minimal_implementation": "既存bounded probe runner、Pillow、hashlibを使うreaderと、private専用のCLI方針・Git object照合・coverage記録を接続する。",
+    "deliberately_omitted": [
+      "全frame/audio decode、OCR/ASR",
+      "新しいCI基盤",
+      "既存strict検査の既定変更",
+      "ハッシュ一致を個人情報なしの証明とすること"
+    ],
+    "regression_tests": [
+      {
+        "id": "public_scope_misuse",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "public_scope_misuse",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      },
+      {
+        "id": "metadata_leak",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "metadata_leak",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      },
+      {
+        "id": "oversize_memory",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "oversize_memory",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      },
+      {
+        "id": "format_forgery",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "format_forgery",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      },
+      {
+        "id": "changed_source",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "changed_source",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      },
+      {
+        "id": "late_png_metadata",
+        "pattern": "private-media-metadata-v1",
+        "failure_mode": "late_png_metadata",
+        "assertion": "対象の陰性入力で成功にせず、またはprivate modeの制限と未検査範囲を正しく返す。"
+      }
+    ],
+    "unknowns": [
+      "ローカル案のレビュー・上流反映は未実施。"
+    ],
+    "human_review": "対象repoと差分、strict既定維持、private方針のcoverageをレビューしてから上流へ反映する。"
+  }
+}
