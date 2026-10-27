@@ -511,3 +511,78 @@ def test_progressive_jpeg_without_late_metadata_is_supported(tmp_path):
     path = tmp_path / "progressive-clean.jpg"
     Image.new("RGB", (16, 16)).save(path, format="JPEG", progressive=True)
     assert reader.inspect_media_metadata(path, ())["kind"] == "image"
+
+
+def test_png_itxt_language_and_translated_keyword_are_scanned(tmp_path, monkeypatch):
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add_itxt(
+        "Comment",
+        "harmless",
+        lang="dummy-secret-language",
+        tkey="dummy-secret-translation",
+    )
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    path = tmp_path / "international.png"
+    path.write_bytes(output.getvalue())
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("pixel decode")
+    )
+    result = reader.inspect_media_metadata(path, ())
+    views = b"\n".join(result["metadata_views"])
+    for marker in [b"dummy-secret-language", b"dummy-secret-translation"]:
+        assert marker in views
+        assert marker not in result["head_sample"] + result["tail_sample"]
+
+
+def test_png_text_survives_structural_key_collision(tmp_path, monkeypatch):
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add_text("transparency", "dummy-secret-collision")
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    raw = output.getvalue()
+    insertion = raw.index(b"IDAT") - 4
+    raw = raw[:insertion] + png_chunk(b"tRNS", b"\x00" * 6) + raw[insertion:]
+    path = tmp_path / "collision.png"
+    path.write_bytes(raw)
+    with Image.open(path) as image:
+        assert image.info["transparency"] == (0, 0, 0)
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("pixel decode")
+    )
+    result = reader.inspect_media_metadata(path, ())
+    marker = b"dummy-secret-collision"
+    assert marker in b"\n".join(result["metadata_views"])
+    assert marker not in result["head_sample"] + result["tail_sample"]
+
+
+def test_png_duplicate_icc_profile_cannot_hide_previous_values(tmp_path):
+    raw = png_bytes()
+    offset = raw.index(b"IDAT") - 4
+    first = png_chunk(
+        b"iCCP", b"profile\x00\x00" + zlib.compress(b"dummy-secret-earlier")
+    )
+    last = png_chunk(b"iCCP", b"profile\x00\x00" + zlib.compress(b"harmless-last"))
+    path = tmp_path / "icc.png"
+    path.write_bytes(raw[:offset] + first + last + raw[offset:])
+    with pytest.raises(reader.MediaMetadataError, match="^duplicate_metadata_chunk$"):
+        reader.inspect_media_metadata(path, ())
+
+
+def test_png_ancillary_metadata_is_preserved_independently_of_info(tmp_path):
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add(b"vpAg", b"dummy-secret-ancillary")
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    path = tmp_path / "ancillary.png"
+    path.write_bytes(output.getvalue())
+    result = reader.inspect_media_metadata(path, ())
+    marker = b"dummy-secret-ancillary"
+    assert marker in b"\n".join(result["metadata_views"])
+    assert marker not in result["head_sample"] + result["tail_sample"]

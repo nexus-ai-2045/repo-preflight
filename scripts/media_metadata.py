@@ -254,6 +254,9 @@ def _png_metadata_chunks(path, size):
             saw_iend = False
             text_keywords = set()
             saw_exif = False
+            singleton_seen = set()
+            raw_views = []
+            raw_total = 0
             while offset < size:
                 count += 1
                 if count > NODE_LIMIT:
@@ -268,6 +271,29 @@ def _png_metadata_chunks(path, size):
                     _fail("format_invalid")
                 if after_idat and chunk_type in metadata_types:
                     _fail("metadata_after_image_data")
+                if chunk_type in {
+                    b"iCCP",
+                    b"gAMA",
+                    b"cHRM",
+                    b"sRGB",
+                    b"pHYs",
+                    b"tIME",
+                    b"tRNS",
+                    b"sBIT",
+                    b"bKGD",
+                }:
+                    if chunk_type in singleton_seen:
+                        _fail("duplicate_metadata_chunk")
+                    singleton_seen.add(chunk_type)
+                if chunk_type not in {b"IDAT", b"IHDR", b"IEND"}:
+                    raw_total += length
+                    if raw_total > TEXT_LIMIT:
+                        _fail("metadata_limit")
+                    raw = source.read(length)
+                    if len(raw) != length:
+                        _fail("format_invalid")
+                    raw_views.append(raw)
+                    source.seek(offset + 8)
                 if chunk_type in {b"tEXt", b"zTXt", b"iTXt"}:
                     prefix = source.read(min(length, 80))
                     keyword, separator, _ = prefix.partition(b"\x00")
@@ -292,6 +318,7 @@ def _png_metadata_chunks(path, size):
                     break
             if not saw_iend:
                 _fail("format_invalid")
+            return tuple(raw_views)
     except OSError:
         _fail("input_unavailable")
 
@@ -363,6 +390,18 @@ def _image_metadata(path, ext):
             ):
                 _fail("format_mismatch")
             metadata = {"format": image.format, "info": image.info}
+            if image.format == "PNG":
+                # PngStream retains text separately from structural info keys.
+                # Accessing Image.text would load pixels to read trailing chunks,
+                # which the boundary prepass already rejects in this mode.
+                metadata["png_text"] = {
+                    key: {
+                        "text": str(value),
+                        "language": getattr(value, "lang", ""),
+                        "translated_keyword": getattr(value, "tkey", ""),
+                    }
+                    for key, value in image.png.im_text.items()
+                }
             if image.format == "JPEG":
                 segments = list(image.applist)
                 if (
@@ -439,11 +478,12 @@ def inspect_media_metadata(
         )
         if not magic_ok:
             _fail("format_mismatch")
+        container_views = ()
         if ext == ".png":
-            _png_metadata_chunks(path, before[2])
+            container_views = _png_metadata_chunks(path, before[2])
         else:
             _check_jpeg_metadata_boundaries(path)
-        views = _image_metadata(path, ext)
+        views = _bounded_views(container_views, _image_metadata(path, ext))
         kind = "image"
     after = _snapshot(path)
     if after != before:
