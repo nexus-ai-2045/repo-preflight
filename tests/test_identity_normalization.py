@@ -1402,3 +1402,109 @@ def test_text_delta_repetitive_input_has_bounded_full_fallback():
     result = ENGINE.scan_private_text_delta(previous, previous + "SAFE = 2\n", [DENIED])
     assert result["status"] == "fail"
     assert result["delta_full_fallback"] is True
+
+
+@pytest.mark.parametrize(
+    ("expression", "value"),
+    [
+        (r"('c:' + '\users\fixture\vault')", r"c:\users\fixture\vault"),
+        (r"('fixture-\t' + 'private-operator')", r"fixture-\tprivate-operator"),
+        (r"('fixture-\n' + 'private-operator')", r"fixture-\nprivate-operator"),
+        ("('fixture-''private-' + 'operator')", "fixture-'private-operator"),
+        (r"('fixture-\' + 'private-operator')", "fixture-\\private-operator"),
+        (
+            "(('fixture-private-') # comment\n + ('operator'))",
+            "fixture-private-operator",
+        ),
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "$value = "])
+def test_powershell_single_quoted_concatenation_preserves_literal_values(
+    expression, value, prefix
+):
+    text = prefix + expression
+    result = ENGINE.scan_private_text(text, [value])
+    assert result["status"] == "fail"
+    assert result["literal_match_count"] == 1
+
+
+def test_powershell_split_home_path_is_detected_without_python_escape_decoding():
+    expression = r"$path = ('C:' + '\Us' + 'ers\fixture-operator\vault')"
+    result = ENGINE.scan_private_text(expression, [DENIED])
+    assert result["status"] == "fail"
+    assert result["local_path_match"] is True
+    assert result["reconstructed_path_match"] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$x = 'fixture-private-' + dynamic + 'operator'",
+        "$x = call('fixture-private-') + 'operator'",
+        "$x = ('fixture-private-' + 'operator').replace('x', 'y') + 'suffix'",
+    ],
+)
+def test_powershell_recovery_does_not_cross_dynamic_or_call_boundaries(text):
+    views = ENGINE.static_string_views(text)
+    assert not any(value == "fixture-private-operatorsuffix" for value, _ in views)
+    if ".replace" not in text:
+        assert not any(value == "fixture-private-operator" for value, _ in views)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$x = ('fixture-private-' + 'unterminated)",
+        '$x = ("fixture-private-" + "\\u{6f}perator")',
+        "$x = ('fixture-private-' + 'operator';)",
+    ],
+)
+def test_unsupported_or_malformed_foreign_chain_remains_fail_closed(text):
+    with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
+        ENGINE.scan_private_text(text, [DENIED])
+
+
+@pytest.mark.parametrize("with_powershell_values", [False, True])
+def test_many_fences_do_not_recopy_all_accumulated_views(
+    monkeypatch, with_powershell_values
+):
+    copied = []
+
+    class MeasuredSet(set):
+        def __init__(self, values=()):
+            values = list(values)
+            copied.append(len(values))
+            super().__init__(values)
+
+        def update(self, values):
+            values = list(values)
+            copied.append(len(values))
+            super().update(values)
+
+    monkeypatch.setattr(ENGINE, "set", MeasuredSet, raising=False)
+
+    def work(count):
+        copied.clear()
+        expressions = [
+            (
+                (r"'public-\t' + 'brand-" + str(index) + "'")
+                if with_powershell_values
+                else repr("public-brand-" + str(index))
+            )
+            for index in range(count)
+        ]
+        source = "\n".join("```\n" + value + "\n```" for value in expressions)
+        views = ENGINE.static_string_views(source)
+        values = {value for value, _ in views}
+        expected = {
+            (r"public-\tbrand-" if with_powershell_values else "public-brand-")
+            + str(index)
+            for index in range(count)
+        }
+        assert expected <= values
+        assert sum(copied) <= len(views) * 2
+        return sum(copied)
+
+    small = work(100)
+    large = work(400)
+    assert large <= max(1, small) * 5

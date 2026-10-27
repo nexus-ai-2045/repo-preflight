@@ -1,7 +1,7 @@
 """公開repo-preflightの汎用identity正規化・照合の正本。
 
 個人値・account・hook・例外・ファイル配置は持たない。policyはcallerが非公開入力から渡す。
-検査対象文字列を実行せず、静的Python literalだけを安全に正規化する。
+検査対象文字列を実行せず、Pythonの静的literalと限定した別言語の連結候補を正規化する。
 """
 
 from __future__ import annotations
@@ -284,11 +284,11 @@ def _needs_foreign_literal_recovery(fragment: str) -> bool:
     return False
 
 
-def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
+def _literal_plus_chains(text: str, *, token_source=None) -> list[tuple[str, str]]:
     """完全staticな括弧だけを連結へ戻し、callや動的operandの境界を越えない。"""
     tokens = [
         token
-        for token in _recovery_tokens(text)
+        for token in (_recovery_tokens(text) if token_source is None else token_source)
         if token.lastgroup not in {"comment", "space"}
     ]
     ranges = []
@@ -326,6 +326,12 @@ def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
     for index, token in enumerate(tokens):
         current = stack[-1]
         kind = token.lastgroup
+        if (
+            kind == "unterminated_literal"
+            and current["pluses"]
+            and current["expects_term"]
+        ):
+            raise ValueError("private_identity_normalization_incomplete")
         if kind == "unterminated_comment" and any(item["pluses"] for item in stack):
             raise ValueError("private_identity_normalization_incomplete")
         if kind == "literal":
@@ -395,6 +401,72 @@ def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
         )
         for first, last in ranges
     ]
+
+
+_POWERSHELL_SINGLE_LITERAL = r"'(?:[^']|'')*'"
+_POWERSHELL_RECOVERY_TOKEN = re.compile(
+    r"(?P<literal>" + _POWERSHELL_SINGLE_LITERAL + r'|"(?:[^"\\\r\n]|\\[\s\S])*")'
+    r"|(?P<unterminated_literal>')|" + _RECOVERY_NON_LITERAL_SOURCE
+)
+_POWERSHELL_RECOVERY_NON_LITERAL = re.compile(
+    r"(?P<unterminated_literal>')|" + _RECOVERY_NON_LITERAL_SOURCE
+)
+
+
+def _powershell_recovery_tokens(text: str):
+    """単一引用符ではbackslashを消費しない。閉じないquoteの終端探索は一度だけ。"""
+    closed = _closed_quote_starts(text)
+    last_quote = text.rfind("'")
+    position = 0
+    while position < len(text):
+        cannot_close = (text[position] == "'" and position == last_quote) or (
+            text[position] == '"' and position not in closed
+        )
+        token = (
+            _POWERSHELL_RECOVERY_NON_LITERAL
+            if cannot_close
+            else _POWERSHELL_RECOVERY_TOKEN
+        ).match(text, position)
+        yield token
+        position = token.end()
+
+
+def _powershell_single_chain_value(expression: str) -> str | None:
+    """完全staticな単一引用符の連結だけを読む。評価・補間は行わない。"""
+    pieces = []
+    depth = 0
+    expects_term = True
+    for token in _powershell_recovery_tokens(expression):
+        kind = token.lastgroup
+        if kind in {"space", "comment"}:
+            continue
+        if kind == "open" and expects_term:
+            depth += 1
+        elif kind == "close" and not expects_term and depth:
+            depth -= 1
+        elif kind == "plus" and not expects_term:
+            expects_term = True
+        elif kind == "literal" and token.group().startswith("'") and expects_term:
+            pieces.append(token.group()[1:-1].replace("''", "'"))
+            expects_term = False
+        else:
+            return None
+    return (
+        "".join(pieces) if len(pieces) >= 2 and not expects_term and not depth else None
+    )
+
+
+def _powershell_single_string_views(text: str) -> list[tuple[str, str]]:
+    if "+" not in text or "'" not in text:
+        return []
+    views = []
+    for expression, original in _literal_plus_chains(
+        text, token_source=_powershell_recovery_tokens(text)
+    ):
+        value = _powershell_single_chain_value(expression)
+        if value is not None:
+            views.append((value, original))
+    return views
 
 
 def _source_line_utf8(line: str) -> bytes:
@@ -643,25 +715,62 @@ def _static_string_views(
         return None
 
     views = []
+    seen_views = set()
+    seen_view_count = 0
     for fragment_index, fragment in enumerate(fragments):
         fragment = textwrap.dedent(fragment)
+        # 構文の指定がない入力では候補を追加し、Pythonの既存解釈を置き換えない。
+        # Pythonでもparseできる \t 等がPowerShellの値を隠す場合も検査する。
+        powershell_views = _powershell_single_string_views(fragment)
+
+        def append_powershell_views():
+            nonlocal seen_view_count
+            if not powershell_views:
+                return
+            seen_views.update(views[seen_view_count:])
+            for value, original in powershell_views:
+                if (value, original) in seen_views:
+                    continue
+                if regex_roles is not None and any(
+                    "pattern" in role
+                    and role["pattern_spans"]
+                    and original in role["source"]
+                    for role in regex_roles
+                ):
+                    regex_roles.append(
+                        {
+                            "index": len(views),
+                            "value_spans": _generic_regex_path_spans(
+                                value, source_token=True
+                            ),
+                            "source_spans": [],
+                        }
+                    )
+                views.append((value, original))
+                seen_views.add((value, original))
+            seen_view_count = len(views)
+
         try:
             tree = ast.parse(fragment)
         except (SyntaxError, ValueError):
             # JS/TSや別行の構文エラーで、引用を連結した式だけを既存AST評価へ渡す。
             # 連結のない文章は文字単位の回復解析をしない。
             if not _needs_foreign_literal_recovery(fragment):
+                append_powershell_views()
                 continue
             for expression_source, original in _literal_plus_chains(fragment):
                 try:
                     expression = ast.parse("(" + expression_source + "\n)", mode="eval")
                     value = static_string(expression.body)
                 except (SyntaxError, ValueError, RecursionError):
-                    raise ValueError(
-                        "private_identity_normalization_incomplete"
-                    ) from None
+                    value = _powershell_single_chain_value(expression_source)
+                    if value is None:
+                        raise ValueError(
+                            "private_identity_normalization_incomplete"
+                        ) from None
                 if value is not None:
                     views.append((value, original))
+            append_powershell_views()
             continue
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
@@ -775,6 +884,7 @@ def _static_string_views(
             visit(tree)
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
+        append_powershell_views()
     return views
 
 
