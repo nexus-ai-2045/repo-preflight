@@ -907,6 +907,122 @@ def _pdf_validate_stream_encoding(stream, filters):
         raise MediaError("unsupported_stream")
 
 
+def _icc_profile(data, output, components):
+    """Inspect the bounded ICC v4 matrix subset, including every locale.
+
+    ICC.1:2022 sections 7, 10.15, 10.18, 10.22 and 10.31. Unknown tags,
+    overlapping payloads and nonzero unclaimed bytes never gain an exemption.
+    Numeric colour values are structural data, not character encodings.
+    """
+    import struct
+
+    def u32(offset):
+        if offset < 0 or offset + 4 > len(data):
+            raise MediaError("unsupported_stream")
+        return struct.unpack_from(">I", data, offset)[0]
+
+    if (
+        len(data) < 132
+        or len(data) > DATA_LIMIT
+        or u32(0) != len(data)
+        or data[36:40] != b"acsp"
+        or data[8] != 4
+        or any(data[10:12])
+        or any(data[100:128])
+        or {b"GRAY": 1, b"RGB ": 3, b"CMYK": 4}.get(data[16:20]) != components
+    ):
+        raise MediaError("unsupported_stream")
+    # Fixed header signatures may carry text; profile ID and numeric header
+    # fields retain their specified binary meaning.
+    for start in (4, 12, 16, 20, 36, 40, 48, 52, 80):
+        output.text(data[start : start + 4].decode("ascii", errors="strict"))
+    count = u32(128)
+    table_end = 132 + 12 * count
+    if not count or count > OBJECT_LIMIT or table_end > len(data):
+        raise MediaError("unsupported_stream")
+    signatures, ranges, unique = set(), [], {}
+    allowed = {
+        b"desc": b"mluc",
+        b"cprt": b"mluc",
+        b"wtpt": b"XYZ ",
+        b"rXYZ": b"XYZ ",
+        b"gXYZ": b"XYZ ",
+        b"bXYZ": b"XYZ ",
+        b"chad": b"sf32",
+        b"rTRC": b"para",
+        b"gTRC": b"para",
+        b"bTRC": b"para",
+    }
+    for index in range(count):
+        entry = 132 + 12 * index
+        signature, start, size = struct.unpack_from(">4sII", data, entry)
+        end = start + size
+        if (
+            signature in signatures
+            or signature not in allowed
+            or start < table_end
+            or start % 4
+            or size < 8
+            or end > len(data)
+            or data[start : start + 4] != allowed[signature]
+            or any(data[start + 4 : start + 8])
+        ):
+            raise MediaError("unsupported_stream")
+        signatures.add(signature)
+        for first, last in ranges:
+            if start < last and first < end and (first, last) != (start, end):
+                raise MediaError("unsupported_stream")
+        ranges.append((start, end))
+        unique[(start, end)] = allowed[signature]
+    _covered(data, ranges, start=table_end)
+    for (start, end), kind in unique.items():
+        size = end - start
+        if kind == b"mluc":
+            if size < 16:
+                raise MediaError("unsupported_stream")
+            records, record_size = u32(start + 8), u32(start + 12)
+            header = 16 + 12 * records
+            if (
+                not records
+                or records > OBJECT_LIMIT
+                or record_size != 12
+                or header > size
+            ):
+                raise MediaError("unsupported_stream")
+            strings = set()
+            for index in range(records):
+                entry = start + 16 + 12 * index
+                locale = data[entry : entry + 4]
+                length, offset = u32(entry + 4), u32(entry + 8)
+                if (
+                    not all(65 <= c <= 90 or 97 <= c <= 122 for c in locale)
+                    or offset < header
+                    or length % 2
+                    or offset % 2
+                    or offset + length > size
+                ):
+                    raise MediaError("unsupported_stream")
+                first, last = start + offset, start + offset + length
+                output.text(locale.decode("ascii"))
+                strings.add((first, last))
+            strings = sorted(strings)
+            for previous, current in zip(strings, strings[1:]):
+                if previous[1] > current[0]:
+                    raise MediaError("unsupported_stream")
+            for first, last in strings:
+                output.text(data[first:last].decode("utf-16-be", errors="strict"))
+            _covered(data, strings, start=start + header, end=end)
+        elif kind == b"para":
+            if size < 12:
+                raise MediaError("unsupported_stream")
+            function, reserved = struct.unpack_from(">HH", data, start + 8)
+            parameters = {0: 1, 1: 3, 2: 4, 3: 5, 4: 7}.get(function)
+            if reserved or parameters is None or size != 12 + 4 * parameters:
+                raise MediaError("unsupported_stream")
+        elif size != {b"XYZ ": 20, b"sf32": 44}[kind]:
+            raise MediaError("unsupported_stream")
+
+
 def _pdf_context(reader, output, budget):
     from pypdf.generic import (
         ArrayObject,
@@ -972,6 +1088,7 @@ def _pdf_context(reader, output, budget):
             raise MediaError("page_limit")
     stack = [reader.trailer, *objects, *reader.resolved_objects.values()]
     seen, streams, fonts = set(), [], {}
+    icc_streams = set()
     dictionaries, action_entries, cmap_objects = [], [], set()
     glyph_dictionaries, glyph_streams, forbidden_dictionaries = set(), set(), []
     forbidden = {
@@ -1033,6 +1150,11 @@ def _pdf_context(reader, output, budget):
                     cmap_objects.add(id(value.get_object()))
                 stack.append(value)
         elif isinstance(obj, (ArrayObject, list, tuple)):
+            if len(obj) == 2 and obj[0] == "/ICCBased":
+                profile = obj[1].get_object()
+                if not isinstance(profile, StreamObject):
+                    raise MediaError("unsupported_stream")
+                icc_streams.add(id(profile))
             stack.extend(obj)
         elif isinstance(obj, (TextStringObject, NameObject, str)):
             output.text(str(obj))
@@ -1165,6 +1287,25 @@ def _pdf_context(reader, output, budget):
         data = decoded[id(stream)]
         kind = stream.get("/Type")
         if id(stream) in fonts:
+            continue
+        if id(stream) in icc_streams:
+            if set(stream) - {
+                "/N",
+                "/Range",
+                "/Alternate",
+                "/Length",
+                "/Filter",
+                "/DecodeParms",
+            }:
+                raise MediaError("unsupported_stream")
+            components = stream.get("/N")
+            if (
+                not isinstance(components, int)
+                or isinstance(components, bool)
+                or components not in {1, 3, 4}
+            ):
+                raise MediaError("unsupported_stream")
+            _icc_profile(data, output, int(components))
             continue
         if kind == "/ObjStm":
             _pdf_metadata(data, output)
