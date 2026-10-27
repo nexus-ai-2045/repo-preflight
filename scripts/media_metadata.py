@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import struct
+from numbers import Rational
 from pathlib import Path
 
 DATA_LIMIT = 64_000_000
@@ -59,6 +60,8 @@ def _flatten(value, *, depth=0, count=None):
         yield value.encode("utf-8", "replace")
     elif value is None or isinstance(value, (bool, int, float)):
         yield str(value).encode("ascii", "replace")
+    elif isinstance(value, Rational):
+        yield f"{value.numerator}/{value.denominator}".encode("ascii")
     elif isinstance(value, dict):
         for key, item in value.items():
             yield from _flatten(str(key), depth=depth + 1, count=count)
@@ -305,6 +308,18 @@ def _image_metadata(path, ext):
             ):
                 _fail("format_mismatch")
             metadata = {"format": image.format, "info": image.info}
+            if image.format == "JPEG":
+                segments = list(image.applist)
+                if (
+                    sum(
+                        kind == "APP1" and data.startswith(b"Exif\x00\x00")
+                        for kind, data in segments
+                    )
+                    > 1
+                ):
+                    _fail("duplicate_exif")
+                # info keeps only selected/latest values; applist preserves each APP/COM occurrence.
+                metadata["jpeg_segments"] = segments
             if ext in {".jpg", ".jpeg"} or "exif" in image.info:
                 exif = image.getexif()
                 if exif:

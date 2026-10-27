@@ -437,3 +437,47 @@ def test_png_nested_unicode_exif_is_scanned_without_pixels(
     result = reader.inspect_media_metadata(path, ())
     assert marker.encode() in b"\n".join(result["metadata_views"])
     assert marker.encode() not in result["head_sample"] + result["tail_sample"]
+
+
+def test_jpeg_all_comment_occurrences_are_scanned(tmp_path, monkeypatch):
+    raw = jpeg_with_middle_exif_user_comment(b"ASCII\x00\x00\x00harmless")
+    offset = raw.index(b"Exif\x00\x00") - 4
+
+    def comment(value):
+        return b"\xff\xfe" + (len(value) + 2).to_bytes(2, "big") + value
+
+    marker = b"dummy-secret-earlier-comment"
+    raw = raw[:offset] + comment(marker) + comment(b"harmless-last") + raw[offset:]
+    path = tmp_path / "comments.jpg"
+    path.write_bytes(raw)
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("pixel decode")
+    )
+    result = reader.inspect_media_metadata(path, ())
+    assert marker in b"\n".join(result["metadata_views"])
+    assert marker not in result["head_sample"] + result["tail_sample"]
+
+
+def test_jpeg_duplicate_exif_is_rejected(tmp_path):
+    raw = jpeg_with_middle_exif_user_comment(b"ASCII\x00\x00\x00first")
+    offset = raw.index(b"Exif\x00\x00") - 4
+    size = int.from_bytes(raw[offset + 2 : offset + 4], "big") + 2
+    raw = raw[:offset] + raw[offset : offset + size] + raw[offset:]
+    path = tmp_path / "duplicate-exif.jpg"
+    path.write_bytes(raw)
+    with pytest.raises(reader.MediaMetadataError, match="^duplicate_exif$"):
+        reader.inspect_media_metadata(path, ())
+
+
+def test_camera_rational_exif_is_supported(tmp_path):
+    from PIL.TiffImagePlugin import IFDRational
+
+    exif = Image.Exif()
+    exif[34665] = {33434: IFDRational(1, 125), 33437: IFDRational(28, 10)}
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="JPEG", exif=exif)
+    path = tmp_path / "camera.jpg"
+    path.write_bytes(output.getvalue())
+    result = reader.inspect_media_metadata(path, ())
+    assert b"1/125" in result["metadata_views"]
+    assert b"14/5" in result["metadata_views"]
