@@ -208,8 +208,8 @@ def test_same_size_metadata_only_change_is_caught_by_final_hash(tmp_path, monkey
     monkeypatch.setattr(reader, "_snapshot", lambda _path: snapshot)
     original_metadata = reader._image_metadata
 
-    def mutate_after_metadata(target, ext):
-        result = original_metadata(target, ext)
+    def mutate_after_metadata(target, ext, xml_reader):
+        result = original_metadata(target, ext, xml_reader)
         changed = bytearray(target.read_bytes())
         marker_at = changed.index(b"same-size-marker")
         changed[marker_at] ^= 1
@@ -586,3 +586,54 @@ def test_png_ancillary_metadata_is_preserved_independently_of_info(tmp_path):
     marker = b"dummy-secret-ancillary"
     assert marker in b"\n".join(result["metadata_views"])
     assert marker not in result["head_sample"] + result["tail_sample"]
+
+
+@pytest.mark.parametrize("kind", ["png", "jpeg", "mp4"])
+def test_xmp_character_references_are_decoded_without_pixel_load(
+    tmp_path, monkeypatch, kind
+):
+    marker = "dummy-secret-xmp"
+    entities = "".join("&#" + str(ord(c)) + ";" for c in marker)
+    xml = (
+        '<root creator="' + entities + '"><value>' + entities + "</value></root>"
+    ).encode()
+    if kind == "png":
+        info = PngImagePlugin.PngInfo()
+        info.add_itxt("XML:com.adobe.xmp", xml.decode(), zip=True)
+        output = io.BytesIO()
+        Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+        raw = output.getvalue()
+        suffix = ".png"
+    elif kind == "jpeg":
+        raw = jpeg_with_middle_exif_user_comment(b"ASCII\x00\x00\x00public")
+        payload = b"http://ns.adobe.com/xap/1.0/\x00" + xml
+        offset = raw.index(b"Exif\x00\x00") - 4
+        raw = (
+            raw[:offset]
+            + b"\xff\xe1"
+            + (len(payload) + 2).to_bytes(2, "big")
+            + payload
+            + raw[offset:]
+        )
+        suffix = ".jpg"
+    else:
+        payload = bytes.fromhex("be7acfcb97a942e89c71999491e3afac") + xml
+        raw = mp4_bytes(struct.pack(">I4s", len(payload) + 8, b"uuid") + payload)
+        suffix = ".mp4"
+    path = tmp_path / ("xmp" + suffix)
+    path.write_bytes(raw)
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("pixel decode")
+    )
+    result = reader.inspect_media_metadata(
+        path, (), probe_runner=lambda *_a, **_k: (0, video_probe_json(), b"")
+    )
+    assert marker.encode() in b"\n".join(result["metadata_views"])
+
+
+@pytest.mark.parametrize(
+    "xml", [b'<!DOCTYPE root [<!ENTITY x "secret">]><root>&x;</root>', b"<broken>"]
+)
+def test_xmp_dtd_and_malformed_xml_are_rejected(xml):
+    with pytest.raises(reader.MediaMetadataError, match="^xmp_unverified$"):
+        reader._xmp_values(xml, None)

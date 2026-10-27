@@ -1616,7 +1616,10 @@ def _inspect_history_media(repo, object_id, size, names, identity):
         if oid.hexdigest() != object_id:
             raise RuntimeError("git_history_inventory_failed")
         result = module.inspect_media_metadata(
-            path, tuple(names), probe_runner=media._run
+            path,
+            tuple(names),
+            probe_runner=media._run,
+            xml_reader=media._pdf_xml_metadata,
         )
         if (
             result["source_sha256"] != sha.hexdigest()

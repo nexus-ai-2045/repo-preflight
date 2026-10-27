@@ -378,7 +378,35 @@ def _check_jpeg_metadata_boundaries(path):
     _fail("format_invalid")
 
 
-def _image_metadata(path, ext):
+def _xmp_values(data, xml_reader):
+    if xml_reader is None:
+        try:
+            from .media_identity import _pdf_xml_metadata
+        except ImportError:
+            from media_identity import _pdf_xml_metadata
+        xml_reader = _pdf_xml_metadata
+    values = []
+    total = 0
+
+    class Collector:
+        def text(self, value):
+            nonlocal total
+            encoded = value.encode("utf-8")
+            total += len(encoded)
+            if total > TEXT_LIMIT or len(values) >= NODE_LIMIT:
+                _fail("metadata_limit")
+            values.append(encoded)
+
+    try:
+        xml_reader(data, Collector())
+    except MediaMetadataError:
+        raise
+    except Exception:
+        _fail("xmp_unverified")
+    return tuple(values)
+
+
+def _image_metadata(path, ext, xml_reader):
     try:
         from PIL import Image
     except ImportError:
@@ -390,6 +418,7 @@ def _image_metadata(path, ext):
             ):
                 _fail("format_mismatch")
             metadata = {"format": image.format, "info": image.info}
+            xmp_sources = []
             if image.format == "PNG":
                 # PngStream retains text separately from structural info keys.
                 # Accessing Image.text would load pixels to read trailing chunks,
@@ -402,6 +431,9 @@ def _image_metadata(path, ext):
                     }
                     for key, value in image.png.im_text.items()
                 }
+                for key, value in image.png.im_text.items():
+                    if key.lower() == "xml:com.adobe.xmp":
+                        xmp_sources.append(str(value).encode("utf-8"))
             if image.format == "JPEG":
                 segments = list(image.applist)
                 if (
@@ -414,18 +446,34 @@ def _image_metadata(path, ext):
                     _fail("duplicate_exif")
                 # info keeps only selected/latest values; applist preserves each APP/COM occurrence.
                 metadata["jpeg_segments"] = segments
+                for kind, data in segments:
+                    if kind == "APP1" and data.startswith(
+                        b"http://ns.adobe.com/xap/1.0/\x00"
+                    ):
+                        xmp_sources.append(data.split(b"\x00", 1)[1])
+                    elif kind == "APP1" and data.startswith(
+                        b"http://ns.adobe.com/xmp/extension/\x00"
+                    ):
+                        _fail("xmp_extended_unsupported")
             if ext in {".jpg", ".jpeg"} or "exif" in image.info:
                 exif = image.getexif()
                 if exif:
                     metadata["exif"] = dict(exif)
+                    if 700 in exif:
+                        xmp_sources.append(bytes(exif[700]))
                     # Pillow exposes these IFDs separately from the top-level map.
                     for ifd_tag in (34665, 34853):
                         if ifd_tag in exif:
                             child = exif.get_ifd(ifd_tag)
                             metadata[f"exif_ifd_{ifd_tag}"] = dict(child)
+                            if 700 in child:
+                                xmp_sources.append(bytes(child[700]))
                             if ifd_tag == 34665 and 40965 in child:
                                 metadata["exif_interop"] = dict(exif.get_ifd(40965))
-            return _views(metadata)
+            return _bounded_views(
+                _views(metadata),
+                *(_xmp_values(data, xml_reader) for data in xmp_sources),
+            )
     except MediaMetadataError:
         raise
     except Exception:
@@ -433,7 +481,7 @@ def _image_metadata(path, ext):
 
 
 def inspect_media_metadata(
-    path: Path, source_names: tuple[str, ...], *, probe_runner=None
+    path: Path, source_names: tuple[str, ...], *, probe_runner=None, xml_reader=None
 ) -> dict:
     """Read bounded metadata and samples without decoding image pixels or video frames."""
     path = Path(path)
@@ -468,7 +516,16 @@ def inspect_media_metadata(
                 except MediaError:
                     raise
 
-        views = _bounded_views(container_views, _mp4_metadata(path, probe_runner))
+        xmp_views = []
+        xmp_uuid = bytes.fromhex("be7acfcb97a942e89c71999491e3afac")
+        for item in container_views:
+            if item.startswith(b"uuid" + xmp_uuid):
+                xmp_views.extend(_xmp_values(item[20:], xml_reader))
+            elif xmp_uuid in item:
+                _fail("xmp_nested_unsupported")
+        views = _bounded_views(
+            container_views, _mp4_metadata(path, probe_runner), xmp_views
+        )
         kind = "mp4"
     else:
         magic_ok = (
@@ -483,7 +540,7 @@ def inspect_media_metadata(
             container_views = _png_metadata_chunks(path, before[2])
         else:
             _check_jpeg_metadata_boundaries(path)
-        views = _bounded_views(container_views, _image_metadata(path, ext))
+        views = _bounded_views(container_views, _image_metadata(path, ext, xml_reader))
         kind = "image"
     after = _snapshot(path)
     if after != before:

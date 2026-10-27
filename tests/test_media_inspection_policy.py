@@ -156,3 +156,20 @@ def test_expanded_metadata_views_are_bounded(submission, monkeypatch):
     monkeypatch.setattr(MODULE, "_MEDIA_METADATA_DECODED_BUDGET_BYTES", 64)
     result = run_scan(repo, base, media_inspection="metadata")
     assert result["checks"]["private_identity_scan"]["status"] == "tool_error"
+
+
+def test_xmp_decoded_identity_reaches_private_callback(submission):
+    repo, base, _, _ = submission
+    marker = "synthetic-private-identity-marker"
+    encoded = "".join("&#" + str(ord(c)) + ";" for c in marker)
+    info = PngImagePlugin.PngInfo()
+    info.add_itxt("XML:com.adobe.xmp", "<root>" + encoded + "</root>", zip=True)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    (repo / "xmp.png").write_bytes(output.getvalue())
+    git(repo, "add", "xmp.png")
+    git(repo, "commit", "-m", "synthetic XMP metadata")
+    result = run_scan(repo, base, media_inspection="metadata")
+    assert result["status"] == "blocked"
+    assert result["checks"]["private_identity_scan"]["status"] == "fail"
+    assert marker not in json.dumps(result)
