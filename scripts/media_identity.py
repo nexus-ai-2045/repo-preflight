@@ -474,7 +474,9 @@ PDF_NUMBER_TOKEN = re.compile(
 PDF_WHITESPACE = b"\x00\t\n\f\r "
 
 
-def _pdf_metadata(data, output, *, inspect_raw=True, content_syntax=False):
+def _pdf_metadata(
+    data, output, *, inspect_raw=True, content_syntax=False, compact_bytes=False
+):
     """Raw comments plus existing lexer positions and authoritative PDF primitives."""
     from pdfminer.psparser import PSBaseParser, PSEOF, PSKeyword, PSLiteral
     from pypdf.generic import NameObject
@@ -489,7 +491,7 @@ def _pdf_metadata(data, output, *, inspect_raw=True, content_syntax=False):
     # Keep the complete source in that ambiguous case.
     content_syntax = content_syntax and b"\x00" not in data
     if inspect_raw and not content_syntax:
-        _pdf_text_bytes(data, output, compact=True)
+        _pdf_text_bytes(data, output, compact=compact_bytes)
     raw_parts, raw_cursor = [], 0
 
     def omit_syntax(start, end):
@@ -522,7 +524,9 @@ def _pdf_metadata(data, output, *, inspect_raw=True, content_syntax=False):
                 raise MediaError("unverified")
             if inspect_raw and content_syntax:
                 _pdf_text_bytes(
-                    b"".join(raw_parts) + data[raw_cursor:], output, compact=True
+                    b"".join(raw_parts) + data[raw_cursor:],
+                    output,
+                    compact=compact_bytes,
                 )
             return
         count += 1
@@ -561,12 +565,12 @@ def _pdf_metadata(data, output, *, inspect_raw=True, content_syntax=False):
         else:
             continue
         if isinstance(value, bytes):
-            _pdf_text_bytes(value, output, compact=True)
+            _pdf_text_bytes(value, output, compact=compact_bytes)
         else:
             output.text(str(value))
             original = getattr(value, "original_bytes", None)
             if original is not None:
-                _pdf_text_bytes(original, output, compact=True)
+                _pdf_text_bytes(original, output, compact=compact_bytes)
         if content_syntax and isinstance(token, bytes):
             # String source syntax (hex digits / octal escapes) is not another
             # character encoding. All views of its authoritative decoded bytes
@@ -700,7 +704,7 @@ class _PDFSource:
         syntax = bytearray(self.data)
         for start, end in all_ranges:
             syntax[start:end] = b" " * (end - start)
-        _pdf_metadata(bytes(syntax), output, inspect_raw=False)
+        _pdf_metadata(bytes(syntax), output, inspect_raw=False, compact_bytes=True)
 
 
 def _pdf_xref_shape(stream):
@@ -1365,7 +1369,9 @@ def _pdf_context(reader, output, budget, text_streams=None):
             return self.parsed_contents
 
     def inspect_content(stream, contents):
-        _pdf_metadata(decoded[id(stream)], output, content_syntax=True)
+        _pdf_metadata(
+            decoded[id(stream)], output, content_syntax=True, compact_bytes=True
+        )
         for operands, operator in contents.operations:
             if operator == b"INLINE IMAGE":
                 raise MediaError("unsupported_image")
@@ -1474,7 +1480,7 @@ def _pdf_context(reader, output, budget, text_streams=None):
             _icc_profile(data, output, int(components))
             continue
         if kind == "/ObjStm":
-            _pdf_metadata(data, output)
+            _pdf_metadata(data, output, compact_bytes=True)
             continue
         if kind == "/XRef":
             _pdf_xref_shape(stream)
@@ -1489,14 +1495,14 @@ def _pdf_context(reader, output, budget, text_streams=None):
         elif kind == "/Metadata" or stream.get("/Subtype") == "/XML":
             _pdf_xml_metadata(data, output)
         elif id(stream) in cmap_objects:
-            _pdf_metadata(data, output)
+            _pdf_metadata(data, output, compact_bytes=True)
         elif (kind == "/Pattern" and stream.get("/PatternType") == 1) or stream.get(
             "/FunctionType"
         ) == 4:
             # Standard graphics source is inspected as inert text, never run.
             # Declared binary/unknown roles do not acquire a text exemption.
             data.decode("ascii", errors="strict")
-            _pdf_metadata(data, output, content_syntax=True)
+            _pdf_metadata(data, output, content_syntax=True, compact_bytes=True)
             text_streams.add(id(stream))
             if kind == "/Pattern":
                 ContentStream(stream, reader).operations
