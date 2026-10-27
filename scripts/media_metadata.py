@@ -296,6 +296,61 @@ def _png_metadata_chunks(path, size):
         _fail("input_unavailable")
 
 
+def _check_jpeg_metadata_boundaries(path):
+    """Reject metadata after the first scan; Pillow's lazy view stops at SOS.
+
+    Follow JPEG marker boundaries like the existing strict reader, without
+    decoding pixels or treating entropy-coded image data as text.
+    """
+    with path.open("rb") as source:
+        data = source.read(DATA_LIMIT + 1)
+    if len(data) > DATA_LIMIT:
+        _fail("size_limit")
+    position = 2
+    in_scan = seen_scan = False
+    markers = 0
+    while position < len(data):
+        if in_scan:
+            position = data.find(b"\xff", position)
+            if position < 0:
+                _fail("format_invalid")
+            end = position + 1
+            while end < len(data) and data[end] == 255:
+                end += 1
+            if end == len(data):
+                _fail("format_invalid")
+            if data[end] == 0 or 0xD0 <= data[end] <= 0xD7:
+                position = end + 1
+                continue
+            in_scan = False
+        if data[position] != 255:
+            _fail("format_invalid")
+        while position < len(data) and data[position] == 255:
+            position += 1
+        if position >= len(data):
+            _fail("format_invalid")
+        kind = data[position]
+        position += 1
+        markers += 1
+        if markers > NODE_LIMIT:
+            _fail("metadata_limit")
+        if kind == 0xD9:
+            if not seen_scan or position != len(data):
+                _fail("format_invalid")
+            return
+        if kind not in {0xC0, 0xC2, 0xC4, 0xDA, 0xDB, 0xDD, 0xFE, *range(0xE0, 0xF0)}:
+            _fail("format_invalid")
+        length = int.from_bytes(data[position : position + 2], "big")
+        if length < 2 or position + length > len(data):
+            _fail("format_invalid")
+        if seen_scan and (kind == 0xFE or 0xE0 <= kind <= 0xEF):
+            _fail("metadata_after_image_data")
+        position += length
+        if kind == 0xDA:
+            in_scan = seen_scan = True
+    _fail("format_invalid")
+
+
 def _image_metadata(path, ext):
     try:
         from PIL import Image
@@ -386,6 +441,8 @@ def inspect_media_metadata(
             _fail("format_mismatch")
         if ext == ".png":
             _png_metadata_chunks(path, before[2])
+        else:
+            _check_jpeg_metadata_boundaries(path)
         views = _image_metadata(path, ext)
         kind = "image"
     after = _snapshot(path)

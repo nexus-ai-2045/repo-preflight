@@ -481,3 +481,33 @@ def test_camera_rational_exif_is_supported(tmp_path):
     result = reader.inspect_media_metadata(path, ())
     assert b"1/125" in result["metadata_views"]
     assert b"14/5" in result["metadata_views"]
+
+
+def test_progressive_jpeg_between_scan_metadata_is_rejected(tmp_path, monkeypatch):
+    output = io.BytesIO()
+    Image.new("RGB", (16, 16)).save(output, format="JPEG", progressive=True)
+    raw = output.getvalue()
+    first = raw.index(b"\xff\xda")
+    second = raw.index(b"\xff\xda", first + 2)
+
+    def comment(value):
+        return b"\xff\xfe" + (len(value) + 2).to_bytes(2, "big") + value
+
+    padding = comment(b"x" * 35000) * 2
+    hidden = comment(b"dummy-secret-between-scans")
+    path = tmp_path / "progressive.jpg"
+    path.write_bytes(raw[:second] + padding + hidden + padding + raw[second:])
+    # The fixture is an image accepted by the normal decoder.
+    with Image.open(path) as image:
+        image.load()
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("pixel decode")
+    )
+    with pytest.raises(reader.MediaMetadataError, match="^metadata_after_image_data$"):
+        reader.inspect_media_metadata(path, ())
+
+
+def test_progressive_jpeg_without_late_metadata_is_supported(tmp_path):
+    path = tmp_path / "progressive-clean.jpg"
+    Image.new("RGB", (16, 16)).save(path, format="JPEG", progressive=True)
+    assert reader.inspect_media_metadata(path, ())["kind"] == "image"
