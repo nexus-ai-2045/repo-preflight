@@ -472,7 +472,11 @@ def _image_metadata(path, ext, xml_reader):
                                 metadata["exif_interop"] = dict(exif.get_ifd(40965))
             return _bounded_views(
                 _views(metadata),
-                *(_xmp_values(data, xml_reader) for data in xmp_sources),
+                (
+                    value
+                    for data in xmp_sources
+                    for value in _xmp_values(data, xml_reader)
+                ),
             )
     except MediaMetadataError:
         raise
@@ -516,15 +520,16 @@ def inspect_media_metadata(
                 except MediaError:
                     raise
 
-        xmp_views = []
-        xmp_uuid = bytes.fromhex("be7acfcb97a942e89c71999491e3afac")
-        for item in container_views:
-            if item.startswith(b"uuid" + xmp_uuid):
-                xmp_views.extend(_xmp_values(item[20:], xml_reader))
-            elif xmp_uuid in item:
-                _fail("xmp_nested_unsupported")
+        def xmp_views():
+            xmp_uuid = bytes.fromhex("be7acfcb97a942e89c71999491e3afac")
+            for item in container_views:
+                if item.startswith(b"uuid" + xmp_uuid):
+                    yield from _xmp_values(item[20:], xml_reader)
+                elif xmp_uuid in item:
+                    _fail("xmp_nested_unsupported")
+
         views = _bounded_views(
-            container_views, _mp4_metadata(path, probe_runner), xmp_views
+            container_views, _mp4_metadata(path, probe_runner), xmp_views()
         )
         kind = "mp4"
     else:

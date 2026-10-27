@@ -637,3 +637,37 @@ def test_xmp_character_references_are_decoded_without_pixel_load(
 def test_xmp_dtd_and_malformed_xml_are_rejected(xml):
     with pytest.raises(reader.MediaMetadataError, match="^xmp_unverified$"):
         reader._xmp_values(xml, None)
+
+
+@pytest.mark.parametrize("kind", ["jpeg", "mp4"])
+def test_xmp_packets_stop_processing_at_aggregate_metadata_limit(
+    tmp_path, monkeypatch, kind
+):
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="JPEG")
+    raw = output.getvalue()
+    payload = b"http://ns.adobe.com/xap/1.0/\x00<root/>"
+    segment = b"\xff\xe1" + (len(payload) + 2).to_bytes(2, "big") + payload
+    if kind == "jpeg":
+        path = tmp_path / "many-xmp.jpg"
+        path.write_bytes(raw[:2] + segment * 3 + raw[2:])
+    else:
+        payload = bytes.fromhex("be7acfcb97a942e89c71999491e3afac") + b"<root/>"
+        box = struct.pack(">I4s", len(payload) + 8, b"uuid") + payload
+        path = tmp_path / "many-xmp.mp4"
+        path.write_bytes(mp4_bytes(box * 3))
+    calls = []
+
+    def xml_reader(data, output):
+        calls.append(True)
+        output.text("y" * 6000)
+
+    monkeypatch.setattr(reader, "TEXT_LIMIT", 10000)
+    with pytest.raises(reader.MediaMetadataError, match="^metadata_limit$"):
+        reader.inspect_media_metadata(
+            path,
+            (),
+            xml_reader=xml_reader,
+            probe_runner=lambda *_a, **_k: (0, video_probe_json(), b""),
+        )
+    assert len(calls) == 2
