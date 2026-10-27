@@ -13,7 +13,7 @@ from pypdf.generic import (
     NumberObject,
 )
 
-from test_media_identity import DENIED, MEDIA, scan
+from test_media_identity import DENIED, MEDIA, requires_pdf, scan
 
 
 def mluc(*values):
@@ -74,17 +74,20 @@ def pdf_profile(data, *, referenced=True, compressed=True):
     return output.getvalue()
 
 
+@requires_pdf
 def test_pdf_icc_matrix_profile_is_inspected_without_mutating_input():
     original = pdf_profile(profile())
     assert scan(original, "pdf")["status"] == "pass"
     assert original == pdf_profile(profile())
 
 
+@requires_pdf
 def test_pdf_icc_all_locales_reach_identity_callback():
     data = profile([(b"desc", mluc("Public", DENIED, "Another"))])
     assert scan(pdf_profile(data), "pdf")["status"] == "fail"
 
 
+@requires_pdf
 def test_pdf_icc_locale_codes_reach_identity_callback_when_compressed():
     value = bytearray(mluc("Public"))
     value[16:20] = b"JANE"
@@ -138,6 +141,7 @@ def test_icc_unverified_regions_remain_blocked(mutation):
         MEDIA._icc_profile(bytes(data), MEDIA._Extracted(), 3)
 
 
+@requires_pdf
 def test_unreferenced_profile_does_not_gain_stream_exemption():
     with pytest.raises(ValueError, match="unsupported_stream"):
         scan(pdf_profile(profile(), referenced=False), "pdf")
