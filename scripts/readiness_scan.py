@@ -2050,7 +2050,18 @@ def diff_added_lines_have(
     its file also contains a new, unrelated line.  Patch metadata is excluded;
     only actual ``+`` lines are decoded by ``text_has``.
     """
-    if reviewed_exceptions is not None and reviewed_exceptions.has_path_entries:
+    pathspec = ["--", ":(literal)" + scan_path] if scan_path is not None else ["--"]
+    reviewed_secrets = (
+        reviewed_exceptions is not None
+        and patterns == SECRET_PATTERNS
+        and bool(reviewed_exceptions.entries)
+    )
+    reviewed_paths = (
+        reviewed_exceptions is not None
+        and patterns == PATH_PATTERNS
+        and reviewed_exceptions.has_path_entries
+    )
+    if reviewed_secrets or reviewed_paths:
         inventory = run_subprocess(
             [
                 "git",
@@ -2061,7 +2072,7 @@ def diff_added_lines_have(
                 "--name-only",
                 "-z",
                 *diff_args,
-                "--",
+                *pathspec,
             ],
             cwd=repo,
             capture_output=True,
@@ -2090,12 +2101,19 @@ def diff_added_lines_have(
                         data = None
                     except OSError as exc:
                         raise RuntimeError("git_target_diff_inventory_failed") from exc
-            if data is not None and reviewed_exceptions.all_paths_reviewed(path, data):
-                continue
+            if data is not None:
+                # An approval binds one finding family as well as path/content.
+                # A reviewed path can never waive an unrelated credential.
+                approved = (
+                    not reviewed_exceptions.has_unreviewed(path, data)
+                    if reviewed_secrets
+                    else reviewed_exceptions.all_paths_reviewed(path, data)
+                )
+                if approved:
+                    continue
             if diff_added_lines_have(repo, patterns, *diff_args, scan_path=path):
                 return True
         return False
-    pathspec = ["--", ":(literal)" + scan_path] if scan_path is not None else ["--"]
     result = run_subprocess(
         [
             "git",
