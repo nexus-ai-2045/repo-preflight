@@ -16,6 +16,7 @@ import os
 import re
 import struct
 import subprocess
+import tempfile
 import sys
 import traceback
 import zlib
@@ -1561,6 +1562,119 @@ def _guard_worktree_parent_components(repo: Path, path: Path) -> None:
 # 通常objectのbatch予算。超過は原則として未検査に残す。
 # 同じbyteを既にCAFF形式の上限内で検証したblobだけ、単独batchで読み直す。
 _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
+_MEDIA_METADATA_DECODED_BUDGET_BYTES = 16_000_000
+
+
+def _metadata_media_names(names) -> bool:
+    suffixes = {PurePosixPath(name).suffix.lower() for name in names}
+    return bool(suffixes) and (
+        suffixes <= {".mp4"} or suffixes <= {".png"} or suffixes <= {".jpg", ".jpeg"}
+    )
+
+
+def _inspect_history_media(repo, object_id, size, names, identity):
+    """非公開送信の明示policy。Git objectと検査済みmetadataを同じSHAへ結ぶ。"""
+    if size <= 0 or size > 64_000_000:
+        raise RuntimeError("media_metadata_size_limit")
+    if identity.report.get("provider_kind") != "bundled_canonical":
+        raise RuntimeError("media_metadata_provider_unverified")
+    source = Path(__file__).resolve().with_name("media_metadata.py")
+    source_bytes = source.read_bytes()
+    module = types.ModuleType("_bundled_media_metadata")
+    module.__file__ = str(source)
+    exec(compile(source_bytes, str(source), "exec"), module.__dict__)
+    media_source = Path(__file__).resolve().with_name("media_identity.py")
+    media_bytes = media_source.read_bytes()
+    if hashlib.sha256(media_bytes).hexdigest() != identity.report.get(
+        "media_adapter_sha256"
+    ):
+        raise RuntimeError("media_metadata_provider_changed")
+    media = types.ModuleType("_metadata_probe_runner")
+    media.__file__ = str(media_source)
+    exec(compile(media_bytes, str(media_source), "exec"), media.__dict__)
+    with tempfile.TemporaryDirectory(prefix="preflight-media-") as directory:
+        path = Path(directory) / ("asset" + PurePosixPath(names[0]).suffix.lower())
+        with path.open("xb") as target:
+            fetched = run_subprocess(
+                ["git", "cat-file", "blob", object_id],
+                cwd=repo,
+                stdout=target,
+                stderr=subprocess.PIPE,
+                timeout=60,
+            )
+        if fetched.returncode or path.stat().st_size != size:
+            raise RuntimeError("git_history_inventory_failed")
+        oid = hashlib.new(
+            "sha1" if len(object_id) == 40 else "sha256", usedforsecurity=False
+        )
+        oid.update(f"blob {size}\0".encode("ascii"))
+        sha = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                oid.update(chunk)
+                sha.update(chunk)
+        if oid.hexdigest() != object_id:
+            raise RuntimeError("git_history_inventory_failed")
+        result = module.inspect_media_metadata(
+            path,
+            tuple(names),
+            probe_runner=media._run,
+            xml_reader=media._pdf_xml_metadata,
+        )
+        if (
+            result["source_sha256"] != sha.hexdigest()
+            or type(result["size_bytes"]) is not int
+            or result["size_bytes"] != size
+            or result.get("payload_inspected") is not False
+        ):
+            raise RuntimeError("media_metadata_source_changed")
+    if source.read_bytes() != source_bytes or media_source.read_bytes() != media_bytes:
+        raise RuntimeError("media_metadata_provider_changed")
+    # Decode each raw item before joining: byte order/alignment must not depend
+    # on adjacent binary fields or the single-byte separator.
+    decoded_views = []
+    seen_views = set()
+    decoded_size = 0
+    raw_views = [
+        *result["metadata_views"],
+        result["head_sample"],
+        result["tail_sample"],
+    ]
+    for raw in raw_views:
+        candidates = [("utf-8", 0), ("latin-1", 0)]
+        candidates.extend(
+            (codec, offset) for codec in ("utf-16-le", "utf-16-be") for offset in (0, 1)
+        )
+        for codec, offset in candidates:
+            value = raw[offset:].decode(codec, "replace").encode("utf-8")
+            if value in seen_views:
+                continue
+            decoded_size += len(value) + 1
+            if decoded_size > _MEDIA_METADATA_DECODED_BUDGET_BYTES:
+                raise RuntimeError("media_metadata_decoded_limit")
+            seen_views.add(value)
+            decoded_views.append(value)
+    views = [b"\n".join(decoded_views)]
+    secret_found = path_found = False
+    for view in views:
+        secret_found |= bool(secret_matches(view))
+        path_found |= bool(personal_path_matches(view))
+        identity.check(b"media metadata\n" + view)
+        path_found |= identity.last_text_path_match
+    if identity.report.get("status") == "tool_error":
+        raise RuntimeError("media_metadata_callback_failed")
+    record = {
+        "git_object": object_id,
+        "source_sha256": sha.hexdigest(),
+        "size_bytes": size,
+        "kind": result["kind"],
+        "head_sample_bytes": len(result["head_sample"]),
+        "tail_sample_bytes": len(result["tail_sample"]),
+        "payload_inspected": False,
+        "inspector_sha256": hashlib.sha256(source_bytes).hexdigest(),
+    }
+    identity.report.setdefault("metadata_media_inspections", []).append(record)
+    return secret_found, path_found
 
 
 def changed_committed_entries(repo: Path, revisions: tuple[str, ...]) -> list[tuple]:
@@ -1747,6 +1861,7 @@ def history_hits(
     if len(metadata_lines) != len(inventory):
         raise RuntimeError("git_history_inventory_failed")
     eligible: list[tuple[str, str, int, str]] = []
+    metadata_eligible: list[tuple[str, int]] = []
     for source, metadata in _zip_exact(inventory, metadata_lines):
         object_id, name = source
         fields = metadata.split()
@@ -1761,6 +1876,22 @@ def history_hits(
         if fields[1] == "blob" or (
             private_identity is not None and fields[1] in {"commit", "tag", "tree"}
         ):
+            submitted_names = tuple(
+                entry[2] for entry in entries_by_blob.get(object_id, ())
+            )
+            if (
+                fields[1] == "blob"
+                and private_identity is not None
+                and getattr(private_identity, "media_inspection", "strict")
+                == "metadata"
+                and all(
+                    entry[4] in {b"100644", b"100755"}
+                    for entry in entries_by_blob.get(object_id, ())
+                )
+                and _metadata_media_names(submitted_names)
+            ):
+                metadata_eligible.append((object_id, size))
+                continue
             if size <= _HISTORY_BATCH_BUDGET_BYTES:
                 eligible.append((object_id, name, size, fields[1]))
             elif private_identity is not None:
@@ -1815,6 +1946,26 @@ def history_hits(
                     )
     secret_hits: set[str] = set()
     path_hits: set[str] = set()
+    for object_id, size in metadata_eligible:
+        names = tuple(sorted(aliases.get(object_id, ())))
+        if not _metadata_media_names(names):
+            private_identity.skipped += 1
+            continue
+        try:
+            secret_found, path_found = _inspect_history_media(
+                repo, object_id, size, names, private_identity
+            )
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            private_identity.report.update(
+                status="tool_error", reason="media_metadata_unverified"
+            )
+            private_identity.checker = None
+            break
+        label = f"history:{object_id[:12]}"
+        if secret_found:
+            secret_hits.add(label)
+        if path_found:
+            path_hits.add(label)
     eligible.reverse()
     while eligible:
         chunk: list[tuple[str, str, int, str]] = []
@@ -2840,7 +2991,18 @@ def scan(
     reviewed_secret_exceptions: Path | None = None,
     require_private_identity: bool = False,
     allowed_identities: Path | None = None,
+    media_inspection: str = "strict",
 ) -> dict:
+    if media_inspection not in {"strict", "metadata"} or (
+        media_inspection == "metadata"
+        and (
+            not private_submission
+            or not base_ref
+            or release
+            or reviewed_secret_exceptions is not None
+        )
+    ):
+        return {"status": "tool_error", "issues": ["invalid_media_inspection_scope"]}
     if private_submission and (
         not base_ref or release or consistency_base_ref or identity_base_ref
     ):
@@ -3010,6 +3172,11 @@ def scan(
             if REVIEW_RECORD_MARKER not in record_text:
                 invalid_documents.append(REVIEW_RECORD)
     private_identity = PrivateIdentityScan(repo, require_private_identity)
+    private_identity.media_inspection = media_inspection
+    if media_inspection == "metadata":
+        private_identity.report["media_inspection"] = "metadata_private_only"
+        private_identity.report["media_payload_inspected"] = False
+        private_identity.report["media_content_privacy_verified"] = False
     credential_finding_count = 0
     decoded_media_secrets: set[str] = set()
     path_hits: list[str] = []
@@ -3636,6 +3803,7 @@ class ScanOptions:
         github_settings_profile: str = "solo_public",
         reviewed_secret_exceptions: Path | None = None,
         allowed_identities: Path | None = None,
+        media_inspection: str = "strict",
     ) -> None:
         self.repo = repo
         self.release = release
@@ -3646,6 +3814,7 @@ class ScanOptions:
         self.intent = intent
         self.base_ref = base_ref
         self.private_submission = private_submission
+        self.media_inspection = media_inspection
         self.consistency_base_ref = consistency_base_ref
         self.identity_base_ref = identity_base_ref
         self.github_settings_profile = github_settings_profile
@@ -3690,6 +3859,7 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         "interactive": options.interactive,
         "intent": options.intent,
         "private_submission": options.private_submission,
+        "media_inspection": options.media_inspection,
         "base_ref": (
             sanitized_evidence_label(options.base_ref) if options.base_ref else None
         ),
@@ -3708,6 +3878,13 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         is not None,
     }
     enriched.update(boundary_sections())
+    if options.media_inspection == "metadata":
+        enriched["guarantees"].append(
+            "明示private媒体は形式・metadata・境界sample・全SHAを確認する"
+        )
+        enriched["non_guarantees"].append(
+            "metadata方針は圧縮payload全体、映像の文字・音声の意味の個人情報判定を行わない"
+        )
     label_checker = None
     if options.repo is not None:
         expected = report.get("checks", {}).get("private_identity_scan", {})
@@ -3736,6 +3913,8 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
 
 def build_intent_dialogue(options: ScanOptions) -> dict:
     """AI が外部操作直前に使う質問パケットを作る。"""
+    if options.media_inspection == "metadata" and not options.private_submission:
+        raise ValueError("invalid_media_inspection_scope")
     if options.private_submission and (
         options.intent not in {"push", "open_pr", "merge"}
         or not options.base_ref
@@ -3756,6 +3935,8 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
         }
         if options.private_submission:
             scan_kwargs["private_submission"] = True
+        if options.media_inspection != "strict":
+            scan_kwargs["media_inspection"] = options.media_inspection
         if options.base_ref:
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:
@@ -4142,6 +4323,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="live確認済みprivate originへ送るcommit済みobjectsだけを検査。--base-refとpush/open_pr/merge専用",
     )
     parser.add_argument(
+        "--media-inspection",
+        choices=("strict", "metadata"),
+        default="strict",
+        help="metadataは明示private送信専用。媒体の形式・metadata・先頭末尾・SHAを検査し、payload意味検査とは区別",
+    )
+    parser.add_argument(
         "--consistency-base-ref",
         help=(
             "repo全体scanを狭めず、整合性のchange-sensitive検査だけに使うbase ref。"
@@ -4231,6 +4418,17 @@ def resolve_options(
     intent = getattr(args, "intent", None)
     base_ref = getattr(args, "base_ref", None)
     private_submission = getattr(args, "private_submission", False)
+    media_inspection = getattr(args, "media_inspection", "strict")
+    if media_inspection == "metadata" and (
+        not private_submission
+        or intent not in {"push", "open_pr", "merge"}
+        or not base_ref
+        or args.release
+        or reviewed_secret_exceptions is not None
+    ):
+        raise SystemExit(
+            "error: metadata inspection requires an explicit private committed submission"
+        )
     if private_submission and (
         not base_ref or intent not in {"push", "open_pr", "merge"} or args.release
     ):
@@ -4276,6 +4474,7 @@ def resolve_options(
         options.intent = intent
         options.base_ref = base_ref
         options.private_submission = private_submission
+        options.media_inspection = media_inspection
         options.consistency_base_ref = consistency_base_ref
         options.identity_base_ref = identity_base_ref
         options.github_settings_profile = args.github_settings_profile
@@ -4295,6 +4494,7 @@ def resolve_options(
             intent=intent,
             base_ref=base_ref,
             private_submission=private_submission,
+            media_inspection=media_inspection,
             consistency_base_ref=consistency_base_ref,
             identity_base_ref=identity_base_ref,
             github_settings_profile=args.github_settings_profile,
@@ -4316,6 +4516,7 @@ def resolve_options(
         intent=intent,
         base_ref=base_ref,
         private_submission=private_submission,
+        media_inspection=media_inspection,
         consistency_base_ref=consistency_base_ref,
         identity_base_ref=identity_base_ref,
         github_settings_profile=args.github_settings_profile,
@@ -4478,6 +4679,8 @@ def main(
         }
         if options.private_submission:
             scan_kwargs["private_submission"] = True
+        if options.media_inspection != "strict":
+            scan_kwargs["media_inspection"] = options.media_inspection
         if options.base_ref:
             scan_kwargs["base_ref"] = options.base_ref
         if options.consistency_base_ref:

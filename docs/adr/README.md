@@ -34,3 +34,4 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0012](0012-image-binary-and-repository-name-semantics.md) | Accepted | 検証済み画像の符号列・画素とmetadata、Git相対名の意味を区別する |
 | [0013](0013-regex-template-source-role.md) | Accepted | 検査用regexのusername classを具体的な個人pathと区別する |
 | [0014](0014-media-source-semantics.md) | Accepted | 形式decoderで媒体を検証し、本文・metadataを既存検査へ渡し、未知・未検証領域を拒否する |
+| [0015](0015-private-media-metadata-inspection.md) | Proposed | 非公開の制作媒体に形式・metadata・境界sample・全SHAの検査方針を明示する |

@@ -32,7 +32,7 @@
 | Git object欠落・異常応答 | 履歴secretの見逃し | `tool_error`でfail closed |
 | shallow clone (`fetch-depth: 1`等) | 取得境界より前の履歴secret・個人pathの見逃し | repo全体modeは`shallow_history_unavailable`で停止。`fetch-depth: 0`で全履歴を取得 |
 | 読取不能ファイル | 現行treeの見逃し | `worktree_file_unreadable`で停止 |
-| 2 MB超blob | 内容未検査 | 制約として明示し、公開前にlarge-file一覧を別確認 |
+| 16,000,000 byteの一括予算を超えるblob | strictでは内容未検査 | 公開前にlarge-file一覧を別確認。private専用metadata方針は検査範囲を明示して別処理 |
 | regex外secret | false negative | gitleaks等の専門scannerと人間レビューを併用 |
 | remote credential | report経由の漏えい | userinfoを除去してURLを返す |
 | 古いreview/CI | 別の差分を誤承認 | 対象HEAD、日時、CI runをreview記録へ固定 |
