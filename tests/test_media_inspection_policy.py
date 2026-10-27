@@ -173,3 +173,43 @@ def test_xmp_decoded_identity_reaches_private_callback(submission):
     assert result["status"] == "blocked"
     assert result["checks"]["private_identity_scan"]["status"] == "fail"
     assert marker not in json.dumps(result)
+
+
+@pytest.mark.parametrize("suffix", ["png", "jpg"])
+@pytest.mark.parametrize("private_target", [False, True])
+def test_media_named_symlinks_keep_existing_text_inspection(
+    submission, suffix, private_target
+):
+    repo, base, _, _ = submission
+    marker = "synthetic-private-identity-marker"
+    target = marker if private_target else "assets/target.png"
+    (repo / "link-target.txt").write_text(target)
+    import subprocess
+
+    oid = subprocess.check_output(
+        ["git", "hash-object", "-w", "link-target.txt"], cwd=repo, text=True
+    ).strip()
+    (repo / "link-target.txt").unlink()
+    git(
+        repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        "120000," + oid + ",preview." + suffix,
+    )
+    git(repo, "commit", "-m", "synthetic media symlink")
+    # Materialize the Git link as a plain target file, including on Windows.
+    git(repo, "config", "core.symlinks", "false")
+    git(repo, "checkout-index", "--force", "--", "preview." + suffix)
+    strict = run_scan(repo, base)
+    result = run_scan(repo, base, media_inspection="metadata")
+    assert (
+        result["status"]
+        == strict["status"]
+        == ("blocked" if private_target else "pass")
+    )
+    assert (
+        result["checks"]["private_identity_scan"].get("metadata_media_inspections", [])
+        == []
+    )
+    assert marker not in json.dumps(result)

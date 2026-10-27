@@ -1884,6 +1884,10 @@ def history_hits(
                 and private_identity is not None
                 and getattr(private_identity, "media_inspection", "strict")
                 == "metadata"
+                and all(
+                    entry[4] in {b"100644", b"100755"}
+                    for entry in entries_by_blob.get(object_id, ())
+                )
                 and _metadata_media_names(submitted_names)
             ):
                 metadata_eligible.append((object_id, size))
