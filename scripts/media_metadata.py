@@ -249,6 +249,8 @@ def _png_metadata_chunks(path, size):
             count = 0
             after_idat = False
             saw_iend = False
+            text_keywords = set()
+            saw_exif = False
             while offset < size:
                 count += 1
                 if count > NODE_LIMIT:
@@ -263,6 +265,18 @@ def _png_metadata_chunks(path, size):
                     _fail("format_invalid")
                 if after_idat and chunk_type in metadata_types:
                     _fail("metadata_after_image_data")
+                if chunk_type in {b"tEXt", b"zTXt", b"iTXt"}:
+                    prefix = source.read(min(length, 80))
+                    keyword, separator, _ = prefix.partition(b"\x00")
+                    if not separator or not 1 <= len(keyword) <= 79:
+                        _fail("format_invalid")
+                    if keyword in text_keywords:
+                        _fail("duplicate_metadata_keyword")
+                    text_keywords.add(keyword)
+                elif chunk_type == b"eXIf":
+                    if saw_exif:
+                        _fail("duplicate_exif")
+                    saw_exif = True
                 if chunk_type == b"IDAT":
                     after_idat = True
                 elif chunk_type == b"IEND":
@@ -291,7 +305,7 @@ def _image_metadata(path, ext):
             ):
                 _fail("format_mismatch")
             metadata = {"format": image.format, "info": image.info}
-            if ext in {".jpg", ".jpeg"}:
+            if ext in {".jpg", ".jpeg"} or "exif" in image.info:
                 exif = image.getexif()
                 if exif:
                     metadata["exif"] = dict(exif)

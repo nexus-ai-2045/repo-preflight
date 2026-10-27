@@ -388,3 +388,52 @@ def test_middle_exif_unicode_byte_orders(tmp_path, encoding, nested):
     result = reader.inspect_media_metadata(path, ())
     assert marker.encode() in b"\n".join(result["metadata_views"])
     assert marker.encode() not in result["head_sample"] + result["tail_sample"]
+
+
+@pytest.mark.parametrize("kind", [b"tEXt", b"zTXt", b"iTXt"])
+def test_png_duplicate_text_keywords_cannot_hide_earlier_values(tmp_path, kind):
+    if kind == b"tEXt":
+        earlier = b"Comment\x00dummy-secret"
+    elif kind == b"zTXt":
+        earlier = b"Comment\x00\x00" + zlib.compress(b"dummy-secret")
+    else:
+        earlier = b"Comment\x00\x00\x00\x00\x00dummy-secret"
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add(kind, earlier)
+    info.add_text("Comment", "harmless-last-value")
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    path = tmp_path / "duplicate.png"
+    path.write_bytes(output.getvalue())
+    with pytest.raises(reader.MediaMetadataError, match="^duplicate_metadata_keyword$"):
+        reader.inspect_media_metadata(path, ())
+
+
+@pytest.mark.parametrize("encoding", ["utf-16-be", "utf-16-le"])
+def test_png_nested_unicode_exif_is_scanned_without_pixels(
+    tmp_path, monkeypatch, encoding
+):
+    marker = "dummy-secret-png"
+    exif = Image.Exif()
+    exif[34665] = {
+        reader.EXIF_USER_COMMENT_TAG: b"UNICODE\x00" + marker.encode(encoding)
+    }
+    info = PngImagePlugin.PngInfo()
+    info.add_text("before-padding", "x" * 70000)
+    info.add_text("after-padding", "x" * 70000)
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2)).save(output, format="PNG", pnginfo=info)
+    path = tmp_path / "exif.png"
+    raw = output.getvalue()
+    insertion = raw.index(b"after-padding") - 8
+    raw = raw[:insertion] + png_chunk(b"eXIf", exif.tobytes()[6:]) + raw[insertion:]
+    assert b"eXIf" in raw
+    path.write_bytes(raw)
+    monkeypatch.setattr(
+        Image.Image, "load", lambda *_a, **_k: pytest.fail("unexpected pixel decode")
+    )
+    result = reader.inspect_media_metadata(path, ())
+    assert marker.encode() in b"\n".join(result["metadata_views"])
+    assert marker.encode() not in result["head_sample"] + result["tail_sample"]
