@@ -44,6 +44,168 @@ def run_scan(repo, base, **kwargs):
     )
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_history_inventory_accepts_valid_source_with_surrogate_negative_fixture(
+    submission, scoped
+):
+    repo, base, _, _ = submission
+    commit(repo, "unicode_case.py", 'VALUE = "\\ud800"\n')
+    policy = repo.parent / "empty-reviewed-fixture.json"
+    policy.write_text('{"version":1,"entries":[]}', encoding="utf-8")
+    options = {"reviewed_secret_exceptions": policy}
+    report = (
+        run_scan(repo, base, **options)
+        if scoped
+        else MODULE.scan(repo, require_private_identity=True, **options)
+    )
+    assert report["status"] == "pass"
+    for gate in ("secret_scan", "personal_path_scan", "private_identity_scan"):
+        assert report["checks"][gate]["status"] == "pass"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_surrogate_fixture_does_not_hide_real_positive_path_and_secret(
+    submission, scoped
+):
+    repo, base, _, _ = submission
+    body = (
+        'VALUE = "\\ud800"\nPATH = '
+        + repr(synthetic_home_path("linux", "fixture-user/work"))
+        + '\nKEY = "sk-'
+        + "A" * 48
+        + '"\n'
+    )
+    commit(repo, "unicode_case.py", body)
+    policy = repo.parent / "empty-reviewed-fixture.json"
+    policy.write_text('{"version":1,"entries":[]}', encoding="utf-8")
+    options = {"reviewed_secret_exceptions": policy}
+    report = (
+        run_scan(repo, base, **options)
+        if scoped
+        else MODULE.scan(repo, require_private_identity=True, **options)
+    )
+    assert report["status"] == "blocked"
+    assert report["checks"]["personal_path_scan"]["status"] == "fail"
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+
+
+def reviewed_fixture_policy(repo, records):
+    """Bind only synthetic test findings, never an operator policy or value."""
+    import hashlib
+    import json
+
+    entries = []
+    expires = (
+        MODULE.datetime.now(MODULE.timezone.utc) + MODULE.timedelta(days=1)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for path, body, rules in records:
+        raw = body.encode("utf-8")
+        matches = MODULE.personal_path_matches(raw) | MODULE.secret_matches(raw)
+        for (rule, sha), count in matches.items():
+            if rule not in rules:
+                continue
+            entries.append(
+                {
+                    "id": "Fixture" + str(len(entries)),
+                    "repo": "example/repo",
+                    "path": path,
+                    "content_sha256": hashlib.sha256(raw).hexdigest(),
+                    "rule": rule,
+                    "match_sha256": sha,
+                    "occurrence_count": count,
+                    "review_reason": "synthetic exact binding regression",
+                    "expires_at": expires,
+                    "review_reference": "local-independent-review",
+                }
+            )
+    policy = repo.parent / "reviewed-scope-fixture.json"
+    policy.write_text(json.dumps({"version": 2, "entries": entries}), encoding="utf-8")
+    return policy
+
+
+@pytest.mark.parametrize("approval", ["path_only", "secret_only", "both"])
+def test_modified_text_exception_rules_cannot_approve_another_finding_family(
+    submission, monkeypatch, approval
+):
+    repo, _, _, _ = submission
+    commit(repo, "fixture.py", 'VALUE = "baseline"\n')
+    base = rebase_submission(repo, monkeypatch)
+    body = (
+        "PATH = "
+        + repr(synthetic_home_path("linux", "fixture-user/work"))
+        + '\nTOKEN = "sk-'
+        + "A" * 48
+        + '"\n'
+    )
+    commit(repo, "fixture.py", body)
+    rules = set()
+    if approval in {"path_only", "both"}:
+        rules.update(MODULE.PATH_RULE_IDS)
+    if approval in {"secret_only", "both"}:
+        rules.update(MODULE.SECRET_RULE_IDS)
+    policy = reviewed_fixture_policy(repo, [("fixture.py", body, rules)])
+    report = run_scan(repo, base, reviewed_secret_exceptions=policy)
+    assert report["checks"]["secret_scan"]["status"] == (
+        "fail" if approval == "path_only" else "pass"
+    )
+    assert report["checks"]["personal_path_scan"]["status"] == (
+        "fail" if approval == "secret_only" else "pass"
+    )
+    assert report["status"] == ("pass" if approval == "both" else "blocked")
+
+
+def test_reviewed_diff_scan_path_isolated_but_foreign_secret_still_blocks_history(
+    submission, monkeypatch
+):
+    repo, _, _, _ = submission
+    commit(repo, "alpha.py", 'VALUE = "baseline"\n')
+    commit(repo, "beta.py", 'VALUE = "baseline"\n')
+    base = rebase_submission(repo, monkeypatch)
+    alpha = "PATH = " + repr(synthetic_home_path("linux", "fixture-user/work")) + "\n"
+    (repo / "alpha.py").write_text(alpha, encoding="utf-8")
+    (repo / "beta.py").write_text('TOKEN = "sk-' + "B" * 48 + '"\n', encoding="utf-8")
+    git(repo, "add", "alpha.py", "beta.py")
+    git(repo, "commit", "-m", "synthetic independent files")
+    policy = reviewed_fixture_policy(
+        repo, [("alpha.py", alpha, set(MODULE.PATH_RULE_IDS))]
+    )
+    exceptions = MODULE.ReviewedSecretExceptions(
+        policy, "https://github.com/example/repo.git"
+    )
+    alpha_found = MODULE.diff_added_lines_have(
+        repo,
+        MODULE.SECRET_PATTERNS,
+        base,
+        "HEAD",
+        reviewed_exceptions=exceptions,
+        scan_path="alpha.py",
+    )
+    beta_found = MODULE.diff_added_lines_have(
+        repo,
+        MODULE.SECRET_PATTERNS,
+        base,
+        "HEAD",
+        reviewed_exceptions=exceptions,
+        scan_path="beta.py",
+    )
+    assert alpha_found is False
+    assert beta_found is True
+    report = run_scan(repo, base, reviewed_secret_exceptions=policy)
+    assert report["status"] == "blocked"
+    alpha_oid = MODULE.run(repo, "git", "rev-parse", "HEAD:alpha.py")[1]
+    beta_oid = MODULE.run(repo, "git", "rev-parse", "HEAD:beta.py")[1]
+    assert report["checks"]["secret_scan"]["finding_count"] == 1
+    findings, _ = MODULE.history_hits(
+        repo,
+        (base + "..HEAD",),
+        exceptions,
+        MODULE.PrivateIdentityScan(repo, True),
+        check_repository_names=True,
+    )
+    assert "history:" + alpha_oid[:12] not in findings
+    assert "history:" + beta_oid[:12] in findings
+
+
 @pytest.mark.parametrize("body", [b"name: missing jobs\n", b"\xff"])
 def test_private_workflow_diagnostics_never_disclose_filename(submission, body):
     import json
