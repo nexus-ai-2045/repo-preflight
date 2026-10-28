@@ -54,7 +54,7 @@ jobs:
         env:
           PREFLIGHT_REF: ${{ inputs.preflight-ref }}
         run: 'test "$(git -C tool rev-parse HEAD)" = "$PREFLIGHT_REF"'
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ inputs.python-version }}
       - name: Run preflight ratchet
@@ -164,6 +164,9 @@ jobs:
             opts="HEAD"
           fi
           "$dir/gitleaks" git --no-banner --redact --config tool/.gitleaks.toml --log-opts="$opts" target
+          # git の差分は GIF を「Binary files differ」としか出さず、既定設定も .gif を外すので、足した GIF の
+          # 拡張の本文（コメントなど）を取り出して同じ固定版・同じ設定の gitleaks で見る。
+          PATH="$dir:$PATH" python tool/scripts/identity_gate.py --repo target --range "$opts" --gitleaks-gif
       - name: Install hash-pinned PyYAML for base-guard
         run: python -m pip install --disable-pip-version-check --no-deps --require-hashes -r tool/requirements-guard.txt
       # 比較元（保護された側）の呼び出し定義で、uses の @ と preflight-ref が同じ 40桁 SHA かを見る。
