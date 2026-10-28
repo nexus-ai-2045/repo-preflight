@@ -284,11 +284,13 @@ def _needs_foreign_literal_recovery(fragment: str) -> bool:
     return False
 
 
-def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
+def _literal_plus_chains(
+    text: str, *, token_source=None, source_spans=None, issues=None
+) -> list[tuple[str, str]]:
     """完全staticな括弧だけを連結へ戻し、callや動的operandの境界を越えない。"""
     tokens = [
         token
-        for token in _recovery_tokens(text)
+        for token in (_recovery_tokens(text) if token_source is None else token_source)
         if token.lastgroup not in {"comment", "space"}
     ]
     ranges = []
@@ -326,6 +328,33 @@ def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
     for index, token in enumerate(tokens):
         current = stack[-1]
         kind = token.lastgroup
+        if (
+            kind == "unterminated_literal"
+            and current["pluses"]
+            and current["expects_term"]
+        ):
+            if issues is None:
+                raise ValueError("private_identity_normalization_incomplete")
+            issues.append(
+                {
+                    "kind": kind,
+                    "start": tokens[current["first"]].start(),
+                    "end": token.end(),
+                }
+            )
+            # 未完了の範囲を越えて連結しない。既に完了したrangesは保持する。
+            for pending in stack:
+                pending.update(
+                    first=None,
+                    last=None,
+                    literals=0,
+                    pluses=0,
+                    expects_term=True,
+                    static=False,
+                    bubble=False,
+                )
+            previous = token
+            continue
         if kind == "unterminated_comment" and any(item["pluses"] for item in stack):
             raise ValueError("private_identity_normalization_incomplete")
         if kind == "literal":
@@ -388,6 +417,10 @@ def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
         raise ValueError("private_identity_normalization_incomplete")
     for current in reversed(stack):
         finish(current)
+    if source_spans is not None:
+        source_spans.extend(
+            (tokens[first].start(), tokens[last].end()) for first, last in ranges
+        )
     return [
         (
             " ".join(token.group() for token in tokens[first : last + 1]),
@@ -395,6 +428,78 @@ def _literal_plus_chains(text: str) -> list[tuple[str, str]]:
         )
         for first, last in ranges
     ]
+
+
+_POWERSHELL_SINGLE_LITERAL = r"'(?:[^']|'')*'"
+_POWERSHELL_RECOVERY_TOKEN = re.compile(
+    r"(?P<literal>" + _POWERSHELL_SINGLE_LITERAL + r'|"(?:[^"\\\r\n]|\\[\s\S])*")'
+    r"|(?P<unterminated_literal>')|" + _RECOVERY_NON_LITERAL_SOURCE
+)
+_POWERSHELL_RECOVERY_NON_LITERAL = re.compile(
+    r"(?P<unterminated_literal>')|" + _RECOVERY_NON_LITERAL_SOURCE
+)
+
+
+def _powershell_recovery_tokens(text: str):
+    """単一引用符ではbackslashを消費しない。閉じないquoteの終端探索は一度だけ。"""
+    closed = _closed_quote_starts(text)
+    last_quote = text.rfind("'")
+    position = 0
+    while position < len(text):
+        cannot_close = (text[position] == "'" and position == last_quote) or (
+            text[position] == '"' and position not in closed
+        )
+        token = (
+            _POWERSHELL_RECOVERY_NON_LITERAL
+            if cannot_close
+            else _POWERSHELL_RECOVERY_TOKEN
+        ).match(text, position)
+        yield token
+        position = token.end()
+
+
+def _powershell_single_chain_value(expression: str) -> str | None:
+    """完全staticな単一引用符の連結だけを読む。評価・補間は行わない。"""
+    pieces = []
+    depth = 0
+    expects_term = True
+    for token in _powershell_recovery_tokens(expression):
+        kind = token.lastgroup
+        if kind in {"space", "comment"}:
+            continue
+        if kind == "open" and expects_term:
+            depth += 1
+        elif kind == "close" and not expects_term and depth:
+            depth -= 1
+        elif kind == "plus" and not expects_term:
+            expects_term = True
+        elif kind == "literal" and token.group().startswith("'") and expects_term:
+            pieces.append(token.group()[1:-1].replace("''", "'"))
+            expects_term = False
+        else:
+            return None
+    return (
+        "".join(pieces) if len(pieces) >= 2 and not expects_term and not depth else None
+    )
+
+
+def _powershell_single_string_views(
+    text: str, *, token_source=None, issues=None
+) -> list[tuple[str, str]]:
+    if "+" not in text or "'" not in text:
+        return []
+    views = []
+    for expression, original in _literal_plus_chains(
+        text,
+        token_source=(
+            _powershell_recovery_tokens(text) if token_source is None else token_source
+        ),
+        issues=issues,
+    ):
+        value = _powershell_single_chain_value(expression)
+        if value is not None:
+            views.append((value, original))
+    return views
 
 
 def _source_line_utf8(line: str) -> bytes:
@@ -571,7 +676,7 @@ def _regex_source_token_spans(
 
 
 def _static_string_views(
-    text: str, regex_roles: list[dict] | None = None
+    text: str, regex_roles: list[dict] | None = None, *, parsed_tree=None
 ) -> list[tuple[str, str]]:
     """静的に解釈できる最大のstring式と原文だけを返す。対象コードは実行しない。"""
     import ast
@@ -643,25 +748,113 @@ def _static_string_views(
         return None
 
     views = []
+    seen_views = set()
+    seen_view_count = 0
     for fragment_index, fragment in enumerate(fragments):
         fragment = textwrap.dedent(fragment)
+
+        def append_powershell_views():
+            nonlocal seen_view_count
+            if not powershell_views:
+                return
+            seen_views.update(views[seen_view_count:])
+            for value, original in powershell_views:
+                if (value, original) in seen_views:
+                    continue
+                if regex_roles is not None and any(
+                    "pattern" in role
+                    and role["pattern_spans"]
+                    and original in role["source"]
+                    for role in regex_roles
+                ):
+                    regex_roles.append(
+                        {
+                            "index": len(views),
+                            "value_spans": _generic_regex_path_spans(
+                                value, source_token=True
+                            ),
+                            "source_spans": [],
+                        }
+                    )
+                views.append((value, original))
+                seen_views.add((value, original))
+            seen_view_count = len(views)
+
         try:
-            tree = ast.parse(fragment)
+            tree = (
+                parsed_tree
+                if parsed_tree is not None and fragment_index == 0 and fragment == text
+                else ast.parse(fragment)
+            )
         except (SyntaxError, ValueError):
             # JS/TSや別行の構文エラーで、引用を連結した式だけを既存AST評価へ渡す。
             # 連結のない文章は文字単位の回復解析をしない。
-            if not _needs_foreign_literal_recovery(fragment):
-                continue
-            for expression_source, original in _literal_plus_chains(fragment):
-                try:
-                    expression = ast.parse("(" + expression_source + "\n)", mode="eval")
-                    value = static_string(expression.body)
-                except (SyntaxError, ValueError, RecursionError):
-                    raise ValueError(
-                        "private_identity_normalization_incomplete"
-                    ) from None
-                if value is not None:
-                    views.append((value, original))
+            recovered_spans = []
+            incompatible_spans = []
+            if _needs_foreign_literal_recovery(fragment):
+                source_spans = []
+                chains = _literal_plus_chains(fragment, source_spans=source_spans)
+                for (expression_source, original), span in zip(chains, source_spans):
+                    try:
+                        expression_text = "(" + expression_source + "\n)"
+                        expression = ast.parse(expression_text, mode="eval")
+                        value = static_string(expression.body)
+                    except (SyntaxError, ValueError, RecursionError):
+                        value = _powershell_single_chain_value(expression_source)
+                        if value is None:
+                            raise ValueError(
+                                "private_identity_normalization_incomplete"
+                            ) from None
+                        views.append((value, original))
+                    else:
+                        if value is not None:
+                            # 証明済みのPython式ごとに同じAST検査を使い、原文へ束縛する。
+                            views.extend(
+                                (candidate, original)
+                                for candidate, _ in _static_string_views(
+                                    expression_text, parsed_tree=expression
+                                )
+                            )
+                            recovered_spans.append(span)
+                            try:
+                                _powershell_single_string_views(expression_text)
+                            except ValueError as error:
+                                if (
+                                    str(error)
+                                    != "private_identity_normalization_incomplete"
+                                ):
+                                    raise
+                                incompatible_spans.append(span)
+            # 証明済みの式は上の再帰で別解釈まで検査済み。同じ長さの空白へ
+            # 置換し、互換性のない引用符が後続の別式を飲み込むことを防ぐ。
+            remaining_fragment = _mask_path_spans(fragment, incompatible_spans)
+            powershell_tokens = (
+                list(_powershell_recovery_tokens(remaining_fragment))
+                if "+" in remaining_fragment and "'" in remaining_fragment
+                else []
+            )
+            issues = []
+            powershell_views = _powershell_single_string_views(
+                fragment, token_source=powershell_tokens, issues=issues
+            )
+            for issue in issues:
+                covered = any(
+                    start <= issue["start"]
+                    and issue["end"] <= end
+                    and not any(
+                        token.lastgroup
+                        in {"literal", "comment", "unterminated_comment"}
+                        and (
+                            token.start() < start < token.end()
+                            or token.start() < end < token.end()
+                        )
+                        for token in powershell_tokens
+                    )
+                    for start, end in recovered_spans
+                )
+                if not covered:
+                    raise ValueError("private_identity_normalization_incomplete")
+            append_powershell_views()
             continue
         except RecursionError:
             raise ValueError("private_identity_normalization_incomplete") from None
@@ -723,33 +916,67 @@ def _static_string_views(
                 line_utf8_cache[index] = cached
             return cached
 
+        node_sources = {}
+
+        def source_for(node):
+            if id(node) in node_sources:
+                return node_sources[id(node)]
+            single_line = (
+                node.end_lineno == node.lineno
+                and node.col_offset is not None
+                and node.end_col_offset is not None
+                and isinstance(node.lineno, int)
+                and 1 <= node.lineno <= len(source_lines)
+            )
+            if single_line:
+                original = encoded_line(node.lineno - 1)[
+                    node.col_offset : node.end_col_offset
+                ].decode()
+            else:
+                first = node.lineno - 1
+                last = node.end_lineno
+                if not 0 <= first < last <= len(source_lines):
+                    raise ValueError("private_identity_normalization_incomplete")
+                segment_node = copy.copy(node)
+                segment_node.lineno = 1
+                segment_node.end_lineno -= first
+                original = ast.get_source_segment(
+                    "".join(source_lines[first:last]), segment_node
+                )
+            if original is None:
+                raise ValueError("private_identity_normalization_incomplete")
+            node_sources[id(node)] = original
+            return original
+
+        def alternate_roots(node):
+            # 一度のpostorderで適用可能なAddを決め、重ならない最大範囲だけを読む。
+            # staticなCallの内部も調べるが、親子のAdd全てを再解析しない。
+            order = list(ast.walk(node))
+            eligible = {}
+            parents = {}
+            for item in reversed(order):
+                for child in ast.iter_child_nodes(item):
+                    parents[id(child)] = item
+                if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                    eligible[id(item)] = bool(
+                        re.fullmatch(_POWERSHELL_SINGLE_LITERAL, source_for(item))
+                    )
+                elif isinstance(item, ast.BinOp) and isinstance(item.op, ast.Add):
+                    eligible[id(item)] = eligible.get(
+                        id(item.left), False
+                    ) and eligible.get(id(item.right), False)
+            return (
+                item
+                for item in order
+                if isinstance(item, ast.BinOp)
+                and eligible.get(id(item), False)
+                and not eligible.get(id(parents.get(id(item))), False)
+            )
+
         def visit(node):
             value = static_string(node)
             if value is not None:
-                single_line = (
-                    node.end_lineno == node.lineno
-                    and node.col_offset is not None
-                    and node.end_col_offset is not None
-                    and isinstance(node.lineno, int)
-                    and 1 <= node.lineno <= len(source_lines)
-                )
-                if single_line:
-                    original = encoded_line(node.lineno - 1)[
-                        node.col_offset : node.end_col_offset
-                    ].decode()
-                else:
-                    first = node.lineno - 1
-                    last = node.end_lineno
-                    if not 0 <= first < last <= len(source_lines):
-                        raise ValueError("private_identity_normalization_incomplete")
-                    segment_node = copy.copy(node)
-                    segment_node.lineno = 1
-                    segment_node.end_lineno -= first
-                    original = ast.get_source_segment(
-                        "".join(source_lines[first:last]), segment_node
-                    )
-                if original is None:
-                    raise ValueError("private_identity_normalization_incomplete")
+                original = source_for(node)
                 if id(node) in regex_nodes:
                     path_spans = _generic_regex_path_spans(value)
                     if path_spans:
@@ -767,6 +994,27 @@ def _static_string_views(
                             }
                         )
                 views.append((value, original))
+                # 有効なPythonではASTが確定した式の範囲だけを別解釈する。
+                # 無関係な式の引用符が、この式の検査候補を消すことはない。
+                for root in (
+                    alternate_roots(node) if "+" in original and "'" in original else ()
+                ):
+                    alternate_source = source_for(root)
+                    alternate = _powershell_single_chain_value(alternate_source)
+                    if alternate is not None and alternate != value:
+                        if id(root) in regex_nodes:
+                            path_spans = _generic_regex_path_spans(
+                                alternate, source_token=True
+                            )
+                            if path_spans:
+                                regex_roles.append(
+                                    {
+                                        "index": len(views),
+                                        "value_spans": path_spans,
+                                        "source_spans": [],
+                                    }
+                                )
+                        views.append((alternate, alternate_source))
             else:
                 for child in ast.iter_child_nodes(node):
                     visit(child)

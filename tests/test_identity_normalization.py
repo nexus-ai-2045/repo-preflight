@@ -1402,3 +1402,252 @@ def test_text_delta_repetitive_input_has_bounded_full_fallback():
     result = ENGINE.scan_private_text_delta(previous, previous + "SAFE = 2\n", [DENIED])
     assert result["status"] == "fail"
     assert result["delta_full_fallback"] is True
+
+
+@pytest.mark.parametrize(
+    ("expression", "value"),
+    [
+        (
+            "('c:' + '"
+            + synthetic_home_path("windows", r"fixture\vault", separator="\\").lower()[
+                2:
+            ]
+            + "')",
+            synthetic_home_path("windows", r"fixture\vault", separator="\\").lower(),
+        ),
+        (r"('fixture-\t' + 'private-operator')", r"fixture-\tprivate-operator"),
+        (r"('fixture-\n' + 'private-operator')", r"fixture-\nprivate-operator"),
+        ("('fixture-''private-' + 'operator')", "fixture-'private-operator"),
+        (r"('fixture-\' + 'private-operator')", "fixture-\\private-operator"),
+        (
+            "(('fixture-private-') # comment\n + ('operator'))",
+            "fixture-private-operator",
+        ),
+    ],
+)
+@pytest.mark.parametrize("prefix", ["", "$value = "])
+def test_powershell_single_quoted_concatenation_preserves_literal_values(
+    expression, value, prefix
+):
+    text = prefix + expression
+    result = ENGINE.scan_private_text(text, [value])
+    assert result["status"] == "fail"
+    assert result["literal_match_count"] == 1
+
+
+def test_powershell_split_home_path_is_detected_without_python_escape_decoding():
+    path = synthetic_home_path("windows", r"fixture-operator\vault", separator="\\")
+    expression = (
+        "$path = ("
+        + " + ".join("'" + piece + "'" for piece in (path[:2], path[2:5], path[5:]))
+        + ")"
+    )
+    result = ENGINE.scan_private_text(expression, [DENIED])
+    assert result["status"] == "fail"
+    assert result["local_path_match"] is True
+    assert result["reconstructed_path_match"] is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$x = 'fixture-private-' + dynamic + 'operator'",
+        "$x = call('fixture-private-') + 'operator'",
+        "$x = ('fixture-private-' + 'operator').replace('x', 'y') + 'suffix'",
+    ],
+)
+def test_powershell_recovery_does_not_cross_dynamic_or_call_boundaries(text):
+    views = ENGINE.static_string_views(text)
+    assert not any(value == "fixture-private-operatorsuffix" for value, _ in views)
+    if ".replace" not in text:
+        assert not any(value == "fixture-private-operator" for value, _ in views)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "$x = ('fixture-private-' + 'unterminated)",
+        '$x = ("fixture-private-" + "\\u{6f}perator")',
+        "$x = ('fixture-private-' + 'operator';)",
+    ],
+)
+def test_unsupported_or_malformed_foreign_chain_remains_fail_closed(text):
+    with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
+        ENGINE.scan_private_text(text, [DENIED])
+
+
+@pytest.mark.parametrize("with_powershell_values", [False, True])
+def test_many_fences_do_not_recopy_all_accumulated_views(
+    monkeypatch, with_powershell_values
+):
+    copied = []
+
+    class MeasuredSet(set):
+        def __init__(self, values=()):
+            values = list(values)
+            copied.append(len(values))
+            super().__init__(values)
+
+        def update(self, values):
+            values = list(values)
+            copied.append(len(values))
+            super().update(values)
+
+    monkeypatch.setattr(ENGINE, "set", MeasuredSet, raising=False)
+
+    def work(count):
+        copied.clear()
+        expressions = [
+            (
+                (r"'public-\t' + 'brand-" + str(index) + "'")
+                if with_powershell_values
+                else repr("public-brand-" + str(index))
+            )
+            for index in range(count)
+        ]
+        source = "\n".join("```\n" + value + "\n```" for value in expressions)
+        views = ENGINE.static_string_views(source)
+        values = {value for value, _ in views}
+        expected = {
+            (r"public-\tbrand-" if with_powershell_values else "public-brand-")
+            + str(index)
+            for index in range(count)
+        }
+        assert expected <= values
+        assert sum(copied) <= len(views) * 2
+        return sum(copied)
+
+    small = work(100)
+    large = work(400)
+    assert large <= max(1, small) * 5
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected_status"),
+    [("safe", "pass"), ("fixture-private-", "fail")],
+)
+def test_valid_python_survives_incompatible_alternate_quote_grammar(
+    prefix, expected_status
+):
+    import ast
+
+    tail = "escaped" if expected_status == "pass" else "operator"
+    source = "TEXT = '" + prefix + "' + '" + tail + "\\'+'"
+    assert isinstance(ast.parse(source), ast.Module)
+    with pytest.raises(ValueError, match="private_identity_normalization_incomplete"):
+        ENGINE._powershell_single_string_views(source)
+    result = ENGINE.scan_private_text(source, ["fixture-private-operator"])
+    assert result["status"] == expected_status
+    assert result["literal_match_count"] == (1 if expected_status == "fail" else 0)
+
+
+def test_unexpected_alternate_decoder_error_is_not_suppressed(monkeypatch):
+    def unexpected_error(text):
+        raise ValueError("unexpected-decoder-error")
+
+    monkeypatch.setattr(ENGINE, "_powershell_single_chain_value", unexpected_error)
+    with pytest.raises(ValueError, match="unexpected-decoder-error"):
+        ENGINE.scan_private_text("TEXT = 'safe' + 'public'", [DENIED])
+
+
+@pytest.mark.parametrize(
+    ("expression", "needle"),
+    [
+        ("TEXT = 'fixture''private-' + 'operator'", "fixture'private-operator"),
+        (r"TEXT = 'fixture-\t' + 'private-operator'", r"fixture-\tprivate-operator"),
+    ],
+)
+@pytest.mark.parametrize("insert_before", [False, True])
+def test_unrelated_python_expression_cannot_erase_an_alternate_private_value(
+    expression, needle, insert_before
+):
+    import ast
+
+    unrelated = "OTHER = 'safe' + 'escaped\\'+'"
+    source = "\n".join(
+        [unrelated, expression] if insert_before else [expression, unrelated]
+    )
+    assert isinstance(ast.parse(source), ast.Module)
+    assert ENGINE.scan_private_text(expression, [needle])["status"] == "fail"
+    assert ENGINE.scan_private_text(source, [needle])["status"] == "fail"
+    assert needle in {value for value, _ in ENGINE.static_string_views(source)}
+
+
+@pytest.mark.parametrize("item", ["''", "'escaped\\'+'"])
+def test_static_call_parent_does_not_hide_an_inner_alternate_value(item):
+    import ast
+
+    source = "TEXT = ('fixture''private-' + 'operator').join([" + item + "])"
+    needle = "fixture'private-operator"
+    assert isinstance(ast.parse(source), ast.Module)
+    assert ENGINE.scan_private_text(source, [needle])["status"] == "fail"
+    assert needle in {value for value, _ in ENGINE.static_string_views(source)}
+
+
+def test_nested_static_add_is_decoded_only_at_disjoint_maximal_roots(monkeypatch):
+    measured = []
+    original = ENGINE._powershell_single_chain_value
+
+    def observe(expression):
+        measured.append(len(expression))
+        return original(expression)
+
+    monkeypatch.setattr(ENGINE, "_powershell_single_chain_value", observe)
+    for count in (100, 400):
+        measured.clear()
+        expression = " + ".join([r"'public-\t'"] * count)
+        source = "TEXT = (" + expression + ").join([''])"
+        values = {value for value, _ in ENGINE.static_string_views(source)}
+        assert r"public-\t" * count in values
+        assert len(measured) == 1
+        assert sum(measured) <= len(source)
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+@pytest.mark.parametrize("comment", ["", " /* comment */"])
+@pytest.mark.parametrize("other_first", [False, True])
+@pytest.mark.parametrize("separator", ["\n", " "])
+def test_foreign_python_compatible_quotes_remain_independent(
+    fenced, comment, other_first, separator
+):
+    safe = "const 説明: string = 'safe'" + comment + " + 'escaped\\'+';"
+    other = "const other: string = 'public' + 'brand';"
+    source = separator.join([other, safe] if other_first else [safe, other])
+    if fenced:
+        source = "```typescript\n" + source + "\n```"
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
+
+
+def test_fenced_python_compatible_quote_is_not_vetoed_by_alternate_grammar():
+    source = "```python\nTEXT = 'safe' + 'escaped\\'+'\n```"
+    assert ENGINE.scan_private_text(source, [DENIED])["status"] == "pass"
+
+
+@pytest.mark.parametrize("other_first", [False, True])
+@pytest.mark.parametrize("separator", ["\n", "; "])
+def test_foreign_recovered_python_does_not_erase_overlapping_alternate_chain(
+    other_first, separator
+):
+    private = "const x = 'fixture''private-' + 'operator';"
+    other = "const y = 'safe' + 'escaped\\'+';"
+    source = separator.join([other, private] if other_first else [private, other])
+    needle = "fixture'private-operator"
+    assert ENGINE.scan_private_text(private, [needle])["status"] == "fail"
+    assert ENGINE.scan_private_text(source, [needle])["status"] == "fail"
+
+
+@pytest.mark.parametrize("other_first", [False, True])
+@pytest.mark.parametrize(
+    ("private", "needle"),
+    [
+        ("TEXT = 'fixture''private-' + 'operator'", "fixture'private-operator"),
+        (r"TEXT = 'fixture-\t' + 'private-operator'", r"fixture-\tprivate-operator"),
+    ],
+)
+def test_fenced_private_alternate_survives_unrelated_python_quote(
+    other_first, private, needle
+):
+    other = "OTHER = 'safe' + 'escaped\\'+'"
+    body = "\n".join([other, private] if other_first else [private, other])
+    source = "```python\n" + body + "\n```"
+    assert ENGINE.scan_private_text(source, [needle])["status"] == "fail"

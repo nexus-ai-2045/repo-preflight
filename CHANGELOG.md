@@ -30,6 +30,9 @@
 - Dependabot の PR が止まらないようにした。`readiness_scan` の名義検査を役割ごとの完全一致にし（`committer_only` は記録者だけ）、自前の workflow を Action 参照の読み取り器で読める block 形式にした。ci.yml の規則に `allow_github_action_ref_updates` を足した。pip の更新は path 依存だけの `requirements-tools.txt` を `exclude-paths` で外した。
 - base-guard（`scripts/base_guard.py`）は、repo-preflight 本体（`--self-repository` が `nexus-ai-2045/repo-preflight`）に限って、`./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼ぶ自己検査の定義を通す。ほかの repo と、ほかの形はこれまでどおり赤。
 - 名義の検査のファイル単位の例外（`.repo-preflight/identity-fixture-exceptions.txt`）に、他リポの画像・図・雛形・ノートを25件足した（画像20件・SVG 3件・XMind 1件は人承認 2026-10-24 16:14・品質係の目視 OK 16:16、清掃済みの版。ノート1件は人承認 2026-10-24 16:19）。どれも SHA256 で固定し、そのパスでその中身のときだけ外す。このリポに無いファイルの行は、理由の頭に「他リポ <リポ名> の」を書く決まりにし、試験で確かめる。XMind・ノートが例外なしでは止まり、中身が変われば、また止まることも試験に足した。
+- GIF拡張本文を固定版gitleaksへ渡して、通常のGit差分では見落とす秘密情報を検査する。別名blobの順序に左右されず、復号器がない場合は停止する。
+- PowerShell単引用符の連結を静的に読み取り、有効なPythonの式を代替解析の失敗で拒否しない。例示用fixtureの確認主体を事実に沿って訂正する。
+- setup-pythonを7.1.0、Python 3.10以上のsetuptools下限を84.2.1、mutagen下限を1.48.1へ更新する。古いPythonの互換指定は維持し、検査用画像依存はhash付きで固定する。
 
 ## 0.10.0 - 2026-10-24
 

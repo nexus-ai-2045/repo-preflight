@@ -1152,9 +1152,213 @@ def _gitleaks(repo: str, args: list[str]) -> bool:
     return result.returncode == 0
 
 
+# gitleaks の git の検査には GIF の中身が届かない（品質判定 #10 の残り）。原因は2つ:
+# 1. git の差分は GIF を「Binary files differ」としか出さないので、拡張の本文（コメントなど）が渡らない。
+# 2. gitleaks の既定設定（useDefault）の allowlist の paths が .gif の名前を丸ごと外す（文字だけの .gif も見ない）。
+#    既定の allowlist は extend では外せない。
+# そこで、送る範囲・ステージした差分で足した・変えた GIF（先頭が GIF87a/GIF89a、または名前が .gif）を取り出し、
+# 拡張の本文はサブブロックをつないでから、gitleaks stdin（パスの allowlist が掛からない）に同じ設定で渡す。
+GIF_MAGIC = (b"GIF87a", b"GIF89a")
+
+
+def gif_extension_texts(data: bytes) -> list[bytes]:
+    """GIF の拡張（コメント・アプリ・プレーンテキストなど）の本文を、サブブロックをつないで返す。
+
+    画素は展開しない。終わりの印の後ろに続くバイトも返す。形が崩れていれば ValueError（止める）。
+    """
+    if len(data) < 13 or data[:6] not in GIF_MAGIC:
+        raise ValueError("gif_unverified")
+    offset = 13 + (3 * (2 ** ((data[10] & 7) + 1)) if data[10] & 128 else 0)
+
+    def blocks(start: int) -> tuple[bytes, int]:
+        chunks = []
+        while start < len(data):
+            length = data[start]
+            start += 1
+            if not length:
+                return b"".join(chunks), start
+            if start + length > len(data):
+                break
+            chunks.append(data[start : start + length])
+            start += length
+        raise ValueError("gif_unverified")
+
+    texts: list[bytes] = []
+    while offset < len(data):
+        kind = data[offset]
+        if kind == 0x3B:
+            if offset + 1 < len(data):
+                texts.append(data[offset + 1 :])
+            return texts
+        if kind == 0x21:
+            if offset + 2 >= len(data):
+                raise ValueError("gif_unverified")
+            label = data[offset + 1]
+            if label == 0xF9:
+                if (
+                    offset + 8 > len(data)
+                    or data[offset + 2] != 4
+                    or data[offset + 7] != 0
+                ):
+                    raise ValueError("gif_unverified")
+                offset += 8
+            else:
+                payload, offset = blocks(offset + 2)
+                texts.append(payload)
+            continue
+        if kind != 0x2C or offset + 10 >= len(data):
+            raise ValueError("gif_unverified")
+        packed = data[offset + 9]
+        offset += 10 + (3 * (2 ** ((packed & 7) + 1)) if packed & 128 else 0)
+        if offset >= len(data):
+            raise ValueError("gif_unverified")
+        _, offset = blocks(offset + 1)
+    raise ValueError("gif_unverified")
+
+
+def _git_bytes(repo: str, args: list[str], *, keep_index: bool, input=None) -> bytes:
+    env = dict(os.environ)
+    if not keep_index:
+        for key in (
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_INDEX_FILE",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        ):
+            env.pop(key, None)
+    return subprocess.run(
+        ["git", "--no-replace-objects", "-c", "core.fsmonitor=false", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        input=input,
+        env=env,
+    ).stdout
+
+
+def _raw_new_blobs(raw: bytes) -> list[tuple[str, str]]:
+    """`--raw -z --no-renames` の出力から（パス, 新しい blob）を取る。コミットの見出しは飛ばす。"""
+    tokens = raw.split(b"\0")
+    found = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token.startswith(b":") and i + 1 < len(tokens):
+            fields = token[1:].split(b" ")
+            if len(fields) != 5:
+                raise ValueError("gif_blob_list_invalid")
+            if fields[4][:1] in (b"A", b"M", b"T") and fields[1] != b"160000":
+                found.append(
+                    (
+                        tokens[i + 1].decode("utf-8", "surrogateescape"),
+                        fields[3].decode(),
+                    )
+                )
+            i += 2
+            continue
+        i += 1
+    return found
+
+
+def _gif_inputs(repo: str, blobs: list[tuple[str, str]], keep_index: bool):
+    """GIF（中身の先頭か名前で判定）ごとに、gitleaks へ渡すバイト列を返す。"""
+    # 見た印は gitleaks に渡したときだけ付ける。同じ中身が GIF でない名前で先に出ても、
+    # 後の `.gif` の名前の分を飛ばさない（中身の判定は oid ごと、名前の判定はパスごと）。
+    scanned: set[str] = set()
+    not_gif: set[str] = set()
+    for path, oid in blobs:
+        if oid in scanned:
+            continue
+        named_gif = path.lower().endswith(".gif")
+        if oid in not_gif and not named_gif:
+            continue
+        data = _git_bytes(repo, ["cat-file", "blob", oid], keep_index=keep_index)
+        if data[:6] in GIF_MAGIC:
+            scanned.add(oid)
+            yield path, b"\n".join(gif_extension_texts(data))
+        elif named_gif:
+            scanned.add(oid)
+            yield path, data
+        else:
+            not_gif.add(oid)
+
+
+def _gitleaks_stdin(data: bytes) -> bool:
+    result = subprocess.run(
+        [
+            pinned_gitleaks(),
+            "stdin",
+            "--no-banner",
+            "--redact",
+            "--log-level",
+            "error",
+            "--config",
+            str(GITLEAKS_CONFIG),
+        ],
+        input=data,
+        capture_output=True,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError("gitleaks_error")
+    return result.returncode == 0
+
+
+def gif_gitleaks_clean(
+    repo: str, blobs: list[tuple[str, str]], keep_index: bool
+) -> bool:
+    """足した・変えた GIF の拡張の本文を gitleaks で見る。読めない GIF は RuntimeError（止める）。"""
+    clean = True
+    for _path, data in _gif_inputs(repo, blobs, keep_index):
+        if data and not _gitleaks_stdin(data):
+            clean = False
+    return clean
+
+
+def range_new_blobs(repo: str, spec: list[str]) -> list[tuple[str, str]]:
+    ids = commit_ids(repo, spec, git)
+    if not ids:
+        return []
+    raw = _git_bytes(
+        repo,
+        [
+            "diff-tree",
+            "--stdin",
+            "-r",
+            "-m",
+            "--root",
+            "--no-renames",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+        ],
+        keep_index=False,
+        input=("\n".join(ids) + "\n").encode(),
+    )
+    return _raw_new_blobs(raw)
+
+
+def staged_new_blobs(repo: str) -> list[tuple[str, str]]:
+    raw = _git_bytes(
+        repo,
+        ["diff", "--cached", "--no-renames", "--raw", "-z", "--no-abbrev"],
+        keep_index=True,
+    )
+    return _raw_new_blobs(raw)
+
+
+def gitleaks_gif_range(repo: str, spec: list[str]) -> bool:
+    try:
+        return gif_gitleaks_clean(repo, range_new_blobs(repo, spec), keep_index=False)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+
+
 def gitleaks_range(repo: str, spec: list[str]) -> bool:
-    """送る範囲だけ gitleaks で見る。"""
-    return _gitleaks(repo, [f"--log-opts={' '.join(spec)}"])
+    """送る範囲だけ gitleaks で見る。GIF の拡張の本文も取り出して見る。"""
+    clean = _gitleaks(repo, [f"--log-opts={' '.join(spec)}"])
+    return gitleaks_gif_range(repo, spec) and clean
 
 
 def gitleaks_staged(repo: str) -> bool:
@@ -1182,7 +1386,11 @@ def gitleaks_staged(repo: str) -> bool:
     )
     if result.returncode not in (0, 1):
         raise RuntimeError("gitleaks_error")
-    return result.returncode == 0
+    try:
+        gif_clean = gif_gitleaks_clean(repo, staged_new_blobs(repo), keep_index=True)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from None
+    return result.returncode == 0 and gif_clean
 
 
 def pre_push_ranges(repo: str, remote: str, stdin_text: str) -> list[list[str]]:
@@ -1290,9 +1498,18 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="--public で、pre-commit 用にこれから作る commit の名義とステージした差分（gitleaks 込み）を見る",
     )
+    ap.add_argument(
+        "--gitleaks-gif",
+        action="store_true",
+        help="--range の範囲で足した・変えた GIF の拡張の本文だけを gitleaks で見る（CI の gitleaks の後に呼ぶ）",
+    )
     ns = ap.parse_args(argv)
     if not (ns.message_file or ns.range or ns.pr_event or ns.pre_push or ns.staged):
         ap.error("検査対象を指定してください")
+    if ns.gitleaks_gif:
+        if not ns.range:
+            ap.error("--gitleaks-gif は --range と使ってください")
+        return gitleaks_gif_main(ns.repo, ns.range)
     if ns.public:
         return public_main(ns)
     if ns.pre_push or ns.staged or ns.allowed_identities:
@@ -1468,14 +1685,41 @@ def public_main(ns) -> int:
                 "失敗: gitleaks が固定した版（references/gitleaks-pins.json）と一致しないので止めます",
                 file=sys.stderr,
             )
-        if str(exc) == "gitleaks_missing":
-            print(
-                "失敗: gitleaks が無いので止めます（入れてから commit してください）",
-                file=sys.stderr,
-            )
+        _explain_tool_error(exc)
         print('{"status": "tool_error", "reason": "identity_input_unavailable"}')
         return 2
     return _report(issues)
+
+
+def _explain_tool_error(exc: BaseException) -> None:
+    if str(exc) == "gitleaks_missing":
+        print(
+            "失敗: gitleaks が無いので止めます（入れてから commit してください）",
+            file=sys.stderr,
+        )
+    if str(exc) == "gif_unverified":
+        print(
+            "失敗: GIF の形が崩れていて拡張の本文を読めないので止めます",
+            file=sys.stderr,
+        )
+
+
+def gitleaks_gif_main(repo: str, rng: str) -> int:
+    """CI の入口。範囲で足した・変えた GIF の拡張の本文を gitleaks で見る。"""
+    try:
+        clean = gitleaks_gif_range(repo, [rng])
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        if str(exc) == "gitleaks_unpinned":
+            print(
+                "失敗: gitleaks が固定した版（references/gitleaks-pins.json）と一致しないので止めます",
+                file=sys.stderr,
+            )
+        _explain_tool_error(exc)
+        print('{"status": "tool_error", "reason": "gif_secret_scan_unavailable"}')
+        return 2
+    return _report(
+        [] if clean else ["範囲の GIF の拡張の本文に秘密情報の形（gitleaks）"]
+    )
 
 
 if __name__ == "__main__":
