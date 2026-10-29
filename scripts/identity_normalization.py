@@ -588,46 +588,153 @@ def _standard_regex_arguments(tree) -> set[int]:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "re"
         and node.func.attr == "compile"
-        and len(node.args) == 1
         and not node.keywords
+        and (
+            len(node.args) == 1
+            or (
+                len(node.args) == 2
+                and isinstance(node.args[1], ast.Attribute)
+                and isinstance(node.args[1].value, ast.Name)
+                and node.args[1].value.id == "re"
+                and node.args[1].attr in {"I", "M"}
+            )
+        )
     }
 
 
 _REGEX_HOME_ROOT = re.compile(r"(?:[A-Za-z]:[/\\]+Users[/\\]+|/(?:Users|home)/)")
 _REGEX_USERNAME_CLASSES = (r"[^/\s]+", r"[^\\\s]+", r"[A-Za-z0-9._-]+")
+_REGEX_CAPTURE_OPEN = re.compile(r"\(\?P<[A-Za-z_][A-Za-z0-9_]*>")
+_REGEX_CAPTURE_USERNAME_CLASSES = (
+    *_REGEX_USERNAME_CLASSES,
+    r"[a-z0-9_-]+",
+    r"""[^/\s'\"\\]+""",
+)
+_REGEX_CAPTURE_BOUNDARY = r"""[\"'`?#]"""
+_REGEX_SHARED_BOUNDARY = r"""(?![^/\\\s'\"])"""
 _REGEX_USERNAME_LOOKAHEAD = r"(?!USER\b|<)"
+
+
+_REGEX_PATH_LITERAL_ESCAPE = re.compile(
+    r"\\(?:[.\\/]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}"
+    r"|[0-7]{3}|N\{[^{}\r\n]{1,80}\})"
+)
+
+
+def _regex_has_parent_component(value: str) -> bool:
+    """Keep the root when literal regex escapes can traverse a path component."""
+    import unicodedata
+
+    def literal(match):
+        token = match.group()[1:]
+        try:
+            if token[0] in "xuU":
+                char = chr(int(token[1:], 16))
+            elif token[0] in "01234567":
+                char = chr(int(token, 8))
+            elif token.startswith("N{"):
+                char = unicodedata.lookup(token[2:-1])
+            else:
+                char = token
+        except (ValueError, KeyError):
+            return match.group()
+        return char if char in ".\\/" else match.group()
+
+    # Source quoting can add another escape layer. Bounded decoding is only a
+    # reason to withhold a mask; it never grants an exemption or executes source.
+    for _ in range(16):
+        if _PARENT_COMPONENT_PATTERN.search(value):
+            return True
+        decoded = _REGEX_PATH_LITERAL_ESCAPE.sub(literal, unquote(value))
+        if decoded == value:
+            return False
+        value = decoded
+    return True
 
 
 def _generic_regex_path_spans(
     value: str, *, source_token: bool = False
 ) -> list[tuple[int, int]]:
     """Only supported generic username atoms, never a concrete username prefix."""
+    if _regex_has_parent_component(value):
+        return []
     spans = []
-    forms = (False, True) if source_token else (False,)
+    forms = (0, 1, 2, 3) if source_token else (0,)
+
+    def spelling(token, form):
+        if not form:
+            return token
+        token = token.replace("\\", "\\\\")
+        if form == 2:
+            return token.replace("'", "\\'")
+        if form == 3:
+            return token.replace('"', '\\"')
+        return token
+
     for match in LOCAL_ABSOLUTE_PATH_PATTERN.finditer(value):
         root = _REGEX_HOME_ROOT.match(value, match.start())
         if root is None:
             continue
         for escaped in forms:
 
-            def spelling(token):
-                return token.replace("\\", "\\\\") if escaped else token
-
             start = root.end()
-            lookahead = spelling(_REGEX_USERNAME_LOOKAHEAD)
+            lookahead = spelling(_REGEX_USERNAME_LOOKAHEAD, escaped)
             if value.startswith(lookahead, start):
                 start += len(lookahead)
-            for generic in _REGEX_USERNAME_CLASSES:
-                token = spelling(generic)
-                if not value.startswith(token, start):
+            capture = _REGEX_CAPTURE_OPEN.match(value, start)
+            atom_start = capture.end() if capture is not None else start
+            classes = (
+                _REGEX_CAPTURE_USERNAME_CLASSES
+                if capture is not None
+                else _REGEX_USERNAME_CLASSES
+            )
+            for generic in classes:
+                token = spelling(generic, escaped)
+                if not value.startswith(token, atom_start):
                     continue
-                end = start + len(token)
+                end = atom_start + len(token)
+                if capture is not None:
+                    if not value.startswith(")", end):
+                        continue
+                    end += 1
                 tail = value[end:]
                 boundary = not tail or tail[0] in "/\\|)$" or tail.startswith(r"\Z")
+                if capture is not None and tail.startswith(
+                    spelling(_REGEX_CAPTURE_BOUNDARY, escaped)
+                ):
+                    boundary = True
                 if source_token and tail[:1] in {"'", '"'}:
                     boundary = True
                 if boundary:
                     spans.append((match.start(), end))
+    # This is the existing non-personal system directory, with the historical
+    # regex spelling of its component boundary. Never mask a concrete username.
+    for escaped in forms:
+        assertion = spelling(_REGEX_SHARED_BOUNDARY, escaped)
+        marker = MACOS_SHARED_DIRECTORY + assertion
+        first = value.find(marker)
+        while first >= 0:
+            end = first + len(marker)
+            tail = value[end:]
+            if (
+                not tail
+                or tail[0] in "|)$"
+                or (source_token and tail[:1] in {"'", '"'})
+            ):
+                spans.append((first, end))
+            first = value.find(marker, first + 1)
+    if spans:
+        residual = _mask_path_spans(value, spans)
+        for _, end in spans:
+            tail = residual[end:]
+            for form in forms:
+                tail = tail.replace(spelling(_REGEX_CAPTURE_BOUNDARY, form), " ")
+            # A remaining path suffix with unresolved regex operators could
+            # synthesize a parent component (classes, repeats, backreferences).
+            # Keep the root rather than treating that suffix as a literal path.
+            for suffix in re.finditer(r"[/\\][^\r\n]*", tail):
+                if re.search(r"[\\\[\]({*+?^|]", suffix.group()):
+                    return []
     return spans
 
 
@@ -1132,6 +1239,14 @@ def _private_text_analysis(text: str) -> dict:
         "path_values": paths,
         "path_source": _mask_path_spans(text, source_spans),
     }
+
+
+def private_path_views(text: str) -> list[tuple[str, str]]:
+    """同じregex役割を、完全hash束縛のpath照合にも渡す。"""
+    return [
+        (value, original)
+        for value, original, _ in _private_text_analysis(text)["path_values"]
+    ]
 
 
 def _validate_private_patterns(patterns):

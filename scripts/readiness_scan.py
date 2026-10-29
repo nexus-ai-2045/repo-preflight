@@ -401,6 +401,17 @@ PUBLIC_SYNTHETIC_PATH_SIGNATURES = frozenset(
         ("linux_home_path", str(PurePosixPath("/", "home", "me"))),
     )
 )
+# ADR-0017: four reviewed negative-fixture signatures. These are candidates only:
+# no exclusion occurs without the existing exact v3 policy and live public check.
+PUBLIC_SYNTHETIC_PATH_SIGNATURES |= frozenset(
+    ("linux_home_path", digest)
+    for digest in (
+        "2ce1dda1084edaefc6f33285f9259285b887f0eae16957495c6413f70ce72c85",
+        "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
+        "6d06e07163cde8fac80c1941aed3c558499ef602b963201c2d43c681e76257df",
+        "b1cbc5f347543a03701354923cd95344068142e4aa08c74d259fbfe7c62984fc",
+    )
+)
 
 
 def personal_path_matches(data: bytes) -> Counter:
@@ -697,7 +708,10 @@ def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
         except UnicodeDecodeError:
             continue
         extra = Counter()
-        for value, original in normalizer.static_string_views(text):
+        path_views = getattr(
+            normalizer, "private_path_views", normalizer.static_string_views
+        )
+        for value, original in path_views(text):
             # Valid source can describe an unpaired surrogate in a test literal.
             # Keep that derived view UTF-8 scannable, without dropping text or
             # losing the boundary before an adjacent/URL-encoded absolute path.

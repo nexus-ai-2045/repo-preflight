@@ -20,6 +20,11 @@
 - PDFの全linked xref componentを同一原本の既存strict readerで確認し、上書きされた圧縮metadata・旧actionも省略しない。XRef streamのW/Index/decoded長と全消費、graph/cycle、global budgets、exact source rangeの同一性を検査する。
 - MP4の全decoder入力をmov・external drefs/absolute無効・file/pipeへ限定。復号された合成secretをworktreeと削除済み履歴の既存secret gateへ接続し、Hachoir/helper SHA/decoder版・固定diagnosticを残す。
 
+### 検出精度と大きな文書の差分
+
+- 検出用の標準正規表現と個人パスを構文・役割で区別し、未知のsuffixや親参照は停止する。公開済み合成負例は既存v3の有限signatureと全内容hash・対象・件数・期限・レビュー記録へ束縛する。秘密情報や個人語の検出は維持する。
+- 大きな文書の変更は厳密一致する両端を先に確定し、残りへ既存の比較予算を適用する。全文の復元文脈と出典対応を維持し、判定不能時は全文検査へ戻す。公開前の全履歴検査は省略しない。
+
 ### その他の変更
 
 - 手元の検査の入口 `scripts/local_check.py` を追加。既定の full は、CI が回す試験と検査のうち手元で回せるものを全部回す（PR 本文の検査・base_guard・全 ref の走査は CI でだけ回る）。途中の作業用に、差分に関係する検査だけを回す quick を用意（CI の代わりではない）。個人情報の検査はどのモードでも、コミット済みの全差分・ステージ・未ステージ・未追跡の全部を見る。要約だけを画面に出し、全文はログファイルへ落とす。
