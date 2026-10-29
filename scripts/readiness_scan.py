@@ -152,24 +152,39 @@ def secret_matches(data: bytes) -> Counter:
     return matches
 
 
+def _reviewed_policy_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_key")
+        result[key] = value
+    return result
+
+
+def trusted_public_fixture_policy() -> dict:
+    """固定した検査器のcommitに同梱された台帳を読む。対象treeからは採らない。"""
+    tool = Path(__file__).resolve().parents[1]
+    rc, root = run(tool, "git", "rev-parse", "--show-toplevel")
+    if rc or Path(root).resolve() != tool:
+        raise ValueError("public_fixture_tool_unverified")
+    rc, content = run(
+        tool, "git", "show", "HEAD:.repo-preflight/reviewed-synthetic-fixtures.json"
+    )
+    if rc or len(content) > 1_000_000:
+        raise ValueError("public_fixture_policy_unavailable")
+    return json.loads(content, object_pairs_hook=_reviewed_policy_object)
+
+
 class ReviewedSecretExceptions:
     """明示指定された、内容と検出を完全束縛するレビュー済み例外。"""
 
     def __init__(self, policy_path: Path, remote: str):
-        def unique_object(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("duplicate_key")
-                result[key] = value
-            return result
-
         try:
             raw_policy = policy_path.read_bytes()
             if len(raw_policy) > 1_000_000:
                 raise ValueError("size")
             policy = json.loads(
-                raw_policy.decode("utf-8"), object_pairs_hook=unique_object
+                raw_policy.decode("utf-8"), object_pairs_hook=_reviewed_policy_object
             )
             if (
                 not isinstance(policy, dict)
@@ -189,6 +204,12 @@ class ReviewedSecretExceptions:
             identity = match.group(1)
             if len(policy["entries"]) > 1000:
                 raise ValueError("entry_limit")
+            if policy["version"] == 3:
+                # Pythonの辞書比較はtrue==1、3==3.0も等しい。型を含むJSONで比較する。
+                if json.dumps(policy, sort_keys=True, allow_nan=False) != json.dumps(
+                    trusted_public_fixture_policy(), sort_keys=True, allow_nan=False
+                ):
+                    raise ValueError("public_fixture_policy_not_trusted")
             self.entries = []
             ids = set()
             bindings = set()
@@ -300,22 +321,20 @@ class ReviewedSecretExceptions:
         self.has_path_entries = any(
             entry["rule"] in PATH_RULE_IDS for entry in self.entries
         )
-        if self.has_path_entries:
-            # REST originをlive取得。v2はprivate、v3はpublicの合成fixture限定。
-            # local設定、保存済みsnapshotやunknownは根拠にしない。
-            try:
-                settings = load_github_settings_module()
-                live = settings.gh_api_get("https://api.github.com/repos/" + identity)
-                if (
-                    not isinstance(live, dict)
-                    or live.get("full_name") != identity
-                    or live.get("private") is not (policy["version"] != 3)
-                    or live.get("visibility")
-                    != ("public" if policy["version"] == 3 else "private")
-                ):
-                    raise ValueError("reviewed_origin_visibility_required")
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
+        # secretだけの旧形式も照合する。path項目の削除でpublic制約を外さない。
+        try:
+            settings = load_github_settings_module()
+            live = settings.gh_api_get("https://api.github.com/repos/" + identity)
+            if (
+                not isinstance(live, dict)
+                or live.get("full_name") != identity
+                or live.get("private") is not (policy["version"] != 3)
+                or live.get("visibility")
+                != ("public" if policy["version"] == 3 else "private")
+            ):
+                raise ValueError("reviewed_origin_visibility_required")
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
 
     def _unreviewed(
         self, path: str, data: bytes, matches: Counter, applied: Counter
@@ -399,6 +418,17 @@ PUBLIC_SYNTHETIC_PATH_SIGNATURES = frozenset(
         ("windows_user_path", PureWindowsPath("C:/", "Users", "My").as_posix()),
         ("macos_user_path", str(PurePosixPath("/", "Users", "My"))),
         ("linux_home_path", str(PurePosixPath("/", "home", "me"))),
+    )
+)
+# ADR-0017: four reviewed negative-fixture signatures. These are candidates only:
+# no exclusion occurs without the existing exact v3 policy and live public check.
+PUBLIC_SYNTHETIC_PATH_SIGNATURES |= frozenset(
+    ("linux_home_path", digest)
+    for digest in (
+        "2ce1dda1084edaefc6f33285f9259285b887f0eae16957495c6413f70ce72c85",
+        "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
+        "6d06e07163cde8fac80c1941aed3c558499ef602b963201c2d43c681e76257df",
+        "b1cbc5f347543a03701354923cd95344068142e4aa08c74d259fbfe7c62984fc",
     )
 )
 
@@ -697,7 +727,10 @@ def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
         except UnicodeDecodeError:
             continue
         extra = Counter()
-        for value, original in normalizer.static_string_views(text):
+        path_views = getattr(
+            normalizer, "private_path_views", normalizer.static_string_views
+        )
+        for value, original in path_views(text):
             # Valid source can describe an unpaired surrogate in a test literal.
             # Keep that derived view UTF-8 scannable, without dropping text or
             # losing the boundary before an adjacent/URL-encoded absolute path.

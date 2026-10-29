@@ -1,6 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-10-29
+
+### 公開ダミー例外の自己承認を拒否
+
+- すべての例外形式で実際のrepositoryと公開状態を照合し、publicではv3だけ、privateでは既存v1/v2だけを認める。公開用台帳は固定した検査器のcommitに同梱された内容へ束縛し、target台帳や未コミットの変更による自己承認・旧形式への切替を拒否する。既存CIの自動読込みなし、内容hash・件数・期限、独立したsecret検査を維持する。[ADR-0021](docs/adr/0021-public-fixture-policy-trust.md)に移行と攻撃検証を記録。
+
+### Pillow媒体検査の安全な下限
+
+- Python 3.9のcore（text・標準PNG）を維持し、Pillowを利用するGIF・PSD・画像メタデータ・PDF画像検査だけをPython 3.11以上とPillow `>=13,<14`へ限定する。入力の読取り前に実版と配布metadataを照合し、旧版・不明版・欠損を拒否する。guardのPillow 11固定を削除し、既存13のhashを維持する。旧互換指定と移行は[ADR-0019](docs/adr/0019-pillow-media-runtime-floor.md)を参照。
+
+### 非公開送信に限定したメタデータ検査
+
+- `--media-inspection metadata`を追加。実際のprivate originと今回のcommit済み送信範囲を照合し、動画・画像のメタデータを原本のSHA-256・Git objectへ束縛して検査する。映像・画像の内容のプライバシーは検証しない。既定strict検査は維持し、public・releaseではこの限定モードを拒否する。
 
 ### 形式別の媒体検査
 
@@ -15,6 +27,11 @@
 
 - PDFの全linked xref componentを同一原本の既存strict readerで確認し、上書きされた圧縮metadata・旧actionも省略しない。XRef streamのW/Index/decoded長と全消費、graph/cycle、global budgets、exact source rangeの同一性を検査する。
 - MP4の全decoder入力をmov・external drefs/absolute無効・file/pipeへ限定。復号された合成secretをworktreeと削除済み履歴の既存secret gateへ接続し、Hachoir/helper SHA/decoder版・固定diagnosticを残す。
+
+### 検出精度と大きな文書の差分
+
+- 検出用の標準正規表現と個人パスを構文・役割で区別し、未知のsuffixや親参照は停止する。公開済み合成負例は既存v3の有限signatureと全内容hash・対象・件数・期限・レビュー記録へ束縛する。秘密情報や個人語の検出は維持する。
+- 大きな文書の変更は厳密一致する両端を先に確定し、残りへ既存の比較予算を適用する。全文の復元文脈と出典対応を維持し、判定不能時は全文検査へ戻す。公開前の全履歴検査は省略しない。
 
 ### その他の変更
 
@@ -38,7 +55,7 @@
 
 - 新しいリポとして作り直した初版（履歴は1コミット）。
 - 名義の検査（足した行の形と読めないファイル）から、人が中身を確かめた試験データだけをファイル単位で外せるようにした。一覧は `.repo-preflight/identity-fixture-exceptions.txt`（1行1ファイル、SHA256 と理由つき）。検査は固定した repo-preflight 側の一覧だけを読み、そのコミット（またはステージ）での中身の SHA256 が一致するときだけ外す。中身が変われば、また止まる。フォルダ・ワイルドカードは書けず、tests/ の新しいファイルはこれまでどおり検査する。今回は試験データ15件・カナリア脚本1件・保全した wheel 1件の計17件（2026-10-24 に人が確認）。
-- 対応する Python を 3.9 以上に下げ、共通フック（M2）とそろえた（`requires-python = ">=3.9"`、black の対象も py39）。3.9 で動かない書き方を洗い出し、型注釈の `X | Y` を評価しないよう `from __future__ import annotations` を足し、試験の `tomllib` は 3.10 以下で `tomli` を使う。試験の依存は版ごとに分けた（3.9 では pytest 8 と Pillow 11）。組み立て用の setuptools も版ごとに分けた（3.10 以上は 84 以上、3.9 は 77.0.3 以上 81 未満。84 は 3.10 以上が要るため）。CI に `test-py39`（ubuntu と macOS、pytest と runtime_smoke だけ）を足した。保全した ai-ratchet-gate の wheel と black は 3.11 以上が要るので、その試験は 3.9 では飛ばし、3.11 以上のジョブで回す。
+- 対応する Python を 3.9 以上に下げ、共通フック（M2）とそろえた（`requires-python = ">=3.9"`、black の対象も py39）。3.9 で動かない書き方を洗い出し、型注釈の `X | Y` を評価しないよう `from __future__ import annotations` を足し、試験の `tomllib` は 3.10 以下で `tomli` を使う。試験の依存は版ごとに分けた（当時は3.9でpytest 8とPillow 11。Pillow 11互換はADR-0019で廃止）。組み立て用の setuptools も版ごとに分けた（3.10 以上は 84 以上、3.9 は 77.0.3 以上 81 未満。84 は 3.10 以上が要るため）。CI に `test-py39`（ubuntu と macOS、pytest と runtime_smoke だけ）を足した。保全した ai-ratchet-gate の wheel と black は 3.11 以上が要るので、その試験は 3.9 では飛ばし、3.11 以上のジョブで回す。
 
 - 敵対的レビュー（残り4件）を直した。M2: Mac 標準の Python 3.9 でも検査が `tool_error` で止まらないよう、`readiness_scan.py` の `zip(strict=True)` を同じ働きの関数に置き換えた。共通フックは 3.9 以上の Python を新しい順に探し、無ければ版を確かめるよう理由を出して止める。M3: `.gitattributes` でフック・スクリプト・ワークフロー・ひな形の改行を LF に固定し、Windows の `core.autocrlf=true` でも CRLF にならないようにした。M7: pre-push は、送る commit の基準値ファイルを送り先の基準値（送り先の commit、無ければ送り先を追う手元の ref、どれも無ければ全件 0）と比べ、手で件数を上げた基準値や commit に入っていない基準値では止める（`scripts/push_baseline_guard.py`、検査は回さない）。M8: AI のシェル実行の前に呼ぶ `scripts/ai_command_guard.py` を追加し、フックを飛ばす指定（no-verify と `git commit` の短い n）・`core.hooksPath`・`git commit-tree`・検査が頼る環境変数（`REPO_PREFLIGHT_*`・`PATH`・`PYTHON*`・`GIT_*`、表示まわりは除く）の上書きを拒む。Claude Code と Codex の PreToolUse のひな形（`templates/ai/`）を置いた（各機械の実際の AI 設定は変えない）。共通フックは Python を `-E -s` で呼び、`PYTHONPATH` などの差し替えを読まない。
 

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repo-preflight"
-version = "0.10.0"
+version = "0.11.0"
 description = "Evidence-driven preflight scanner and lifecycle skill for repositories, run before widening who can see them."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -15,8 +15,8 @@ license = "MIT"
 dependencies = []
 
 [project.optional-dependencies]
-media = ["hachoir==3.4.0", "pdfminer.six==20260107; python_version >= '3.10'", "pypdf==6.21.2", "mutagen>=1.48.1,<1.49; python_version >= '3.10'", "mutagen==1.47.0; python_version < '3.10'", "fonttools==4.67.0; python_version >= '3.11'", "Pillow>=11.3,<14"]
-images = ["Pillow>=11.3,<14", "simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
+media = ["hachoir==3.4.0", "pdfminer.six==20260107; python_version >= '3.10'", "pypdf==6.21.2", "mutagen>=1.48.1,<1.49; python_version >= '3.10'", "mutagen==1.47.0; python_version < '3.10'", "fonttools==4.67.0; python_version >= '3.11'", "Pillow>=13,<14; python_version >= '3.11'"]
+images = ["Pillow>=13,<14; python_version >= '3.11'", "simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
 test = [
     "pdfminer.six==20260107; python_version >= '3.10'",
     "pypdf==6.21.2",
@@ -28,8 +28,7 @@ test = [
     "pytest>=9.1.1,<10; python_version >= '3.10'",
     "pytest>=8.4,<9; python_version < '3.10'",
     "pytest-xdist>=3.8,<4",
-    "Pillow>=13,<14; python_version >= '3.10'",
-    "Pillow>=11.3,<12; python_version < '3.10'",
+    "Pillow>=13,<14; python_version >= '3.11'",
     "simplejpeg>=1.9,<2",
     "psd-tools>=1.26,<2; python_version >= '3.11'",
     "pyyaml>=6.0.3,<7",

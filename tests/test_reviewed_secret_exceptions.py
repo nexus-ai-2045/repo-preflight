@@ -10,6 +10,13 @@ import pytest
 from test_readiness_scan import MODULE, SCRIPT, git, make_repo, set_remote_base
 
 
+@pytest.fixture(autouse=True)
+def private_origin(monkeypatch):
+    from test_reviewed_path_exceptions import private_origin as configure_private_origin
+
+    return configure_private_origin.__wrapped__(monkeypatch)
+
+
 def digest(value):
     return hashlib.sha256(value).hexdigest()
 
@@ -192,6 +199,15 @@ def test_no_automatic_policy_loading_and_cli_intent_forwarding(tmp_path):
         run = subprocess.run(
             [
                 sys.executable,
+                "-c",
+                # 別processにもprivate API fakeを渡し、実ネット照会を行わない。
+                "import importlib.util, sys; from types import SimpleNamespace; "
+                "spec = importlib.util.spec_from_file_location('fixture_scan', sys.argv.pop(1)); "
+                "module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module); "
+                "module.load_github_settings_module = lambda: SimpleNamespace("
+                "gh_api_get=lambda endpoint: {'full_name': 'example/repo', "
+                "'private': True, 'visibility': 'private'}); "
+                "raise SystemExit(module.main())",
                 str(SCRIPT),
                 "--repo",
                 str(repo),

@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "entries": [
+    {
+      "id": "release_fixture_d4482760_0",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "tests/test_commit_hook_templates.py",
+      "content_sha256": "d430d8e0f9e91d27f637fecf1fb5afc3d1e66732bdd0f6a73202531f169c36d7",
+      "rule": "linux_home_path",
+      "match_sha256": "2ce1dda1084edaefc6f33285f9259285b887f0eae16957495c6413f70ce72c85",
+      "occurrence_count": 2,
+      "expires_at": "2026-11-05T02:03:42Z",
+      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
+      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+    },
+    {
+      "id": "release_fixture_39b3c6cc_1",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "tests/test_identity_fixture_exceptions.py",
+      "content_sha256": "3e27047375feb36208d0b271ca03a6cbebe0db391d4111fcd6d9d4f60fcbe470",
+      "rule": "linux_home_path",
+      "match_sha256": "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
+      "occurrence_count": 1,
+      "expires_at": "2026-11-05T02:03:42Z",
+      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
+      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+    },
+    {
+      "id": "release_fixture_0446121a_2",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "tests/test_public_identity_policy.py",
+      "content_sha256": "0149b93fec4b1c582479254eb33cdb93a389b2b93f3ffabc138f35082fd15526",
+      "rule": "linux_home_path",
+      "match_sha256": "6d06e07163cde8fac80c1941aed3c558499ef602b963201c2d43c681e76257df",
+      "occurrence_count": 1,
+      "expires_at": "2026-11-05T02:03:42Z",
+      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
+      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+    },
+    {
+      "id": "release_fixture_0446121a_3",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "tests/test_public_identity_policy.py",
+      "content_sha256": "0149b93fec4b1c582479254eb33cdb93a389b2b93f3ffabc138f35082fd15526",
+      "rule": "linux_home_path",
+      "match_sha256": "b1cbc5f347543a03701354923cd95344068142e4aa08c74d259fbfe7c62984fc",
+      "occurrence_count": 1,
+      "expires_at": "2026-11-05T02:03:42Z",
+      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
+      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+    },
+    {
+      "id": "release_fixture_fe39b142_4",
+      "repo": "nexus-ai-2045/repo-preflight",
+      "path": "tests/test_identity_fixture_exceptions.py",
+      "content_sha256": "6c481d6f11c02b57afad1a1bd831dcb95ff95e160760ede32d23bc6d233216d7",
+      "rule": "linux_home_path",
+      "match_sha256": "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
+      "occurrence_count": 1,
+      "expires_at": "2026-11-05T02:03:42Z",
+      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
+      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+    }
+  ]
+}

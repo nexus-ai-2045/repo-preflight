@@ -4,6 +4,10 @@ import io
 import struct
 
 import pytest
+
+pytest.importorskip(
+    "PIL", minversion="13.0", reason="Pillow媒体検査はPython 3.11以上とPillow 13が必要"
+)
 from PIL import Image
 from mutagen.id3 import APIC, ID3
 

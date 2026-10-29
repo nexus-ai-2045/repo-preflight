@@ -2039,7 +2039,26 @@ def _child(kind, path):
     ):
         if kind == "pdf":
             import warnings
-            from PIL import Image
+
+            try:
+                try:
+                    from .identity_normalization import require_safe_pillow
+                except ImportError:
+                    import importlib.util
+
+                    source = (
+                        Path(__file__).resolve().with_name("identity_normalization.py")
+                    )
+                    spec = importlib.util.spec_from_file_location(
+                        "_pillow_runtime_guard", source
+                    )
+                    normalizer = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(normalizer)
+                    require_safe_pillow = normalizer.require_safe_pillow
+                require_safe_pillow()
+                from PIL import Image
+            except (ImportError, ValueError):
+                raise MediaError("dependency_unavailable") from None
 
             Image.MAX_IMAGE_PIXELS = 16_000_000
             warnings.simplefilter("error", Image.DecompressionBombWarning)

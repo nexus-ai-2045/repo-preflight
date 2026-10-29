@@ -1399,7 +1399,8 @@ def test_text_delta_removed_regex_binding_rechecks_new_path_role():
 
 def test_text_delta_repetitive_input_has_bounded_full_fallback():
     previous = "SAFE = 1\n" * 4001 + "CONTACT = " + repr(DENIED) + "\n"
-    result = ENGINE.scan_private_text_delta(previous, previous + "SAFE = 2\n", [DENIED])
+    current = "SAFE = 2\n" * 4001 + "CONTACT = " + repr(DENIED) + "\n"
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
     assert result["status"] == "fail"
     assert result["delta_full_fallback"] is True
 
@@ -1651,3 +1652,86 @@ def test_fenced_private_alternate_survives_unrelated_python_quote(
     body = "\n".join([other, private] if other_first else [private, other])
     source = "```python\n" + body + "\n```"
     assert ENGINE.scan_private_text(source, [needle])["status"] == "fail"
+
+
+def _large_delta_padding():
+    return "SAFE = 1\n" * 4100
+
+
+def test_large_text_delta_preserves_unchanged_body_around_safe_middle():
+    padding = _large_delta_padding()
+    old = "CONTACT = " + repr(DENIED) + "\n" + padding
+    previous = old + "END = 1\n"
+    current = old + "ADDED = 2\n" + "END = 1\n"
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["status"] == "pass"
+    assert not result.get("delta_full_fallback", False)
+    assert ENGINE.scan_private_text(current, [DENIED])["status"] == "fail"
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "CONTACT = " + repr(DENIED) + "\n",
+        "PATH = " + repr(synthetic_home_path("macos", "new-operator/work")) + "\n",
+    ],
+)
+def test_large_text_delta_new_values_remain_rejected(addition):
+    previous = _large_delta_padding() + "END = 1\n"
+    result = ENGINE.scan_private_text_delta(previous, previous + addition, [DENIED])
+    assert result["status"] == "fail"
+    assert not result.get("delta_full_fallback", False)
+
+
+def test_large_text_delta_old_prefix_plus_new_piece_is_rejected():
+    previous = _large_delta_padding() + 'PATH = (\n    "/" + "Users/"\n)\n'
+    current = previous.replace("\n)", '\n    + "operator-fixture/work"\n)')
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["local_path_match"] and result["reconstructed_path_match"]
+    assert not result.get("delta_full_fallback", False)
+
+
+def test_large_text_delta_same_value_elsewhere_preserves_new_provenance():
+    expression = '"fixture-private-" + "identity@example.invalid"'
+    previous = (
+        _large_delta_padding()
+        + "OLD = "
+        + expression
+        + '\nNEW = (\n    "fixture-private-"\n)\n'
+    )
+    current = previous.replace("\n)", '\n    + "identity@example.invalid"\n)')
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["literal_match_count"] == 1
+    assert not result.get("delta_full_fallback", False)
+
+
+def test_large_text_delta_removed_regex_binding_is_rejected():
+    previous = (
+        "import re\n"
+        + _large_delta_padding()
+        + "PATTERN = re.compile("
+        + repr(synthetic_home_path("macos", r"[^/\s]+/work"))
+        + ")\n"
+    )
+    current = previous.removeprefix("import re\n")
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["local_path_match"]
+    assert not result.get("delta_full_fallback", False)
+
+
+def test_large_text_delta_duplicate_source_in_changed_middle_is_rejected():
+    contact = "CONTACT = " + repr(DENIED) + "\n"
+    padding = _large_delta_padding()
+    previous = padding + contact + "MIDDLE = 1\n" + contact + padding
+    current = padding + contact + contact + "MIDDLE = 2\n" + contact + padding
+    result = ENGINE.scan_private_text_delta(previous, current, [DENIED])
+    assert result["literal_match_count"] == 1
+    assert not result.get("delta_full_fallback", False)
+
+
+def test_large_text_delta_common_edges_do_not_overlap_after_deletion():
+    line = "CONTACT = " + repr(DENIED) + "\n"
+    previous = line * 4100
+    result = ENGINE.scan_private_text_delta(previous, line * 4099, [DENIED])
+    assert result["status"] == "pass"
+    assert not result.get("delta_full_fallback", False)

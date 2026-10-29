@@ -13,9 +13,15 @@
 - コミットの作者・コミッター・共同作者行を、指定した名義設定や公開許可一覧と照合します。
 - `--intent`で、操作前の確認事項をJSONとして返します。
 
+## 0.11.0の変更
+
+非公開リポジトリへの今回の送信に限り、`--media-inspection metadata`で動画・画像のメタデータを検査できます。原本のSHA-256とGit objectへ結果を結び付けますが、映像・画像の内容に個人情報がないことは保証しません。既定のstrict検査と公開・releaseの全体検査は維持します。GIF拡張本文の秘密情報検査とPowerShell引用符の解析も修正しました。[リリースノート](docs/releases/v0.11.0.md)で範囲と制約を確認してください。
+
 ## 使い方
 
 検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD・CMO3 を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
+
+Pillowを使うGIF・PSD、追加の画像メタデータ読取り、PDF画像検査は **Python 3.11以上かつPillow 13（`>=13,<14`）** に限定します。追加依存の宣言だけでなく、入力をデコードする前に実行環境とPillowの版を確認し、旧版・不明版・欠損は検査不能で拒否します。Python 3.9・3.10のtext／標準PNG検査はPillowを読み込まず維持します。旧Pillow 11互換は提供しません。[下限変更と移行](docs/adr/0019-pillow-media-runtime-floor.md)を参照してください。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git

@@ -1716,7 +1716,12 @@ def test_non_utf8_findings_in_deleted_history_are_scanned(
     assert token not in json.dumps(report)
 
 
-def test_reviewed_exceptions_still_detect_uncovered_non_utf8_secret(tmp_path: Path):
+def test_reviewed_exceptions_still_detect_uncovered_non_utf8_secret(
+    tmp_path: Path, monkeypatch
+):
+    from test_reviewed_path_exceptions import private_origin
+
+    private_origin.__wrapped__(monkeypatch)
     repo = make_repo(tmp_path)
     reviewed = "sk-" + "a" * 24
     token = "AKIA" + "J" * 16
@@ -3423,6 +3428,11 @@ def test_private_path_exception_does_not_approve_hidden_normalized_path(
                 "visibility": "public",
             }
         ),
+    )
+    # 内容検査用の承認済み合成policy。信頼境界は別attack moduleで実Git検査する。
+    approved_policy = json.loads(policy.read_text())
+    monkeypatch.setattr(
+        MODULE, "trusted_public_fixture_policy", lambda: approved_policy
     )
     private_policy = tmp_path / "private-policy.txt"
     private_policy.write_text("unrelated-fixture\n")

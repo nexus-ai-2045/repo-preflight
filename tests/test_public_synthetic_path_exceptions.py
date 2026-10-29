@@ -25,6 +25,20 @@ def policy(tmp_path, data, **changes):
 
 @pytest.fixture(autouse=True)
 def public_origin(monkeypatch):
+    # 信頼境界は別attack moduleが実Gitで検査する。ここは内容検査用の承認済み合成policy。
+    def approved_policy():
+        return approved_snapshot[0]
+
+    approved_snapshot = []
+    original_policy = policy
+
+    def approved_factory(*args, **kwargs):
+        path = original_policy(*args, **kwargs)
+        approved_snapshot[:] = [json.loads(path.read_text())]
+        return path
+
+    monkeypatch.setitem(globals(), "policy", approved_factory)
+    monkeypatch.setattr(MODULE, "trusted_public_fixture_policy", approved_policy)
     monkeypatch.setattr(
         MODULE,
         "load_github_settings_module",
@@ -175,7 +189,9 @@ def test_target_diff_preserves_unreviewed_path_detection(tmp_path):
 
 
 @pytest.mark.parametrize("extra_secret", [False, True])
-def test_reviewed_new_blob_only_exempts_the_exact_fixture(tmp_path, extra_secret):
+def test_reviewed_new_blob_only_exempts_the_exact_fixture(
+    tmp_path, extra_secret, monkeypatch
+):
     repo = make_repo(tmp_path)
     original = sample().encode()
     addition = (
@@ -190,6 +206,7 @@ def test_reviewed_new_blob_only_exempts_the_exact_fixture(tmp_path, extra_secret
     for entry in doc["entries"]:
         entry["content_sha256"] = hashlib.sha256(data).hexdigest()
     config.write_text(json.dumps(doc))
+    monkeypatch.setattr(MODULE, "trusted_public_fixture_policy", lambda: doc)
     result = scan(repo, config)
     if extra_secret:
         assert result["checks"]["personal_path_scan"]["status"] == "pass"

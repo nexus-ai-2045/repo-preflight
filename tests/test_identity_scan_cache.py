@@ -145,7 +145,20 @@ def test_scanner_source_change_invalidates_all_entries(
     assert len(body_checks) == total
 
 
-def test_reviewed_exceptions_change_invalidates_all_entries(tmp_path, body_checks):
+def test_reviewed_exceptions_change_invalidates_all_entries(
+    tmp_path, body_checks, monkeypatch
+):
+    from types import SimpleNamespace
+
+    def private_api(endpoint):
+        assert endpoint == "https://api.github.com/repos/example/repo"
+        return {"full_name": "example/repo", "private": True, "visibility": "private"}
+
+    monkeypatch.setattr(
+        MODULE,
+        "load_github_settings_module",
+        lambda: SimpleNamespace(gh_api_get=private_api),
+    )
     repo = make_repo(tmp_path)
     config = tmp_path / "reviewed.json"
     config.write_text(

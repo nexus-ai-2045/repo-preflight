@@ -177,7 +177,7 @@ def _bundled_lines() -> list[tuple[str, str, str]]:
 def test_bundled_exception_list_matches_current_files_one_per_line():
     """同梱の一覧は1行1ファイルで理由つき。
 
-    このリポのファイルは、書いたハッシュが今の中身と一致する。
+    このリポの現役ファイルは索引の中身と照合し、歴史版は固定commitの同じpathと照合する。
     このリポに無いファイルは、理由の頭に「他リポ <リポ名> の」を書いた画像・図・雛形・ノートだけで、承認の記録を書く。
     """
     text = g.FIXTURE_EXCEPTIONS_FILE.read_text(encoding="utf-8")
@@ -186,6 +186,28 @@ def test_bundled_exception_list_matches_current_files_one_per_line():
     lines = _bundled_lines()
     assert len(lines) == len(entries)
     for path, sha, reason in lines:
+        if reason.startswith("歴史版 "):
+            match = re.match(
+                r"^歴史版 repo-preflight source=([0-9a-f]{40}):(tests/[A-Za-z0-9._/-]+) 合成拒否負例。",
+                reason,
+            )
+            assert match and match.group(2) == path
+            assert path.endswith(".py") and all(
+                part not in ("", ".", "..") for part in path.split("/")
+            )
+            source = match.group(1) + ":" + path
+            blob = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "blob", source],
+                check=True,
+                capture_output=True,
+            ).stdout
+            assert hashlib.sha256(blob).hexdigest() == sha, path
+            assert g._exception_skipper(str(ROOT), match.group(1), entries)(path)
+            assert not g._exception_skipper(str(ROOT), "HEAD", entries)(path)
+            assert not g._exception_skipper(str(ROOT), match.group(1), entries)(
+                "tests/unlisted_fixture.py"
+            )
+            continue
         if not OTHER_REPO_REASON.match(reason):
             assert (ROOT / path).is_file(), path
             # 索引の中身（改行の変換前）で比べる。検査もコミットの中身で比べる

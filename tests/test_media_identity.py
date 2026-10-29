@@ -23,8 +23,8 @@ from pypdf.generic import (
 )
 
 requires_pdf = pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="PDF inspection requires Python 3.10+; core remains available",
+    sys.version_info < (3, 11),
+    reason="PDF image inspection requires Python 3.11+ and Pillow 13; core remains available",
 )
 
 requires_font = pytest.mark.skipif(
