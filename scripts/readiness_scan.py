@@ -152,24 +152,39 @@ def secret_matches(data: bytes) -> Counter:
     return matches
 
 
+def _reviewed_policy_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_key")
+        result[key] = value
+    return result
+
+
+def trusted_public_fixture_policy() -> dict:
+    """固定した検査器のcommitに同梱された台帳を読む。対象treeからは採らない。"""
+    tool = Path(__file__).resolve().parents[1]
+    rc, root = run(tool, "git", "rev-parse", "--show-toplevel")
+    if rc or Path(root).resolve() != tool:
+        raise ValueError("public_fixture_tool_unverified")
+    rc, content = run(
+        tool, "git", "show", "HEAD:.repo-preflight/reviewed-synthetic-fixtures.json"
+    )
+    if rc or len(content) > 1_000_000:
+        raise ValueError("public_fixture_policy_unavailable")
+    return json.loads(content, object_pairs_hook=_reviewed_policy_object)
+
+
 class ReviewedSecretExceptions:
     """明示指定された、内容と検出を完全束縛するレビュー済み例外。"""
 
     def __init__(self, policy_path: Path, remote: str):
-        def unique_object(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise ValueError("duplicate_key")
-                result[key] = value
-            return result
-
         try:
             raw_policy = policy_path.read_bytes()
             if len(raw_policy) > 1_000_000:
                 raise ValueError("size")
             policy = json.loads(
-                raw_policy.decode("utf-8"), object_pairs_hook=unique_object
+                raw_policy.decode("utf-8"), object_pairs_hook=_reviewed_policy_object
             )
             if (
                 not isinstance(policy, dict)
@@ -189,6 +204,12 @@ class ReviewedSecretExceptions:
             identity = match.group(1)
             if len(policy["entries"]) > 1000:
                 raise ValueError("entry_limit")
+            if policy["version"] == 3:
+                # Pythonの辞書比較はtrue==1、3==3.0も等しい。型を含むJSONで比較する。
+                if json.dumps(policy, sort_keys=True, allow_nan=False) != json.dumps(
+                    trusted_public_fixture_policy(), sort_keys=True, allow_nan=False
+                ):
+                    raise ValueError("public_fixture_policy_not_trusted")
             self.entries = []
             ids = set()
             bindings = set()
@@ -300,22 +321,20 @@ class ReviewedSecretExceptions:
         self.has_path_entries = any(
             entry["rule"] in PATH_RULE_IDS for entry in self.entries
         )
-        if self.has_path_entries:
-            # REST originをlive取得。v2はprivate、v3はpublicの合成fixture限定。
-            # local設定、保存済みsnapshotやunknownは根拠にしない。
-            try:
-                settings = load_github_settings_module()
-                live = settings.gh_api_get("https://api.github.com/repos/" + identity)
-                if (
-                    not isinstance(live, dict)
-                    or live.get("full_name") != identity
-                    or live.get("private") is not (policy["version"] != 3)
-                    or live.get("visibility")
-                    != ("public" if policy["version"] == 3 else "private")
-                ):
-                    raise ValueError("reviewed_origin_visibility_required")
-            except (OSError, RuntimeError, ValueError, TypeError) as exc:
-                raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
+        # secretだけの旧形式も照合する。path項目の削除でpublic制約を外さない。
+        try:
+            settings = load_github_settings_module()
+            live = settings.gh_api_get("https://api.github.com/repos/" + identity)
+            if (
+                not isinstance(live, dict)
+                or live.get("full_name") != identity
+                or live.get("private") is not (policy["version"] != 3)
+                or live.get("visibility")
+                != ("public" if policy["version"] == 3 else "private")
+            ):
+                raise ValueError("reviewed_origin_visibility_required")
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
 
     def _unreviewed(
         self, path: str, data: bytes, matches: Counter, applied: Counter

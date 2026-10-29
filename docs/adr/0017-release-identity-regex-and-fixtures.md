@@ -62,3 +62,5 @@ mask前に、literalなregex escape及びURL表記を戻したviewを既存のpa
 ## 保存したレビュー設定
 
 [既存合成負例のv3設定](../../.repo-preflight/reviewed-synthetic-fixtures.json)を明示指定して使用します。自動適用は行いません。期限・内容hash・対象・件数・公開状態の条件を維持し、期限後は再レビューします。秘密情報・private literalの検出は除外しません。
+
+承認元は後継の[ADR-0021](0021-public-fixture-policy-trust.md)に従います。任意の外部台帳は採用せず、固定した検査器のcommitに同梱された内容と一致する場合だけ認めます。前節のscratchで作った候補は、登録前の検査・本文レビューを経て同梱されるまで有効になりません。

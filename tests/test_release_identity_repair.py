@@ -93,6 +93,11 @@ def reviewed_policy(tmp_path, row, data, monkeypatch, **changes):
         entries.append(entry)
     config = tmp_path / "reviewed.json"
     config.write_text(json.dumps(dict(version=3, entries=entries)), encoding="utf-8")
+    # 内容検査用の承認済み合成policy。信頼境界は別attack moduleで実Git検査する。
+    approved_policy = json.loads(config.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        MODULE, "trusted_public_fixture_policy", lambda: approved_policy
+    )
     return MODULE.ReviewedSecretExceptions(
         config, "https://github.com/example/repo.git"
     )
@@ -280,9 +285,10 @@ def test_regex_parent_traversal_never_loses_concrete_home(
 
     # Private values exist only during this call, never in test IDs or artifacts.
     home = Path.home()
-    root = str(home.parent) + "/"
+    root = home.parent.as_posix() + "/"
+    root_pattern = re.escape(root)
     tail = "/" + parent + "/" + re.escape(home.name) + "/runtime-sentinel"
-    pattern = root + atom + tail
+    pattern = root_pattern + atom + tail
     sample = root + "generic-runtime-component/../" + home.name + "/runtime-sentinel"
     matches_parent_input = (
         re.fullmatch(
@@ -290,10 +296,12 @@ def test_regex_parent_traversal_never_loses_concrete_home(
         )
         is not None
     )
-    returns_to_home = posixpath.normpath(sample) == str(home / "runtime-sentinel")
+    returns_to_home = (
+        posixpath.normpath(sample) == (home / "runtime-sentinel").as_posix()
+    )
     assert matches_parent_input and returns_to_home
     if style == "static-concat":
-        expression = " + ".join(map(repr, (root, atom, tail)))
+        expression = " + ".join(map(repr, (root_pattern, atom, tail)))
     elif style == "json-quote":
         expression = json.dumps(pattern)
     else:

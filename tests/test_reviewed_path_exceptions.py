@@ -316,7 +316,7 @@ def test_cmo3_xml_uses_whole_file_binding_and_unreadable_stays_unknown(tmp_path)
     assert check["unscanned_files"] == ["model.cmo3"]
 
 
-def test_version1_secret_only_never_calls_visibility_api(tmp_path, private_origin):
+def test_version1_secret_only_requires_private_visibility_api(tmp_path, private_origin):
     from test_reviewed_secret_exceptions import policy as secret_policy, secret
 
     repo = make_repo(tmp_path)
@@ -326,7 +326,7 @@ def test_version1_secret_only_never_calls_visibility_api(tmp_path, private_origi
         report(repo, secret_policy(tmp_path, data))["checks"]["secret_scan"]["status"]
         == "pass"
     )
-    assert not private_origin
+    assert private_origin == ["https://api.github.com/repos/example/repo"]
 
 
 @pytest.mark.skipif(

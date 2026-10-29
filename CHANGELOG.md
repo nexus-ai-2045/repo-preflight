@@ -2,6 +2,10 @@
 
 ## 0.11.0 - 2026-10-29
 
+### 公開ダミー例外の自己承認を拒否
+
+- すべての例外形式で実際のrepositoryと公開状態を照合し、publicではv3だけ、privateでは既存v1/v2だけを認める。公開用台帳は固定した検査器のcommitに同梱された内容へ束縛し、target台帳や未コミットの変更による自己承認・旧形式への切替を拒否する。既存CIの自動読込みなし、内容hash・件数・期限、独立したsecret検査を維持する。[ADR-0021](docs/adr/0021-public-fixture-policy-trust.md)に移行と攻撃検証を記録。
+
 ### Pillow媒体検査の安全な下限
 
 - Python 3.9のcore（text・標準PNG）を維持し、Pillowを利用するGIF・PSD・画像メタデータ・PDF画像検査だけをPython 3.11以上とPillow `>=13,<14`へ限定する。入力の読取り前に実版と配布metadataを照合し、旧版・不明版・欠損を拒否する。guardのPillow 11固定を削除し、既存13のhashを維持する。旧互換指定と移行は[ADR-0019](docs/adr/0019-pillow-media-runtime-floor.md)を参照。

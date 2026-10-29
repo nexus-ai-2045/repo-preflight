@@ -43,3 +43,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 - [ADR-0017: 検出用正規表現とレビュー済み合成負例の区別](0017-release-identity-regex-and-fixtures.md)
 
 - [ADR-0019: coreを維持しPillow媒体機能を安全な実行環境へ限定する](0019-pillow-media-runtime-floor.md) — Proposed。旧decoderの入力前拒否とPython 3.9 coreの分離。
+
+- [ADR-0021: 公開ダミー例外の承認元を検査器へ固定する](0021-public-fixture-policy-trust.md)
