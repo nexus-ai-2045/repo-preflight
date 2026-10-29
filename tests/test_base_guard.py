@@ -163,6 +163,53 @@ def test_request_is_unsigned_and_does_not_authorize_the_change(repo):
     assert run(repo, base, "--head-ref", "HEAD").returncode == 1
 
 
+def test_live_cli_freezes_objects_for_both_checks_and_evaluation(monkeypatch):
+    module = guard_module()
+    snapshots = []
+    evaluations = []
+    monkeypatch.setattr(
+        module, "resolve", lambda repo, ref: A if ref == "mutable-base" else B
+    )
+    monkeypatch.setattr(
+        module,
+        "assert_live_context",
+        lambda context, base, head: snapshots.append((base, head)),
+    )
+
+    def evaluate(repo, base, head, *args):
+        evaluations.append((base, head))
+        return {
+            "schema": module.SCHEMA,
+            "status": "pass",
+            "callers": 1,
+            "findings": [],
+            "protected_change_decision": {"status": "not_required"},
+        }
+
+    monkeypatch.setattr(module, "evaluate", evaluate)
+    result = module.main(
+        [
+            "--base-ref",
+            "mutable-base",
+            "--head-ref",
+            "mutable-head",
+            "--repository",
+            "example/project",
+            "--repository-id",
+            "123",
+            "--pull-request",
+            "7",
+            "--base-branch",
+            "refs/heads/main",
+            "--verify-github-context",
+            "--json",
+        ]
+    )
+    assert result == 0
+    assert evaluations == [(A, B)]
+    assert snapshots == [(A, B), (A, B)]
+
+
 @pytest.mark.parametrize("mismatch", ["base", "head", "repository", "branch", "closed"])
 def test_live_context_rejects_changed_snapshot(monkeypatch, mismatch):
     module = guard_module()

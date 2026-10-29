@@ -598,8 +598,8 @@ def main(argv: list[str] | None = None) -> int:
             assert_live_context(context, base_sha, head_sha)
         report = evaluate(
             Path(args.repo),
-            args.base_ref,
-            args.head_ref,
+            base_sha if args.verify_github_context else args.base_ref,
+            head_sha if args.verify_github_context else args.head_ref,
             args.allow_absent,
             Path(args.trusted_tool) if args.trusted_tool else None,
             args.self_repository,

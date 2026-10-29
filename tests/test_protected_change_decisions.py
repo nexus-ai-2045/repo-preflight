@@ -181,6 +181,21 @@ def test_valid_chain_and_nonprotected_rerun(fixture):
     assert verify(f, newer) == result
 
 
+def test_current_base_advancement_reuses_only_unchanged_authority_and_delta(fixture):
+    f = fixture
+    head = f[-1]()
+    git(f[0], "switch", "-c", "current-base", f[1])
+    current_base = commit(f[0], {"README.md": "unprotected base advancement"})
+    result = verify_decisions(f[0], current_base, head, CTX, PATHS, NOW)
+    assert result["status"] == "approved"
+    trust = dict(f[3], revoked_signers=["reviewer"])
+    revoked_base = commit(f[0], {TRUST: canon(trust)})
+    assert (
+        verify_decisions(f[0], revoked_base, head, CTX, PATHS, NOW)["status"]
+        == "blocked"
+    )
+
+
 @pytest.mark.parametrize("mutation", ["bytes", "mode", "path"])
 def test_protected_mutation_blocks(fixture, mutation):
     f = fixture

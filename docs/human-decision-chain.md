@@ -81,6 +81,8 @@ callerの削除、別owner、SHA不一致、未公開の参照先、読めない
 
 導入テンプレートは`pull_request_target`から、固定されたtoolとbaseだけを実行します。PRのコードをcheckout・実行せず、Git objectとして読みます。判定の前後にGitHub APIの現在のrepo・PR・base branch・base SHA・head SHAへ照合し、不一致・取得失敗は停止します。増やす権限は`pull-requests: read`だけです。
 
+判断に使うbaseは同じ取得処理で最新branchから読み、取得したcommit SHAへ固定します。実行するtoolは従来の固定版のままです。mainが進んでも、信頼設定と保護差分が同じなら既存の判断を再利用できます。最新baseを取得できない場合に古いevent-baseへ戻しません。取得後にbaseまたはheadが動いた場合は、その実行を停止し、次の実行で取得し直します。reusable preflightの基準値検査に使うイベント固定baseは、この承認照合とは別で、変更しません。
+
 ローカルCLIだけでは指定したbaseの鮮度を保証しません。チェック完了後のbase変更や取消が過去の緑を自動更新する保証もありません。merge直前に最新状態で再検証し、必要なチェックの発行主体とbranch保護を別に確認します。
 
 ## 導入状態を区別する
