@@ -245,7 +245,18 @@ def test_c1_template_runs_on_pull_request_target_only():
     data = _template()
     on = data.get("on", data.get(True))
     assert set(on) == {"pull_request_target"}
-    assert data["permissions"] == {"contents": "read"}
+    assert data["permissions"] == {"contents": "read", "pull-requests": "read"}
+    check = data["jobs"]["base-guard"]["steps"][-1]
+    assert "--verify-github-context" in check["run"]
+    assert "--json" in check["run"]
+    assert check["env"]["TARGET_REPOSITORY_ID"] == "${{ github.repository_id }}"
+    assert check["env"]["PR_NUMBER"] == "${{ github.event.pull_request.number }}"
+    assert check["env"]["BASE_SHA"] == "${{ steps.pr_snapshot.outputs.base_sha }}"
+    fetch = next(
+        s for s in data["jobs"]["base-guard"]["steps"] if s.get("id") == "pr_snapshot"
+    )
+    assert 'git check-ref-format "refs/heads/$GITHUB_BASE_REF"' in fetch["run"]
+    assert "refs/remotes/guard/current-base" in fetch["run"]
 
 
 def test_c1_template_job_name_matches_required_check():

@@ -72,6 +72,7 @@ jobs:
 - 呼び出し側の repository を全履歴で取得し、repo-preflight は別の場所へ取得するので、検査対象の作業ツリーは汚れません。
 - `preflight-ref` は必須です。`uses:` の `@` と同じ40桁の commit SHA を渡してください。枝名やタグ名、既定値はありません（SHA でないと gate が赤になります）。違う SHA だと、workflow と検査スクリプトの版がずれます。
 - そろっているかは base-guard（`scripts/base_guard.py`）が、比較元（保護された側）の定義で毎回確かめます。PR 側で書き換えた定義ではなく、比較元に入っている定義を見ます。ずれ・枝名やタグ・`preflight-ref` の欠落は赤になります。比較元に呼び出しがまだ無い導入の PR と初回 push は見送ります。手元では `python3 scripts/base_guard.py --repo . --base-ref origin/main` で同じ判定を見られます。repo-preflight 本体だけは、PR の版の gate で自分を検査するため `./.github/workflows/preflight-gate.yml` を `preflight-ref: ${{ github.sha }}` で呼びます。この形は `--self-repository`（CI では `github.repository`）が本体のときだけ通し、ほかの repo では手元の写しとして赤にします。
+- 保護パスの変更は、[登録された承認元の設計・差分判断](human-decision-chain.md)が現在の対象に一致すれば再実行できます。判断はbaseの公開鍵で検証し、PRが自分で置いた承認フラグでは通しません。必須検査・承認入口の変更は通常の差分判断で免除しません。導入テンプレートは判定前後の現在値照合に`pull-requests: read`も使います。承認元の登録と旧固定版からの移行は、自動で設定を解除せず人間が判断します。
 - `@` に書く commit SHA は、repo-preflight の `main` に入っている commit（またはタグ）にしてください。PR ブランチの SHA は squash merge と枝の削除のあと clone から取れなくなり、検査スクリプトを取得する段階で止まります。
 - 基準値ファイルの場所を変えるときは `baseline:` を渡します（既定 `.repo-preflight/ratchet-baseline.json`）。
 - 比較元はPRの`base.sha`、merge queueの`base_sha`、通常pushの`before`へ固定します。originから同じSHAをremote refへ取得し、基準値の緩和検査と整合性検査を同じcommitへ束縛します。イベント後にbranchが進んでも比較元を置き換えず、`master`を`origin/main`の既定値へ誤って戻しません。

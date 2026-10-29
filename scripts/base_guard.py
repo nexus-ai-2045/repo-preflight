@@ -23,11 +23,15 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.request import Request, urlopen
 
 SCHEMA = "repo-preflight.base-guard/v2"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -50,6 +54,7 @@ KINDS = {
     "preflight_ref_not_sha": "preflight-ref が 40桁の commit SHA でない",
     "mismatch": "uses の @ と preflight-ref が違う SHA",
     "protected_path_changed": "検査を変えるパスが変わっている（人の確認が要る）",
+    "verification_policy_changed": "承認では免除できない検査定義が変わっている",
     "preflight_ref_unreleased": "uses の SHA が repo-preflight の版のタグ（v*）から辿れない（フォーク網の SHA の恐れ）",
 }
 
@@ -295,6 +300,128 @@ def released_sha(tool: Path, sha: str) -> bool:
     return bool(tags.stdout.strip())
 
 
+def verification_policy_changes(
+    base_workflows: dict, head_workflows: dict, self_repo: bool = False
+) -> list[dict]:
+    """必須検査・承認入口の意味を、通常のCI変更承認から分離する。"""
+    findings = []
+    for path, text in base_workflows.items():
+        try:
+            before = load_yaml(text)
+            jobs = before.get("jobs", {})
+            callers, _ = find_callers(before, self_repo)
+            controls_guard = (self_repo and path == SELF_TARGET[2:]) or any(
+                isinstance(job, dict)
+                and (key == "base-guard" or job.get("name") == "base-guard")
+                for key, job in jobs.items()
+            )
+            if not callers and not controls_guard:
+                continue
+            after = load_yaml(head_workflows.get(path))
+            if not controls_guard:
+                # 正式な版への固定更新だけは既存のSHA・release検査へ委ねる。
+                before, after = copy.deepcopy(before), copy.deepcopy(after)
+                for caller in callers:
+                    for data in (before, after):
+                        job = data["jobs"][caller["job"]]
+                        job["uses"] = "registered-preflight-caller"
+                        job.get("with", {}).pop("preflight-ref", None)
+            changed = before != after
+        except (ValueError, TypeError, AttributeError, KeyError):
+            changed = True
+        if changed:
+            findings.append(
+                {
+                    "kind": "verification_policy_changed",
+                    "file": path,
+                    "job": "",
+                    "side": "head",
+                }
+            )
+    return findings
+
+
+def assert_live_context(context: dict, base: str, head: str) -> None:
+    """信頼済みworkflowが渡した対象をGitHubの現在値へ照合する。"""
+    repository = context["repository"]
+    number = context["pull_request"]
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+        or type(number) is not int
+        or number <= 0
+    ):
+        raise GuardError("live_context_invalid")
+    token = os.environ.get("REPO_PREFLIGHT_CONTEXT_TOKEN")
+    if not token:
+        raise GuardError("live_context_unavailable")
+    request = Request(
+        f"https://api.github.com/repos/{repository}/pulls/{number}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversize")
+        data = json.loads(raw)
+        matches = (
+            data["state"] == "open"
+            and data["number"] == number
+            and data["base"]["repo"]["id"] == context["repository_id"]
+            and data["base"]["repo"]["full_name"].casefold() == repository.casefold()
+            and "refs/heads/" + data["base"]["ref"] == context["base_ref"]
+            and data["base"]["sha"] == base
+            and data["head"]["sha"] == head
+        )
+        if not matches:
+            raise ValueError("changed")
+    except Exception:
+        raise GuardError("live_context_unavailable_or_changed") from None
+
+
+def decision_request(repo: Path, base: str, head: str, context: dict) -> dict:
+    """確認する対象を読み出すだけで、承認や署名を作らない。"""
+    from protected_change_decisions import BUNDLE_PATH, TRUST_PATH, protected_delta
+
+    prefixes, exact = load_protected()
+    paths = sorted(
+        path
+        for path in changed_paths(repo, base, head)
+        if is_protected(path, prefixes, exact) and path != BUNDLE_PATH
+    )
+    policy_hash = None
+    try:
+        size = int(_git(repo, "cat-file", "-s", f"{base}:{TRUST_PATH}"))
+        if not 0 < size <= 256 * 1024:
+            raise GuardError("trust_size_limit")
+        policy_hash = hashlib.sha256(
+            _git(repo, "show", f"{base}:{TRUST_PATH}", binary=True)
+        ).hexdigest()
+    except GuardError:
+        pass
+    return {
+        "schema": "repo-preflight.protected-change-request/v1",
+        "status": "unsigned_request_not_authorization",
+        "human_verified": False,
+        "base_sha": base,
+        "head_sha": head,
+        "scope": {
+            **context,
+            "operation": "protected-change-check",
+            "paths": paths,
+            "protected_delta_sha256": (
+                protected_delta(repo, base, head, paths) if paths else None
+            ),
+            "policy_sha256": policy_hash,
+        },
+        "trust_status": "available_for_verification" if policy_hash else "unavailable",
+        "requires_trust_administration": TRUST_PATH in paths,
+    }
+
+
 def evaluate(
     repo: Path,
     base_ref: str,
@@ -302,10 +429,13 @@ def evaluate(
     allow_absent: bool = False,
     trusted_tool: Path | None = None,
     self_repository: str | None = None,
+    decision_context: dict | None = None,
 ) -> dict:
     self_repo = is_self_repository(self_repository)
     base = resolve(repo, base_ref)
-    base_total, findings = evaluate_definitions(read_workflows(repo, base), self_repo)
+    base_workflows = read_workflows(repo, base)
+    base_total, findings = evaluate_definitions(base_workflows, self_repo)
+    decision = {"status": "not_required", "reason": "no_protected_change"}
     for item in findings:
         item["side"] = "base"
     unreadable = any(f["kind"] == "unreadable" for f in findings)
@@ -313,9 +443,8 @@ def evaluate(
         findings.append({"kind": "no_caller", "file": "", "job": "", "side": "base"})
     if head_ref is not None:
         head = resolve(repo, head_ref)
-        head_total, head_findings = evaluate_definitions(
-            read_workflows(repo, head), self_repo
-        )
+        head_workflows = read_workflows(repo, head)
+        head_total, head_findings = evaluate_definitions(head_workflows, self_repo)
         for item in head_findings:
             item["side"] = "head"
         findings += head_findings
@@ -343,16 +472,42 @@ def evaluate(
                     {"kind": "caller_removed", "file": "", "job": "", "side": "head"}
                 )
         prefixes, exact = load_protected()
-        for path in changed_paths(repo, base, head):
-            if is_protected(path, prefixes, exact):
-                findings.append(
-                    {
-                        "kind": "protected_path_changed",
-                        "file": path,
-                        "job": "",
-                        "side": "head",
-                    }
+        protected = [
+            path
+            for path in changed_paths(repo, base, head)
+            if is_protected(path, prefixes, exact)
+        ]
+        if protected:
+            findings += verification_policy_changes(
+                base_workflows, head_workflows, self_repo
+            )
+            if decision_context is None:
+                decision = {"status": "blocked", "reason": "decision_context_required"}
+            elif findings:
+                decision = {
+                    "status": "blocked",
+                    "reason": "non_overridable_invariant_failed",
+                }
+            else:
+                from protected_change_decisions import verify_decisions
+
+                decision = verify_decisions(
+                    repo=repo,
+                    base=base,
+                    head=head,
+                    context=decision_context,
+                    protected_paths=protected,
                 )
+            if decision.get("status") != "approved":
+                for path in protected:
+                    findings.append(
+                        {
+                            "kind": "protected_path_changed",
+                            "file": path,
+                            "job": "",
+                            "side": "head",
+                        }
+                    )
     if findings:
         status = "blocked"
     elif base_total == 0:
@@ -364,6 +519,7 @@ def evaluate(
         "status": status,
         "callers": base_total,
         "findings": findings,
+        "protected_change_decision": decision,
     }
 
 
@@ -394,16 +550,63 @@ def main(argv: list[str] | None = None) -> int:
         help="検査する repo の owner/名前（CI の github.repository）。repo-preflight 本体のときだけ自己検査の呼び出しを通す",
     )
     parser.add_argument("--json", action="store_true", help="結果を JSON で出す")
+    parser.add_argument("--repository", help="信頼済みcallerが渡す対象owner/name")
+    parser.add_argument("--repository-id", type=int, help="GitHub repository ID")
+    parser.add_argument("--pull-request", type=int, help="対象PR番号")
+    parser.add_argument("--base-branch", help="対象base branchの完全ref")
+    parser.add_argument(
+        "--verify-github-context",
+        action="store_true",
+        help="判定の前後にGitHubの現在の対象を照合する",
+    )
+    parser.add_argument(
+        "--decision-request",
+        action="store_true",
+        help="署名・承認をせず、確認対象の差分digestをJSONで表示する",
+    )
     args = parser.parse_args(argv)
+    fields = (args.repository, args.repository_id, args.pull_request, args.base_branch)
+    if any(value is not None for value in fields) and not all(
+        value is not None for value in fields
+    ):
+        parser.error(
+            "判断の対象にはrepository・repository-id・pull-request・base-branchの全指定が必要です"
+        )
+    context = (
+        dict(zip(("repository", "repository_id", "pull_request", "base_ref"), fields))
+        if all(value is not None for value in fields)
+        else None
+    )
+    if (args.verify_github_context or args.decision_request) and (
+        context is None or args.head_ref is None
+    ):
+        parser.error("現在値照合には判断の対象とhead-refが必要です")
     try:
+        if args.decision_request:
+            base_sha = resolve(Path(args.repo), args.base_ref)
+            head_sha = resolve(Path(args.repo), args.head_ref)
+            if args.verify_github_context:
+                assert_live_context(context, base_sha, head_sha)
+            request = decision_request(Path(args.repo), base_sha, head_sha, context)
+            if args.verify_github_context:
+                assert_live_context(context, base_sha, head_sha)
+            print(json.dumps(request, ensure_ascii=False, indent=2))
+            return 0
+        if args.verify_github_context:
+            base_sha = resolve(Path(args.repo), args.base_ref)
+            head_sha = resolve(Path(args.repo), args.head_ref)
+            assert_live_context(context, base_sha, head_sha)
         report = evaluate(
             Path(args.repo),
-            args.base_ref,
-            args.head_ref,
+            base_sha if args.verify_github_context else args.base_ref,
+            head_sha if args.verify_github_context else args.head_ref,
             args.allow_absent,
             Path(args.trusted_tool) if args.trusted_tool else None,
             args.self_repository,
+            context,
         )
+        if args.verify_github_context:
+            assert_live_context(context, base_sha, head_sha)
     except GuardError as exc:
         reason = (
             "PyYAML が無いので止めます"
@@ -421,6 +624,11 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"失敗: {side}: {KINDS[item['kind']]}"
                 + (f"（{where}）" if where else ""),
+                file=sys.stderr,
+            )
+        if report["protected_change_decision"]["status"] == "blocked":
+            print(
+                "判断証拠: " + report["protected_change_decision"]["reason"],
                 file=sys.stderr,
             )
         if report["status"] == "pass":

@@ -78,6 +78,8 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・merge queueの検査を保持します。古いPRとbranch pushの実行整理、およびreusable workflowとの責務分離は[既存のCI接続説明](docs/repository-consistency-gate.md#github-actions-接続例)に記します。ローカルの成功でhosted CIや人間レビューを省略しません。
 
+保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
+
 ## 制約
 
 - 既知の形式による検出であり、個人情報の最終判断、権利確認、依存ライブラリの脆弱性検査は行いません。
