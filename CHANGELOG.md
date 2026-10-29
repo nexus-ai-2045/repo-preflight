@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-10-29
+
+### 非公開送信に限定したメタデータ検査
+
+- `--media-inspection metadata`を追加。実際のprivate originと今回のcommit済み送信範囲を照合し、動画・画像のメタデータを原本のSHA-256・Git objectへ束縛して検査する。映像・画像の内容のプライバシーは検証しない。既定strict検査は維持し、public・releaseではこの限定モードを拒否する。
 
 ### 形式別の媒体検査
 
