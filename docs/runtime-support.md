@@ -275,6 +275,8 @@ PSD（バージョン1）が対象で、PSB（バージョン2）は未対応で
 
 ## GIFを含む個人情報検査
 
+GIFの実デコードはPython 3.11以上と安定版Pillow 13系を必要とする。旧版・欠損・版の不一致では入力をdecoderへ渡さず停止する。詳しい移行は[ADR-0019](adr/0019-pillow-media-runtime-floor.md)を参照する。
+
 `.[images]` のPillowを使い、GIF87a/89aの構造を検証した後、拡張ブロックの本文と全フレームを検査します。コメントのsubblockを連結してから既存の文字列検査へ渡します。フレームは単独で展開し、透明・差分合成で元のパレット番号を消さず、番号と色の両方を直接照合します。画像の画素をプログラムとして解析しません。OCRは行いません。
 
 入力128MiB、1フレームのRGBA換算128MiB、全フレーム累計512MiB、512フレーム、拡張本文8MiBが上限です。構造不正・画像展開失敗・追加依存不足・切れた画像を許す設定・元の番号を失う強制RGB設定は検査不能にします。Pillowの版とデコーダ設定は検査キャッシュの鍵に含めます。
@@ -297,13 +299,13 @@ Git履歴の通常batch予算16,000,000 byteは維持します。現在の作業
 
 worktreeと到達可能なGit blobは同じdispatchを使い、blobの全path aliasもextension照合に使う。媒体はdecoder環境をlookup前に完全束縛するまでclean-pass cacheのlookup/recordを行わない。他の文書・画像のcache契約は維持する。reportにはadapter SHAと実decoder versionsを付ける。これらの証拠は利用側CIや原本参照の採用を代替しない。
 
-PDFの完全原本検査はPython 3.10+のoptional機能（pypdf 6.21.2 / pdfminer.six 20260107）。coreのPython 3.9契約は変えず、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
+このCLIのPDF完全原本検査はPython 3.11以上と安全なPillow 13系を必要とするoptional機能（pypdf 6.21.2 / pdfminer.six 20260107）。個々のparser依存の上流下限が3.10でも、この実行入口でPython 3.10のPDF検査成功は保証しない。Python 3.9/3.10のcore TEXT・標準PNG契約は維持し、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
 
 限定null互換は、xref_free_entryで明示freeかつlive xref/object streamに存在しない正確なgeneration/idだけに適用する。その他のstrict読取り失敗は維持し、元free bytesの検査と数値の適用回数を残す。mailtoは非空targetのinert metadataとして原文・percent復号を検査し、外部へ送信しない。文字列件数は既存object上限100000に整合し、2MB等の他上限は維持する。
 
 Type1はfontTools4.67.0の固定実装を短命child内でguardし、Length1/2/3・eexec開始・readstring→PS object→CharStrings/Subrsを正確に結ぶ。raw/decryptedの全文字領域を検査し、完全なcodeword decode後のbinary区間以外は免除しない。operation/割当前allocation/stack/depth/output/I/O予算を超えれば停止する。PatternType1/FunctionType4は既存parserでinert graphics sourceを確認する。checksumだけの不一致は数値diagnosticとして残すが、全table/glyph/metadataはstrict decompile必須で、元checksum整合性の保証をしない。
 
-埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。Python3.10のPDF字句・原本検査は維持し、font decoderがない入力はdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
+埋込みfontの固定fontTools4.67.0は配布metadataのRequires-Pythonに従いPython3.11+で導入する。PDF実行入口はPillowの安全な下限に合わせてPython3.11以上へ限定し、font decoderがない入力もdependency unavailableで停止する。core3.9やoptional依存不足を検査成功とは扱わない。
 
 媒体依存のPython 3.9互換版はMutagen 1.47.0（上流Requires-Python >=3.7）、3.10+は1.48系（>=3.10）を使う。FFmpeg/FFprobe不足は検査成功ではなくdependency unavailableで停止する。fontTools 4.67.0のsource pinは既存LF SHAを維持し、配布SHAを照合した公式Windows wheelの完全一致CRLF SHAだけを追加する。任意の改行正規化・混在改行・コード変更は受理しない。
 

@@ -8,6 +8,10 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+
+pytest.importorskip(
+    "PIL", minversion="13.0", reason="Pillow媒体検査はPython 3.11以上とPillow 13が必要"
+)
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]

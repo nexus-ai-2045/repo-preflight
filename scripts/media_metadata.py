@@ -408,8 +408,21 @@ def _xmp_values(data, xml_reader):
 
 def _image_metadata(path, ext, xml_reader):
     try:
+        try:
+            from .identity_normalization import require_safe_pillow
+        except ImportError:
+            import importlib.util
+
+            source = Path(__file__).resolve().with_name("identity_normalization.py")
+            spec = importlib.util.spec_from_file_location(
+                "_pillow_runtime_guard", source
+            )
+            normalizer = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(normalizer)
+            require_safe_pillow = normalizer.require_safe_pillow
+        require_safe_pillow()
         from PIL import Image
-    except ImportError:
+    except (ImportError, ValueError):
         _fail("dependency_unavailable")
     try:
         with Image.open(path) as image:

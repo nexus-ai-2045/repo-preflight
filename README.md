@@ -21,6 +21,8 @@
 
 検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD・CMO3 を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
 
+Pillowを使うGIF・PSD、追加の画像メタデータ読取り、PDF画像検査は **Python 3.11以上かつPillow 13（`>=13,<14`）** に限定します。追加依存の宣言だけでなく、入力をデコードする前に実行環境とPillowの版を確認し、旧版・不明版・欠損は検査不能で拒否します。Python 3.9・3.10のtext／標準PNG検査はPillowを読み込まず維持します。旧Pillow 11互換は提供しません。[下限変更と移行](docs/adr/0019-pillow-media-runtime-floor.md)を参照してください。
+
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
 cd repo-preflight

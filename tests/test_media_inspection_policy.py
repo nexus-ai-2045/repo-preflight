@@ -6,6 +6,10 @@ import json
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip(
+    "PIL", minversion="13.0", reason="Pillow媒体検査はPython 3.11以上とPillow 13が必要"
+)
 from PIL import Image, PngImagePlugin
 
 from test_private_submission_scope import submission, run_scan

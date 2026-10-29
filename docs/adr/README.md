@@ -41,3 +41,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 - [ADR-0018: 非公開本文の差分比較前に厳密一致する両端を確定する](0018-bounded-private-text-delta-edges.md) — Proposed。既存の全文解析と不明時の拒否を維持する局所修復候補。
 
 - [ADR-0017: 検出用正規表現とレビュー済み合成負例の区別](0017-release-identity-regex-and-fixtures.md)
+
+- [ADR-0019: coreを維持しPillow媒体機能を安全な実行環境へ限定する](0019-pillow-media-runtime-floor.md) — Proposed。旧decoderの入力前拒否とPython 3.9 coreの分離。

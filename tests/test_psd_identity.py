@@ -8,6 +8,10 @@ from unittest.mock import patch
 import pytest
 
 pytest.importorskip(
+    "PIL", minversion="13.0", reason="Pillow媒体検査はPython 3.11以上とPillow 13が必要"
+)
+
+pytest.importorskip(
     "psd_tools", minversion="1.26", reason="PSD検査の追加依存はPython 3.11以降で提供"
 )
 from psd_tools import PSDImage

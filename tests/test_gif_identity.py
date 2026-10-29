@@ -8,6 +8,10 @@ from unittest.mock import patch
 from urllib.parse import quote
 
 import pytest
+
+pytest.importorskip(
+    "PIL", minversion="13.0", reason="Pillow媒体検査はPython 3.11以上とPillow 13が必要"
+)
 from PIL import Image, ImageFile
 from path_input_fixture import fixture_path
 

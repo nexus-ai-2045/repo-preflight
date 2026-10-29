@@ -1939,6 +1939,27 @@ def scan_private_jpeg(
     }
 
 
+def require_safe_pillow() -> None:
+    import sys
+
+    if sys.version_info < (3, 11):
+        raise ValueError("pillow_runtime_unavailable")
+    try:
+        import PIL
+        from importlib.metadata import version
+
+        installed = version("Pillow")
+    except ImportError:
+        raise ValueError("pillow_runtime_unavailable") from None
+    declared = getattr(PIL, "__version__", None)
+    if (
+        not isinstance(declared, str)
+        or re.fullmatch(r"13\.[0-9]+\.[0-9]+", declared) is None
+        or installed != declared
+    ):
+        raise ValueError("pillow_runtime_unavailable")
+
+
 def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
     """PSDの構造とメタデータを検査し、圧縮画素をソースコードにしない。"""
     import io
@@ -1956,8 +1977,9 @@ def scan_private_psd(data: bytes, patterns: list[str]) -> dict:
     if not data.startswith(b"8BPS\x00\x01"):
         raise ValueError("private_identity_psd_unverified")
     try:
+        require_safe_pillow()
         from psd_tools.psd import PSD
-    except ImportError:
+    except (ImportError, ValueError):
         raise ValueError("private_identity_psd_decoder_unavailable") from None
 
     @contextmanager
@@ -2214,8 +2236,9 @@ def scan_private_gif(data: bytes, patterns: list[str]) -> dict:
     if len(data) < 14 or data[:6] not in (b"GIF87a", b"GIF89a"):
         raise ValueError("private_identity_gif_unverified")
     try:
+        require_safe_pillow()
         from PIL import Image, ImageFile, GifImagePlugin
-    except ImportError:
+    except (ImportError, ValueError):
         raise ValueError("private_identity_gif_decoder_unavailable") from None
     if ImageFile.LOAD_TRUNCATED_IMAGES or int(GifImagePlugin.LOADING_STRATEGY) == 2:
         raise ValueError("private_identity_gif_unverified")
