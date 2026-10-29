@@ -6,7 +6,6 @@ import base64
 import copy
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -203,8 +202,9 @@ def test_protected_mutation_blocks(fixture, mutation):
     if mutation == "bytes":
         head = commit(f[0], {"ci.yml": "altered"})
     elif mutation == "mode":
-        os.chmod(f[0] / "ci.yml", 0o755)
-        head = commit(f[0], {})
+        git(f[0], "update-index", "--chmod=+x", "ci.yml")
+        git(f[0], "commit", "-qm", "fixture executable mode")
+        head = git(f[0], "rev-parse", "HEAD")
     else:
         head = commit(f[0], {"policy.json": "changed"})
     assert verify(f, head)["status"] == "blocked"
@@ -293,10 +293,19 @@ def test_bad_carrier_blocks(fixture, carrier):
             {"schema": "repo-preflight.decision-bundle/v1", "decisions": [node]}
         )
     else:
-        p = f[0] / BUNDLE
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.symlink_to("../ci.yml")
-        head = commit(f[0], {})
+        blob = (
+            subprocess.run(
+                ["git", "-C", str(f[0]), "hash-object", "-w", "--stdin"],
+                input=b"../ci.yml",
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        git(f[0], "update-index", "--add", "--cacheinfo", f"120000,{blob},{BUNDLE}")
+        git(f[0], "commit", "-qm", "fixture symlink object")
+        head = git(f[0], "rev-parse", "HEAD")
         assert verify(f, head)["status"] == "blocked"
         return
     head = commit(f[0], {BUNDLE: raw})
