@@ -733,3 +733,38 @@ def test_opaque_extension_retains_full_body_inspection(submission, monkeypatch):
     base = rebase_submission(repo, monkeypatch)
     commit(repo, "fixture.zip", body + "safe addition\n")
     assert run_scan(repo, base)["checks"]["private_identity_scan"]["status"] == "fail"
+
+
+@pytest.mark.parametrize("kind", ["safe", "path", "secret"])
+def test_large_modified_text_preserves_delta_scope_and_new_finding_rejection(
+    submission, monkeypatch, kind
+):
+    repo, _, _, _ = submission
+    body = (
+        'OLD = "synthetic-private-identity-marker"\nPATH = '
+        + repr(synthetic_home_path("macos", "old-fixture/work"))
+        + '\nKEY = "sk-'
+        + "A" * 48
+        + '"\n'
+        + "SAFE = 1\n" * 4100
+    )
+    commit(repo, body=body)
+    base = rebase_submission(repo, monkeypatch)
+    addition = {
+        "safe": 'NEW = "public"\n',
+        "path": "PATH2 = "
+        + repr(synthetic_home_path("macos", "new-fixture/work"))
+        + "\n",
+        "secret": 'KEY2 = "sk-' + "B" * 48 + '"\n',
+    }[kind]
+    commit(repo, body=body + addition)
+    report = run_scan(repo, base)
+    assert report["checks"]["private_identity_scan"]["text_delta_full_fallbacks"] == 0
+    if kind == "safe":
+        assert report["status"] == "pass"
+        for gate in ("private_identity_scan", "personal_path_scan", "secret_scan"):
+            assert report["checks"][gate]["status"] == "pass"
+    else:
+        assert report["status"] == "blocked"
+        gate = "personal_path_scan" if kind == "path" else "secret_scan"
+        assert report["checks"][gate]["status"] == "fail"

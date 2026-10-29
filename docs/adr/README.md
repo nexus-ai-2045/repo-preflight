@@ -37,3 +37,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 | [0015](0015-private-media-metadata-inspection.md) | Proposed | 非公開の制作媒体に形式・metadata・境界sample・全SHAの検査方針を明示する |
 
 - [ADR-0016: 滞留PRの統合と未採用案の整理](0016-backlog-closeout-and-scope.md)
+
+- [ADR-0017: 非公開本文の差分比較前に厳密一致する両端を確定する](0017-bounded-private-text-delta-edges.md) — Proposed。既存の全文解析と不明時の拒否を維持する局所修復候補。

@@ -1179,9 +1179,22 @@ def private_text_delta_views(previous: str, text: str) -> dict:
     old_lines, new_lines = previous.splitlines(keepends=True), text.splitlines(
         keepends=True
     )
+    prefix = 0
+    common_limit = min(len(old_lines), len(new_lines))
+    while prefix < common_limit and old_lines[prefix] == new_lines[prefix]:
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < common_limit - prefix
+        and old_lines[len(old_lines) - suffix - 1]
+        == new_lines[len(new_lines) - suffix - 1]
+    ):
+        suffix += 1
+    old_end, new_end = len(old_lines) - suffix, len(new_lines) - suffix
+    old_middle, new_middle = old_lines[prefix:old_end], new_lines[prefix:new_end]
     if (
         len(previous) + len(text) > 2_000_000
-        or len(old_lines) * len(new_lines) > 16_000_000
+        or len(old_middle) * len(new_middle) > 16_000_000
     ):
         after = _private_text_analysis(text)
         return {
@@ -1196,9 +1209,16 @@ def private_text_delta_views(previous: str, text: str) -> dict:
     offsets = [0]
     for line in new_lines:
         offsets.append(offsets[-1] + len(line))
-    operations = difflib.SequenceMatcher(
-        a=old_lines, b=new_lines, autojunk=False
-    ).get_opcodes()
+    operations = [
+        (operation, i1 + prefix, i2 + prefix, j1 + prefix, j2 + prefix)
+        for operation, i1, i2, j1, j2 in difflib.SequenceMatcher(
+            a=old_middle, b=new_middle, autojunk=False
+        ).get_opcodes()
+    ]
+    if prefix:
+        operations.insert(0, ("equal", 0, prefix, 0, prefix))
+    if suffix:
+        operations.append(("equal", old_end, len(old_lines), new_end, len(new_lines)))
     equal_ranges = [
         (offsets[j1], offsets[j2]) for op, _, _, j1, j2 in operations if op == "equal"
     ]
