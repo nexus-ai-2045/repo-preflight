@@ -4,7 +4,7 @@ import hashlib
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 
 import pytest
@@ -283,8 +283,8 @@ def test_regex_parent_traversal_never_loses_concrete_home(
     import posixpath
     import re
 
-    # Private values exist only during this call, never in test IDs or artifacts.
-    home = Path.home()
+    # 実行アカウントのhome構造に依存せず、認識対象のhome名前空間を使う。
+    home = PurePosixPath(synthetic_home_path("linux", "runtime-owner"))
     root = home.parent.as_posix() + "/"
     root_pattern = re.escape(root)
     tail = "/" + parent + "/" + re.escape(home.name) + "/runtime-sentinel"
@@ -312,7 +312,7 @@ def test_regex_parent_traversal_never_loses_concrete_home(
         + (", " + flags if flags else "")
         + ")\n"
     )
-    result = ENGINE.scan_private_text(source, [DENIED])
+    result = ENGINE.scan_private_text(source, [home.as_posix()])
     assert result["status"] == "fail"
     has_normalized_match = bool(
         MODULE.normalized_personal_path_matches(source.encode())
