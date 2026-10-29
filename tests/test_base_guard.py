@@ -7,11 +7,246 @@ BASE_GUARD_SCRIPT で差し替えると、何もしない版で落ちること�
 from __future__ import annotations
 
 import os
+import importlib.util
+import json
+import types
+import hashlib
+from datetime import datetime, timedelta, timezone
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+
+def guard_module():
+    spec = importlib.util.spec_from_file_location("guard_integration", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_registered_decision_allows_only_protected_change_finding(repo, monkeypatch):
+    _commit(repo, {".github/workflows/ci.yml": caller(A)}, "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    _commit(
+        repo,
+        {".github/workflows/tests.yml": "name: tests\non: push\njobs: {}\n"},
+        "candidate",
+    )
+    verifier = types.SimpleNamespace(
+        verify_decisions=lambda **kwargs: {
+            "status": "approved",
+            "reason": "verified",
+            "decision_ids": ["review"],
+            "assurance": "registered-signature",
+        }
+    )
+    monkeypatch.setitem(sys.modules, "protected_change_decisions", verifier)
+    result = guard_module().evaluate(
+        repo, base, "HEAD", decision_context={"repository": "example/project"}
+    )
+    assert result["status"] == "pass"
+    assert result["protected_change_decision"]["assurance"] == "registered-signature"
+
+
+def test_approval_cannot_disable_mandatory_caller(repo, monkeypatch):
+    before = caller(A)
+    _commit(repo, {".github/workflows/ci.yml": before}, "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    after = before.replace("    uses:", "    if: false\n    uses:")
+    assert before != after
+    _commit(repo, {".github/workflows/ci.yml": after}, "disable gate")
+    monkeypatch.setitem(
+        sys.modules,
+        "protected_change_decisions",
+        types.SimpleNamespace(
+            verify_decisions=lambda **kwargs: {
+                "status": "approved",
+                "reason": "verified",
+            }
+        ),
+    )
+    result = guard_module().evaluate(
+        repo, base, "HEAD", decision_context={"repository": "example/project"}
+    )
+    assert result["status"] == "blocked"
+    assert any(x["kind"] == "verification_policy_changed" for x in result["findings"])
+
+
+def test_unverified_decision_keeps_protection(repo, monkeypatch):
+    _commit(repo, {".github/workflows/ci.yml": caller(A)}, "base")
+    base = _git(repo, "rev-parse", "HEAD")
+    _commit(
+        repo,
+        {".github/workflows/tests.yml": "name: tests\non: push\njobs: {}\n"},
+        "candidate",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "protected_change_decisions",
+        types.SimpleNamespace(
+            verify_decisions=lambda **kwargs: {
+                "status": "blocked",
+                "reason": "trust_unavailable",
+            }
+        ),
+    )
+    result = guard_module().evaluate(
+        repo, base, "HEAD", decision_context={"repository": "example/project"}
+    )
+    assert result["status"] == "blocked"
+    assert any(x["kind"] == "protected_path_changed" for x in result["findings"])
+
+
+def test_normal_decision_cannot_replace_self_gate_with_noop(repo, monkeypatch):
+    path = ".github/workflows/preflight-gate.yml"
+    gate = "name: gate\non: workflow_call\njobs:\n  preflight:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo scanning\n"
+    base = _commit(
+        repo, {".github/workflows/rp.yml": self_caller(), path: gate}, "base"
+    )
+    _commit(
+        repo,
+        {path: gate.replace("echo scanning", "echo skipped")},
+        "disable implementation",
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "protected_change_decisions",
+        types.SimpleNamespace(
+            verify_decisions=lambda **kwargs: {
+                "status": "approved",
+                "reason": "verified",
+            }
+        ),
+    )
+    result = guard_module().evaluate(
+        repo,
+        base,
+        "HEAD",
+        self_repository=SELF_REPO,
+        decision_context={"repository": SELF_REPO},
+    )
+    assert result["status"] == "blocked"
+    assert any(x["kind"] == "verification_policy_changed" for x in result["findings"])
+
+
+def test_request_is_unsigned_and_does_not_authorize_the_change(repo):
+    base = _commit(repo, {".github/workflows/ci.yml": caller(A)}, "base")
+    _commit(
+        repo,
+        {".github/workflows/tests.yml": "name: tests\non: push\njobs: {}\n"},
+        "candidate",
+    )
+    result = run(
+        repo,
+        base,
+        "--head-ref",
+        "HEAD",
+        "--repository",
+        "example/project",
+        "--repository-id",
+        "123",
+        "--pull-request",
+        "7",
+        "--base-branch",
+        "refs/heads/main",
+        "--decision-request",
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["status"] == "unsigned_request_not_authorization"
+    assert data["human_verified"] is False
+    assert data["trust_status"] == "unavailable"
+    assert len(data["scope"]["protected_delta_sha256"]) == 64
+    assert data["scope"]["paths"] == [".github/workflows/tests.yml"]
+    assert run(repo, base, "--head-ref", "HEAD").returncode == 1
+
+
+@pytest.mark.parametrize("mismatch", ["base", "head", "repository", "branch", "closed"])
+def test_live_context_rejects_changed_snapshot(monkeypatch, mismatch):
+    module = guard_module()
+    context = {
+        "repository": "example/project",
+        "repository_id": 123,
+        "pull_request": 7,
+        "base_ref": "refs/heads/main",
+    }
+    data = {
+        "state": "open",
+        "number": 7,
+        "base": {
+            "sha": A,
+            "ref": "main",
+            "repo": {"id": 123, "full_name": "example/project"},
+        },
+        "head": {"sha": B},
+    }
+    if mismatch in ("base", "head"):
+        data[mismatch]["sha"] = "c" * 40
+    elif mismatch == "repository":
+        data["base"]["repo"]["id"] = 456
+    elif mismatch == "branch":
+        data["base"]["ref"] = "other"
+    else:
+        data["state"] = "closed"
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, size):
+            return json.dumps(data).encode()
+
+    monkeypatch.setenv("REPO_PREFLIGHT_CONTEXT_TOKEN", "fixture")
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(module.GuardError, match="live_context"):
+        module.assert_live_context(context, A, B)
+
+
+def test_actual_signature_chain_reused_only_for_same_protected_delta(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "decision_fixture_helpers", ROOT / "tests/test_protected_change_decisions.py"
+    )
+    helpers = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helpers)
+    fixture = helpers.fixture.__wrapped__(tmp_path)
+    repo, _, _, trust, design, leaf, _, bundle = fixture
+    base = helpers.commit(repo, {".github/workflows/ci.yml": caller(A)})
+    path = ".github/workflows/tests.yml"
+    candidate = helpers.commit(repo, {path: "name: tests\non: push\njobs: {}\n"})
+    stamp = datetime.now(timezone.utc)
+    for node in (design, leaf):
+        node["scope"]["paths"] = [path]
+        node["issued_at"] = (stamp - timedelta(minutes=1)).isoformat()
+        node["expires_at"] = (stamp + timedelta(hours=1)).isoformat()
+    leaf["parent_payload_sha256"] = hashlib.sha256(helpers.canon(design)).hexdigest()
+    leaf["scope"]["protected_delta_sha256"] = helpers.protected_delta(
+        repo, base, candidate, [path]
+    )
+    head = bundle()
+    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
+    module = guard_module()
+    assert (
+        module.evaluate(repo, base, head, decision_context=helpers.CTX)["status"]
+        == "pass"
+    )
+    head = helpers.commit(repo, {"README.md": "非保護ファイルの変更"})
+    assert (
+        module.evaluate(repo, base, head, decision_context=helpers.CTX)["status"]
+        == "pass"
+    )
+    head = helpers.commit(repo, {path: "name: tests\non: push\njobs: {}\n# changed\n"})
+    assert (
+        module.evaluate(repo, base, head, decision_context=helpers.CTX)["status"]
+        == "blocked"
+    )
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = os.environ.get("BASE_GUARD_SCRIPT") or str(ROOT / "scripts/base_guard.py")

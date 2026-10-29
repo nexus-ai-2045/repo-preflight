@@ -1,6 +1,6 @@
 {
   "schema": "repo-preflight.protected-paths/v1",
-  "description": "これを変える PR は base-guard が赤にする（人が見て ruleset を一時的に外してマージする）。大文字小文字は区別しない。",
+  "description": "保護パスの変更は登録済み署名者の設計・差分判断を照合する。証拠が無い変更と、承認でも免除できない検査変更は停止する。大文字小文字は区別しない。",
   "prefixes": [
     ".github/",
     ".githooks/",
