@@ -733,7 +733,9 @@ def _generic_regex_path_spans(
             # synthesize a parent component (classes, repeats, backreferences).
             # Keep the root rather than treating that suffix as a literal path.
             for suffix in re.finditer(r"[/\\][^\r\n]*", tail):
-                if re.search(r"[\\\[\]({*+?^|]", suffix.group()):
+                # regexの二重backslashはliteral区切り。単一escapeや他の操作は残す。
+                literal_suffix = suffix.group().replace(r"\\", "/")
+                if re.search(r"[\\\[\]({*+?^|]", literal_suffix):
                     return []
     return spans
 

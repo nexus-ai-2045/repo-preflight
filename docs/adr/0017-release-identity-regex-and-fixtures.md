@@ -64,3 +64,7 @@ mask前に、literalなregex escape及びURL表記を戻したviewを既存のpa
 [既存合成負例のv3設定](../../.repo-preflight/reviewed-synthetic-fixtures.json)を明示指定して使用します。自動適用は行いません。期限・内容hash・対象・件数・公開状態の条件を維持し、期限後は再レビューします。秘密情報・private literalの検出は除外しません。
 
 承認元は後継の[ADR-0021](0021-public-fixture-policy-trust.md)に従います。任意の外部台帳は採用せず、固定した検査器のcommitに同梱された内容と一致する場合だけ認めます。前節のscratchで作った候補は、登録前の検査・本文レビューを経て同梱されるまで有効になりません。
+
+## Windowsのliteral区切りの互換性
+
+generic username atomに続く安全なliteral suffixでは、regexの二重backslashを区切りとして扱います。単一escape、backreference、文字classや反復などの未解決操作、親componentは引き続きmaskを認めません。Python tokenは復号後のpatternを検査し、PowerShell互換viewも既存のregex役割とliteral解析を維持します。raw・repr・JSON・静的連結の表記と、正当なsuffix・未解決操作を実APIで対照検証し、本文の実値を免除する規則は追加しません。

@@ -324,6 +324,81 @@ def test_regex_parent_traversal_never_loses_concrete_home(
     assert scan.findings >= 1
 
 
+@pytest.mark.parametrize("root_separator", ["/", r"\\"])
+@pytest.mark.parametrize("style", ["repr", "raw", "json", "static-concat"])
+@pytest.mark.parametrize("tail", [r"\\work", r"\\work\\assets"])
+def test_windows_generic_regex_literal_suffix_is_not_private(
+    root_separator, style, tail, tmp_path, monkeypatch
+):
+    root = synthetic_home_path("windows", "", separator=root_separator)
+    atom = r"(?P<user>[^\\\s]+)"
+    pattern = root + atom + tail
+    expression = (
+        "r'" + pattern + "'"
+        if style == "raw"
+        else json.dumps(pattern) if style == "json" else repr(pattern)
+    )
+    if style == "static-concat":
+        expression = " + ".join(map(repr, (root, atom, tail)))
+    source = regex_source(expression)
+    result = ENGINE.scan_private_text(source, ["fixture-denied-identity"])
+    assert result["status"] == "pass"
+    scan = checker(tmp_path, monkeypatch)
+    scan.check(source.encode())
+    assert scan.report["status"] == "pass"
+    assert scan.findings == 0
+    assert (
+        ENGINE.scan_private_text("TEXT = " + expression, ["fixture-denied-identity"])[
+            "status"
+        ]
+        == "fail"
+    )
+
+
+def test_windows_unnamed_generic_regex_with_literal_suffix():
+    pattern = synthetic_home_path("windows", r"[^\\\s]+", separator=r"\\") + r"\\work"
+    assert (
+        ENGINE.scan_private_text(
+            regex_source("r'" + pattern + "'"), ["fixture-denied-identity"]
+        )["status"]
+        == "pass"
+    )
+
+
+@pytest.mark.parametrize("root_separator", ["/", r"\\"])
+@pytest.mark.parametrize("style", ["repr", "raw", "json", "static-concat"])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        r"\1",
+        r"\\(?P=user)",
+        r"\\..\\actual-owner",
+        r"\\[.]{2}\\actual-owner",
+        r"\\(?:\.){2}\\actual-owner",
+        r"\\\x2e\x2e\\actual-owner",
+    ],
+)
+def test_windows_regex_suffix_never_waives_unresolved_or_parent_operations(
+    root_separator, style, tail
+):
+    root = synthetic_home_path("windows", "", separator=root_separator)
+    atom = r"(?P<user>[^\\\s]+)"
+    pattern = root + atom + tail
+    expression = (
+        "r'" + pattern + "'"
+        if style == "raw"
+        else json.dumps(pattern) if style == "json" else repr(pattern)
+    )
+    if style == "static-concat":
+        expression = " + ".join(map(repr, (root, atom, tail)))
+    assert (
+        ENGINE.scan_private_text(regex_source(expression), ["fixture-denied-identity"])[
+            "status"
+        ]
+        == "fail"
+    )
+
+
 @pytest.mark.parametrize("atom", [r"(?P<user>[A-Za-z0-9._-]+)", r"[^/\s]+"])
 @pytest.mark.parametrize("flags", ["", "re.I", "re.M"])
 @pytest.mark.parametrize("style", ["repr", "json-quote", "static-concat"])
