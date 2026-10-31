@@ -677,3 +677,104 @@ def test_xmp_packets_stop_processing_at_aggregate_metadata_limit(
             probe_runner=lambda *_a, **_k: (0, video_probe_json(), b""),
         )
     assert len(calls) == 2
+
+
+def mp4_box(kind, body, *, extended=False):
+    if extended:
+        return struct.pack(">I4sQ", 1, kind, len(body) + 16) + body
+    return struct.pack(">I4s", len(body) + 8, kind) + body
+
+
+def mp4_cover(payload, *, data_type=13, extra=b"", extended=False):
+    data = mp4_box(b"data", struct.pack(">II", data_type, 0) + payload, extended=extended)
+    covr = mp4_box(b"covr", data + extra)
+    ilst = mp4_box(b"ilst", covr)
+    meta = mp4_box(b"meta", b"\0" * 4 + ilst)
+    return mp4_bytes(mp4_box(b"moov", mp4_box(b"udta", meta)))
+
+
+def inspect_test_mp4(tmp_path, raw):
+    path = tmp_path / "cover.mp4"
+    path.write_bytes(raw)
+    return reader.inspect_media_metadata(
+        path, (path.name,), probe_runner=lambda *_a, **_k: (0, video_probe_json(), b"")
+    )
+
+
+def test_typed_jpeg_cover_excludes_compressed_bytes_but_keeps_metadata_and_sha(tmp_path):
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG", comment=b"retained-comment")
+    # A marker in the entropy-coded region must not become a text view.
+    jpeg = output.getvalue()[:-2] + b"entropy-only-marker" + b"\xff\xd9"
+    raw = mp4_cover(jpeg, extended=True)
+    result = inspect_test_mp4(tmp_path, raw)
+    assert result["source_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert result["payload_inspected"] is False
+    assert any(b"retained-comment" in value for value in result["metadata_views"])
+    assert b"entropy-only-marker" not in b"".join(result["metadata_views"])
+    assert b"entropy-only-marker" not in result["head_sample"] + result["tail_sample"]
+    # Samples still retain the enclosing typed field headers.
+    assert b"covr" in result["head_sample"]
+    data_offset = result["head_sample"].index(b"data") - 4
+    assert result["head_sample"][data_offset + 16:data_offset + 20] == b"\0\0\0\r"
+
+
+def test_cover_unknown_fields_and_surrounding_literal_remain_scanned(tmp_path):
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
+    raw = mp4_cover(output.getvalue(), extra=mp4_box(b"name", b"literal-private-marker"))
+    raw += mp4_box(b"free", b"outside-cover-marker")
+    result = inspect_test_mp4(tmp_path, raw)
+    combined = b"".join(result["metadata_views"])
+    assert b"literal-private-marker" in combined
+    assert b"outside-cover-marker" in combined
+    assert b"literal-private-marker" in result["tail_sample"]
+
+
+def test_untyped_cover_like_bytes_stay_raw(tmp_path):
+    raw = mp4_bytes(mp4_box(b"moov", mp4_box(b"free", b"covr-data-opaque-marker")))
+    result = inspect_test_mp4(tmp_path, raw)
+    assert any(b"covr-data-opaque-marker" in v for v in result["metadata_views"])
+
+
+@pytest.mark.parametrize("data_type", [0, 1, 14, 0x0100000D])
+def test_unsupported_cover_types_fail_closed(tmp_path, data_type):
+    with pytest.raises(reader.MediaMetadataError, match="unsupported_cover_type"):
+        inspect_test_mp4(tmp_path, mp4_cover(b"not-a-verified-jpeg", data_type=data_type))
+
+
+@pytest.mark.parametrize("payload", [b"bad", b"\xff\xd8\xff\xe1\x00\x20short", b"\xff\xd8\xff\xd9"])
+def test_malformed_cover_fails_closed(tmp_path, payload):
+    with pytest.raises(reader.MediaMetadataError, match="format_invalid"):
+        inspect_test_mp4(tmp_path, mp4_cover(payload))
+
+
+def test_cover_nested_box_length_and_meta_version_fail_closed(tmp_path):
+    truncated_child = struct.pack(">I4s", 1000, b"ilst")
+    for body in [b"\0" * 4 + truncated_child, b"\1\0\0\0"]:
+        raw = mp4_bytes(mp4_box(b"moov", mp4_box(b"meta", body)))
+        with pytest.raises(reader.MediaMetadataError, match="format_invalid"):
+            inspect_test_mp4(tmp_path, raw)
+
+
+def test_nested_cover_nodes_and_cover_size_are_bounded(tmp_path, monkeypatch):
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
+    raw = mp4_cover(output.getvalue())
+    monkeypatch.setattr(reader, "NODE_LIMIT", 5)
+    with pytest.raises(reader.MediaMetadataError, match="metadata_limit"):
+        inspect_test_mp4(tmp_path, raw)
+    monkeypatch.setattr(reader, "NODE_LIMIT", 100_000)
+    monkeypatch.setattr(reader, "TEXT_LIMIT", 100)
+    with pytest.raises(reader.MediaMetadataError, match="metadata_limit"):
+        inspect_test_mp4(tmp_path, raw)
+
+
+def test_malformed_cover_metadata_is_not_hidden(tmp_path):
+    output = io.BytesIO()
+    Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
+    jpeg = output.getvalue()
+    # Existing JPEG guard rejects metadata added after compressed scan data.
+    comment = b"\xff\xfe\0\x06late"
+    with pytest.raises(reader.MediaMetadataError, match="metadata_after_image_data"):
+        inspect_test_mp4(tmp_path, mp4_cover(jpeg[:-2] + comment + jpeg[-2:]))

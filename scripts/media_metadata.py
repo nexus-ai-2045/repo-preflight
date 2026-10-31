@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -129,56 +130,124 @@ def _digest_and_samples(path: Path, expected_size: int):
     return digest.hexdigest(), bytes(head), bytes(tail)
 
 
-def _check_mp4_boxes(path: Path, size: int):
+def _check_mp4_boxes(path: Path, size: int, xml_reader=None):
+    """Keep opaque boxes raw; only typed JPEG covers have a metadata-only view."""
     metadata = []
+    cover_ranges = []
+    nodes = 0
     metadata_size = 0
+    # Recognize this exact hierarchy, never search opaque bytes for box names.
+    children = {
+        (): {b"moov"},
+        (b"moov",): {b"udta", b"meta"},
+        (b"moov", b"udta"): {b"meta"},
+        (b"moov", b"meta"): {b"ilst"},
+        (b"moov", b"udta", b"meta"): {b"ilst"},
+    }
+
+    def emit(value):
+        nonlocal metadata_size
+        metadata_size += len(value)
+        if metadata_size > TEXT_LIMIT:
+            _fail("metadata_limit")
+        metadata.append(value)
+
+    def walk(source, start, end, ancestry=()):
+        nonlocal nodes
+        if len(ancestry) > 32:
+            _fail("metadata_limit")
+        offset = start
+        while offset < end:
+            nodes += 1
+            if nodes > NODE_LIMIT:
+                _fail("metadata_limit")
+            source.seek(offset)
+            box = source.read(min(16, end - offset))
+            if len(box) < 8:
+                _fail("format_invalid")
+            box_size = struct.unpack(">I", box[:4])[0]
+            header_size = 8
+            if box_size == 1:
+                if len(box) < 16:
+                    _fail("format_invalid")
+                box_size = struct.unpack(">Q", box[8:16])[0]
+                header_size = 16
+            elif box_size == 0:
+                box_size = end - offset
+            if box_size < header_size or offset + box_size > end:
+                _fail("format_invalid")
+            kind = box[4:8]
+            body = offset + header_size
+            limit = offset + box_size
+            route = ancestry + (kind,)
+            descend = kind in children.get(ancestry, set())
+            if ancestry and ancestry[-1] == b"ilst":
+                descend = kind == b"covr"
+            if ancestry and ancestry[-1] == b"covr":
+                descend = False
+                if kind == b"data":
+                    source.seek(body)
+                    typed_header = source.read(min(8, limit - body))
+                    # FullBox type 13 (JPEG), version/flags fixed, locale retained.
+                    if len(typed_header) != 8 or typed_header[:4] != b"\x00\x00\x00\x0d":
+                        _fail("unsupported_cover_type")
+                    payload_size = limit - body - 8
+                    if payload_size > TEXT_LIMIT:
+                        _fail("metadata_limit")
+                    payload = source.read(payload_size)
+                    if not payload.startswith(b"\xff\xd8\xff"):
+                        _fail("format_invalid")
+                    _check_jpeg_data_boundaries(payload)
+                    cover_views = _image_metadata(io.BytesIO(payload), ".jpg", xml_reader)
+                    emit(box[:header_size] + typed_header)
+                    for value in cover_views:
+                        emit(value)
+                    cover_ranges.append((body + 8, limit))
+                    offset = limit
+                    continue
+            if descend:
+                emit(box[:header_size])
+                if kind == b"meta":
+                    source.seek(body)
+                    fullbox = source.read(min(4, limit - body))
+                    if fullbox != b"\x00\x00\x00\x00":
+                        _fail("format_invalid")
+                    emit(fullbox)
+                    body += 4
+                walk(source, body, limit, route)
+            elif ancestry or kind != b"mdat":
+                content_size = limit - body
+                if metadata_size + len(kind) + content_size > TEXT_LIMIT:
+                    _fail("metadata_limit")
+                source.seek(body)
+                content = source.read(content_size)
+                if len(content) != content_size:
+                    _fail("format_invalid")
+                emit(kind + content)
+            offset = limit
+
     try:
         with path.open("rb") as source:
-            header = source.read(16)
-            if len(header) < 8 or header[4:8] != b"ftyp":
+            header = source.read(8)
+            if len(header) != 8 or header[4:8] != b"ftyp":
                 _fail("format_mismatch")
-            first_size = struct.unpack(">I", header[:4])[0]
-            if first_size == 1:
-                if len(header) < 16 or struct.unpack(">Q", header[8:16])[0] < 16:
-                    _fail("format_invalid")
-            elif first_size < 8:
+            if struct.unpack(">I", header[:4])[0] < 8 and header[:4] != b"\x00\x00\x00\x01":
                 _fail("format_invalid")
-            offset = 0
-            boxes = 0
-            while offset < size:
-                boxes += 1
-                if boxes > NODE_LIMIT:
-                    _fail("metadata_limit")
-                source.seek(offset)
-                box = source.read(16)
-                if len(box) < 8:
-                    _fail("format_invalid")
-                box_size = struct.unpack(">I", box[:4])[0]
-                header_size = 8
-                if box_size == 1:
-                    if len(box) < 16:
-                        _fail("format_invalid")
-                    box_size = struct.unpack(">Q", box[8:16])[0]
-                    header_size = 16
-                elif box_size == 0:
-                    box_size = size - offset
-                if box_size < header_size or offset + box_size > size:
-                    _fail("format_invalid")
-                box_type = box[4:8]
-                if box_type != b"mdat":
-                    content_size = box_size - header_size
-                    metadata_size += len(box_type) + content_size
-                    if metadata_size > TEXT_LIMIT:
-                        _fail("metadata_limit")
-                    source.seek(offset + header_size)
-                    content = source.read(content_size)
-                    if len(content) != content_size:
-                        _fail("format_invalid")
-                    metadata.append(box_type + content)
-                offset += box_size
+            walk(source, 0, size)
     except OSError:
         _fail("input_unavailable")
-    return tuple(metadata)
+    return tuple(metadata), tuple(cover_ranges)
+
+
+def _sample_without_covers(sample, start, cover_ranges):
+    """Mask only verified cover bytes; preserve offsets and all surrounding bytes."""
+    result = bytearray(sample)
+    for left, right in cover_ranges:
+        left = max(left, start)
+        right = min(right, start + len(sample))
+        if left < right:
+            result[left - start:right - start] = b"\x00" * (right - left)
+    return bytes(result)
 
 
 def _bounded_views(*groups):
@@ -333,6 +402,12 @@ def _check_jpeg_metadata_boundaries(path):
         data = source.read(DATA_LIMIT + 1)
     if len(data) > DATA_LIMIT:
         _fail("size_limit")
+    _check_jpeg_data_boundaries(data)
+
+
+def _check_jpeg_data_boundaries(data):
+    if not data.startswith(b"\xff\xd8\xff"):
+        _fail("format_invalid")
     position = 2
     in_scan = seen_scan = False
     markers = 0
@@ -518,7 +593,11 @@ def inspect_media_metadata(
     before = _snapshot(path)
     digest, head, tail = _digest_and_samples(path, before[2])
     if ext == ".mp4":
-        container_views = _check_mp4_boxes(path, before[2])
+        container_views, cover_ranges = _check_mp4_boxes(path, before[2], xml_reader)
+        head = _sample_without_covers(head, 0, cover_ranges)
+        tail = _sample_without_covers(
+            tail, before[2] - len(tail), cover_ranges
+        )
         if head[4:8] != b"ftyp":
             _fail("format_mismatch")
         if probe_runner is None:
