@@ -69,6 +69,221 @@ def test_passes_complete_contract(tmp_path: Path):
     assert MODULE.check(repo, base_ref=base)["status"] == "pass"
 
 
+def portable_repo(tmp_path, value, *, pointers=None, allow_home_relative=False):
+    repo, base = make_repo(tmp_path)
+    (repo / "paths.json").write_text(json.dumps({"path": value}), encoding="utf-8")
+    git(repo, "add", "paths.json")
+    config_path = repo / MODULE.CONFIG_NAME
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["mode"] = "enforce"
+    config["portable_paths"] = [
+        {
+            "path": "paths.json",
+            "pointers": pointers or ["/path"],
+            "allow_home_relative": allow_home_relative,
+        }
+    ]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    return repo, base
+
+
+@pytest.mark.parametrize(
+    "value,reason",
+    [
+        ("C:/project/draft.md", "absolute"),
+        (r"D:\project\draft.md", "absolute"),
+        ("C:draft.md", "absolute"),
+        (r"\\server\share\draft.md", "absolute"),
+        ("//server/share/draft.md", "absolute"),
+        (r"\project\draft.md", "absolute"),
+        ("/Library/project/draft.md", "absolute"),
+        ("/opt/project/draft.md", "absolute"),
+        (r"drafts\article.md", "backslash"),
+        ("$HOME/draft.md", "environment"),
+        ("${HOME}/draft.md", "environment"),
+        ("%USERPROFILE%/draft.md", "environment"),
+        ("file:///opt/project/draft.md", "non_path"),
+        ("~/project/draft.md", "home_relative"),
+        ("~other/project", "home_relative"),
+    ],
+)
+def test_portable_paths_reject_host_specific_paths_without_disclosure(
+    tmp_path, value, reason
+):
+    repo, base = portable_repo(tmp_path, value)
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "fail"
+    assert report["findings"] == [f"portable_path_{reason}:rule-1:field-1"]
+    assert value not in json.dumps(report)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "drafts/article.md",
+        "./drafts/article.md",
+        "article.md",
+        "..",
+        "../shared/draft.md",
+        "drafts/../draft.md",
+    ],
+)
+def test_portable_paths_accept_forward_slash_relative_paths(tmp_path, value):
+    repo, base = portable_repo(tmp_path, value)
+    assert MODULE.check(repo, base_ref=base)["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "value,accepted",
+    [
+        ("~/project/draft.md", True),
+        ("~/", False),
+        ("~other/project", False),
+        ("~/../project", True),
+        (r"~/project\draft.md", False),
+    ],
+)
+def test_portable_paths_home_policy_is_explicit_and_narrow(tmp_path, value, accepted):
+    repo, base = portable_repo(tmp_path, value, allow_home_relative=True)
+    assert MODULE.check(repo, base_ref=base)["status"] == (
+        "pass" if accepted else "fail"
+    )
+
+
+@pytest.mark.parametrize(
+    "value", [None, 2, True, [], {}, "", "  ", " draft.md", "draft\n.md"]
+)
+def test_portable_paths_invalid_values_are_tool_errors_even_in_shadow(tmp_path, value):
+    repo, base = portable_repo(tmp_path, value)
+    config_path = repo / MODULE.CONFIG_NAME
+    config = json.loads(config_path.read_text())
+    config["mode"] = "shadow"
+    config_path.write_text(json.dumps(config))
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["portable_paths_invalid_value:rule-1:field-1"]
+
+
+@pytest.mark.parametrize("pointer", ["path", "/bad~", "/bad~2", True, 4, None])
+def test_portable_paths_malformed_pointer_config_fails_closed(tmp_path, pointer):
+    repo, base = portable_repo(tmp_path, "draft.md", pointers=[pointer])
+    assert MODULE.check(repo, base_ref=base)["findings"] == [
+        "invalid_consistency_config"
+    ]
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        None,
+        {},
+        {"path": "paths.json", "pointers": []},
+        {"path": "paths.json", "pointers": ["/path", "/path"]},
+        {"path": "paths.json", "pointers": ["/path"], "allow_home_relative": "true"},
+        {"path": "paths.json", "pointers": ["/path"], "extra": True},
+        {"path": "../paths.json", "pointers": ["/path"]},
+        {"path": "C:/paths.json", "pointers": ["/path"]},
+        {"path": r"config\paths.json", "pointers": ["/path"]},
+    ],
+)
+def test_portable_paths_invalid_rules_fail_closed(tmp_path, rule):
+    repo, base = portable_repo(tmp_path, "draft.md")
+    config_path = repo / MODULE.CONFIG_NAME
+    config = json.loads(config_path.read_text())
+    config["portable_paths"] = [rule]
+    config_path.write_text(json.dumps(config))
+    assert MODULE.check(repo, base_ref=base)["findings"] == [
+        "invalid_consistency_config"
+    ]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "missing",
+        "untracked",
+        "invalid_json",
+        "duplicate_keys",
+        "invalid_utf8",
+        "unreadable",
+        "symlink",
+        "symlink_loop",
+    ],
+)
+def test_portable_paths_unreadable_selected_files_fail_closed(
+    tmp_path, kind, monkeypatch
+):
+    repo, base = portable_repo(tmp_path, "draft.md")
+    path = repo / "paths.json"
+    if kind == "missing":
+        path.unlink()
+    elif kind == "untracked":
+        git(repo, "rm", "--cached", "paths.json")
+    elif kind == "invalid_json":
+        path.write_text("{broken")
+    elif kind == "duplicate_keys":
+        path.write_text('{"path":"draft.md","path":"other.md"}')
+    elif kind == "invalid_utf8":
+        path.write_bytes(b"\xff")
+    elif kind == "symlink":
+        target = repo / "actual.json"
+        target.write_text(path.read_text())
+        path.unlink()
+        path.symlink_to(target.name)
+    elif kind == "symlink_loop":
+        path.unlink()
+        path.symlink_to(path.name)
+    else:
+        read = Path.read_text
+
+        def guarded_read(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("private value must never be printed")
+            return read(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", guarded_read)
+    report = MODULE.check(repo, base_ref=base)
+    assert report["status"] == "tool_error"
+    assert report["findings"] == ["portable_paths_unreadable:rule-1"]
+
+
+@pytest.mark.parametrize(
+    "pointer", ["/missing", "/path/01", "/path/-", "/path/2", "/path/" + "9" * 5000]
+)
+def test_portable_paths_missing_fields_and_bad_array_indexes_fail_closed(
+    tmp_path, pointer
+):
+    repo, base = portable_repo(tmp_path, ["draft.md"], pointers=[pointer])
+    assert MODULE.check(repo, base_ref=base)["findings"] == [
+        "portable_paths_field_missing:rule-1:field-1"
+    ]
+
+
+def test_portable_paths_explicit_pointers_preserve_unselected_source(tmp_path):
+    repo, base = portable_repo(tmp_path, "draft.md", pointers=["/a~1b/~0/0"])
+    path = repo / "paths.json"
+    body = json.dumps(
+        {"a/b": {"~": ["drafts/one.md"]}, "raw_source": "/opt/host/original"}
+    )
+    path.write_text(body)
+    assert MODULE.check(repo, base_ref=base)["status"] == "pass"
+    assert path.read_text() == body
+
+
+def test_portable_paths_root_pointer_and_existing_modes(tmp_path):
+    repo, base = portable_repo(tmp_path, "draft.md", pointers=[""])
+    (repo / "paths.json").write_text(json.dumps("/opt/project/draft.md"))
+    config_path = repo / MODULE.CONFIG_NAME
+    config = json.loads(config_path.read_text())
+    config["mode"] = "shadow"
+    config_path.write_text(json.dumps(config))
+    assert MODULE.check(repo, base_ref=base)["status"] == "shadow_findings"
+    config["mode"] = "ratchet"
+    config["ratchet"] = {"baseline": ["portable_path_absolute:rule-1:field-1"]}
+    config_path.write_text(json.dumps(config))
+    assert MODULE.check(repo, base_ref=base)["status"] == "pass"
+
+
 def test_cli_returns_nonzero_for_enforced_findings(tmp_path: Path):
     repo, base = make_repo(tmp_path)
     config_path = repo / ".repo-preflight-consistency.json"

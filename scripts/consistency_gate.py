@@ -148,6 +148,22 @@ def _exact_keys(value: object, allowed: set[str], required: set[str] = set()) ->
     return isinstance(value, dict) and required <= set(value) and set(value) <= allowed
 
 
+def _portable_repo_file(value: object) -> bool:
+    return (
+        type(value) is str
+        and bool(value)
+        and not value.startswith(("/", "~"))
+        and not any(char in value for char in "\\:*?[]\x00\r\n")
+        and ".." not in value.split("/")
+    )
+
+
+def _json_pointer(value: object) -> bool:
+    return type(value) is str and (
+        value == "" or (value.startswith("/") and not re.search(r"~(?![01])", value))
+    )
+
+
 def _validate_config(config: object) -> None:
     top_keys = {
         "$schema",
@@ -158,6 +174,7 @@ def _validate_config(config: object) -> None:
         "impact_map",
         "generated_artifacts",
         "ratchet",
+        "portable_paths",
     }
     if not _exact_keys(config, top_keys, {"schema", "mode"}):
         raise ValueError("invalid_consistency_config")
@@ -231,6 +248,112 @@ def _validate_config(config: object) -> None:
         baseline = ratchet["baseline"]
         if len(baseline) != len(set(baseline)):
             raise ValueError("invalid_consistency_config")
+    portable_paths = config.get("portable_paths", [])
+    if not isinstance(portable_paths, list):
+        raise ValueError("invalid_consistency_config")
+    for rule in portable_paths:
+        if (
+            not _exact_keys(
+                rule, {"path", "pointers", "allow_home_relative"}, {"path", "pointers"}
+            )
+            or not _portable_repo_file(rule["path"])
+            or not isinstance(rule["pointers"], list)
+            or not rule["pointers"]
+            or not all(_json_pointer(pointer) for pointer in rule["pointers"])
+            or len(rule["pointers"]) != len(set(rule["pointers"]))
+            or (
+                "allow_home_relative" in rule
+                and type(rule["allow_home_relative"]) is not bool
+            )
+        ):
+            raise ValueError("invalid_consistency_config")
+
+
+def _pointer_value(document: object, pointer: str) -> object:
+    value = document
+    for encoded in pointer.split("/")[1:] if pointer else []:
+        token = encoded.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, dict) and token in value:
+            value = value[token]
+        elif isinstance(value, list) and re.fullmatch(r"0|[1-9][0-9]*", token):
+            # Compare before int(): untrusted huge indexes must not escape the gate.
+            if len(token) > len(str(len(value))) or int(token) >= len(value):
+                raise ValueError("pointer_missing")
+            value = value[int(token)]
+        else:
+            raise ValueError("pointer_missing")
+    return value
+
+
+def _portable_path_reason(value: str, allow_home_relative: bool) -> str | None:
+    # Lexical checks deliberately do not depend on the machine running the gate.
+    if value.startswith(("/", "\\")) or re.match(r"^[A-Za-z]:", value):
+        return "absolute"
+    if "\\" in value:
+        return "backslash"
+    if re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})|%[^%]+%", value):
+        return "environment"
+    if value.startswith("~"):
+        return (
+            None
+            if allow_home_relative and value.startswith("~/") and len(value) > 2
+            else "home_relative"
+        )
+    if ":" in value:
+        return "non_path"
+    return None
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result: dict = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_json_key")
+        result[key] = value
+    return result
+
+
+def _portable_path_findings(
+    repo: Path, rules: list[dict], tracked: set[str]
+) -> list[str]:
+    findings: list[str] = []
+    for rule_index, rule in enumerate(rules, start=1):
+        rule_id = f"rule-{rule_index}"
+        try:
+            path = _repo_path(repo, rule["path"])
+        except (OSError, RuntimeError):
+            raise RuntimeError(f"portable_paths_unreadable:{rule_id}") from None
+        # Opt-in targets must be tracked regular files; never read through links.
+        if rule["path"] not in tracked or any(
+            (repo / part).is_symlink()
+            for part in (Path(rule["path"]), *Path(rule["path"]).parents)
+        ):
+            raise RuntimeError(f"portable_paths_unreadable:{rule_id}")
+        try:
+            document = json.loads(
+                path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object
+            )
+        except (OSError, UnicodeDecodeError, ValueError):
+            raise RuntimeError(f"portable_paths_unreadable:{rule_id}") from None
+        for field_index, pointer in enumerate(rule["pointers"], start=1):
+            field_id = f"{rule_id}:field-{field_index}"
+            try:
+                value = _pointer_value(document, pointer)
+            except ValueError:
+                raise RuntimeError(f"portable_paths_field_missing:{field_id}") from None
+            if (
+                type(value) is not str
+                or not value.strip()
+                or value != value.strip()
+                or any(ord(char) < 32 for char in value)
+            ):
+                raise RuntimeError(f"portable_paths_invalid_value:{field_id}")
+            reason = _portable_path_reason(
+                value, rule.get("allow_home_relative", False)
+            )
+            if reason:
+                findings.append(f"portable_path_{reason}:{field_id}")
+    return findings
 
 
 def _capability_recommendations(changed: list[str]) -> list[dict]:
@@ -732,6 +855,11 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
             }
         findings: list[str] = []
         tracked_files = set(files)
+        findings.extend(
+            _portable_path_findings(
+                repo, config.get("portable_paths", []), tracked_files
+            )
+        )
         markdown = config.get("markdown", {})
         if not isinstance(markdown, dict):
             raise ValueError("invalid_consistency_config")

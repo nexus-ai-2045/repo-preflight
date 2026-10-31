@@ -8,6 +8,7 @@ PR（プルリクエスト）をマージする前に、README・docs・実装�
 - README に宣言したコマンド文字列があり、そのコマンドが参照する file が存在するか
 - `impact_map` で指定した実装・設定変更に対し、関連 docs または tests が同じ差分に含まれるか
 - SSOT（単一の正本）に指定した file が変わった時に生成物も更新されたか、および生成物が宣言済み SHA-256 と一致するか
+- `portable_paths` へ明示した JSON file の指定 field が、OS に依存する保存 path を含まないか
 
 README の自由文からコマンドを推測すると誤検知が増えるため、契約対象だけを `readme_contracts` に宣言します。外部 URL はネットワーク状態に依存するため検査しません。任意コマンドも実行せず、repo 設定からのコード実行を防ぎます。
 
@@ -24,6 +25,27 @@ README の自由文からコマンドを推測すると誤検知が増えるた�
 `enforce` では所見が 1 件でも `status=blocked` になります。設定不正、Git 差分取得失敗、読めない Markdown は `tool_error` とし、成功扱いにしません。
 
 設定は同梱 JSON Schema と同じキー・型を runtime でも検証します。未知キー、未知の入れ子キー、文字列配列内の `bool` / 数値、重複した ratchet baseline は `invalid_consistency_config` です。
+
+### JSON の保存 path の可搬性
+
+任意導入の `portable_paths` は、追跡済み JSON file と RFC 6901 JSON Pointer を明示して使います。glob・key 名の推測・全 field の再帰走査は行いません。資料原文、会話履歴、原文引用は指定しなければ読み取りません。検査は read-only で、自動置換しません。
+
+```json
+{
+  "portable_paths": [
+    {"path": "config/article.json", "pointers": ["/draft", "/images/0/path"]},
+    {"path": "config/host.json", "pointers": ["/checkout"], "allow_home_relative": true}
+  ]
+}
+```
+
+`path` は glob・親 directory 参照を含まない、forward slash の repo 相対 file 名です。指定先は追跡済みの通常 file に限り、working tree の symlink とその親の symlink も読み取りません。`pointers` は重複しない空でない配列です。空文字 pointer は document 自体、`~0` / `~1` はそれぞれ `~` / `/` を指し、配列 index は `0` または先頭ゼロのない整数で指定します。wildcard はありません。
+
+field は空でない文字列に限ります。前後空白・制御文字、欠落 field、数値・null・配列・object、壊れた JSON・重複 key、読取不能・欠落 file は、shadow でも `tool_error` です。設定の型・pointer 構文が不正な場合も `invalid_consistency_config` として停止します。
+
+実行 OS に依存しない字句検査で、Windows drive（drive 相対も含む）、UNC、root 相対、macOS / Linux の POSIX 絶対 path、backslash を含む相対 path、環境変数記法（`$HOME` / `${HOME}` / `%USERPROFILE%`）、URI 等の colon を含む値を所見にします。forward slash の相対 path は、共有 checkout への `../...` も含めて許可します。値の repo 内への confinement は行いません。`~/...` は host 固有の設定として `allow_home_relative: true` を指定した entry だけ許可し、`~name` や backslash を含む値は許可しません。存在確認、home 展開、Windows / Linux 実機動作の保証は行いません。
+
+所見は `portable_path_absolute:rule-1:field-1` のように設定配列の1始まり番号で対象を示し、値・pointer・file 名を出力しません。path 違反には既存の shadow / ratchet / enforce を適用します。個人 home の privacy 検知は既存の privacy scanner が担当し、この検査は重複実装しません。
 
 `impact_map` に `"allow_github_action_ref_updates": true` を明示した規則では、対象差分が `.github/workflows/*.yml` または `.yaml` 内の `uses: owner/action@<40桁SHA>` 更新だけなら、関連 docs / tests の同時更新を免除できます。外部dependencyを使わない厳格な構造スキャナで `jobs.<job>.steps[*].uses` または reusable workflow の `jobs.<job>.uses` と確認できた行だけが対象で、`- uses:` と名前付きstep内の `uses:` の両方に対応します。同じ Action の完全 SHA と、空白で区切られた行末コメント以外が変わる場合、Action 名の変更、workflow ロジックの変更、行の追加・削除、baseからworking treeまでのGit file mode変更、symlink化、Action step外の同名key、対象となる別 file との混在は免除せず、従来どおり失敗します。indentや構造を一意に判定できない場合も免除しません。実行者名や Dependabot branch 名には依存しないため、人手による同形の依存更新にも同じ検査を適用します。
 
