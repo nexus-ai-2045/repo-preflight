@@ -43,7 +43,7 @@ README の自由文からコマンドを推測すると誤検知が増えるた�
 
 field は空でない文字列に限ります。前後空白・制御文字、欠落 field、数値・null・配列・object、壊れた JSON・重複 key、読取不能・欠落 file は、shadow でも `tool_error` です。設定の型・pointer 構文が不正な場合も `invalid_consistency_config` として停止します。
 
-実行 OS に依存しない字句検査で、Windows drive（drive 相対も含む）、UNC、root 相対、macOS / Linux の POSIX 絶対 path、backslash を含む相対 path、環境変数記法（`$HOME` / `${HOME}` / `%USERPROFILE%`）、URI 等の colon を含む値を所見にします。forward slash の相対 path は、共有 checkout への `../...` も含めて許可します。値の repo 内への confinement は行いません。`~/...` は host 固有の設定として `allow_home_relative: true` を指定した entry だけ許可し、`~name` や backslash を含む値は許可しません。存在確認、home 展開、Windows / Linux 実機動作の保証は行いません。
+実行 OS に依存しない字句検査で、Windows drive（drive 相対も含む）、UNC、root 相対、macOS / Linux の POSIX 絶対 path、backslash を含む相対 path、環境変数記法（`$HOME` / `${HOME}` / `%USERPROFILE%`）、URI 等の colon、Windows の file 名に使えない `< > " | ? *` を含む値を所見にします。これらの検査は `~/...` を許可した entry にも適用します。forward slash の相対 path は、共有 checkout への `../...` も含めて許可します。値の repo 内への confinement は行いません。`~/...` は host 固有の設定として `allow_home_relative: true` を指定した entry だけ許可し、`~name` や backslash を含む値は許可しません。存在確認、home 展開、Windows / Linux 実機動作や、予約名・長さなどを含む全 file 名制約の保証は行いません。
 
 所見は `portable_path_absolute:rule-1:field-1` のように設定配列の1始まり番号で対象を示し、値・pointer・file 名を出力しません。path 違反には既存の shadow / ratchet / enforce を適用します。個人 home の privacy 検知は既存の privacy scanner が担当し、この検査は重複実装しません。
 

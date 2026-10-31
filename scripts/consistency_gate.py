@@ -293,14 +293,16 @@ def _portable_path_reason(value: str, allow_home_relative: bool) -> str | None:
         return "backslash"
     if re.search(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})|%[^%]+%", value):
         return "environment"
+    if ":" in value:
+        return "non_path"
+    if any(char in value for char in '<>"|?*'):
+        return "invalid_character"
     if value.startswith("~"):
         return (
             None
             if allow_home_relative and value.startswith("~/") and len(value) > 2
             else "home_relative"
         )
-    if ":" in value:
-        return "non_path"
     return None
 
 

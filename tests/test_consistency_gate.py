@@ -103,6 +103,12 @@ def portable_repo(tmp_path, value, *, pointers=None, allow_home_relative=False):
         ("${HOME}/draft.md", "environment"),
         ("%USERPROFILE%/draft.md", "environment"),
         ("file:///opt/project/draft.md", "non_path"),
+        ("drafts/a<b.md", "invalid_character"),
+        ("drafts/a>b.md", "invalid_character"),
+        ('drafts/a"b.md', "invalid_character"),
+        ("drafts/a|b.md", "invalid_character"),
+        ("drafts/a?b.md", "invalid_character"),
+        ("drafts/a*b.md", "invalid_character"),
         ("~/project/draft.md", "home_relative"),
         ("~other/project", "home_relative"),
     ],
@@ -141,6 +147,8 @@ def test_portable_paths_accept_forward_slash_relative_paths(tmp_path, value):
         ("~other/project", False),
         ("~/../project", True),
         (r"~/project\draft.md", False),
+        ("~/project/file:stream", False),
+        ("~/project/file?.md", False),
     ],
 )
 def test_portable_paths_home_policy_is_explicit_and_narrow(tmp_path, value, accepted):
