@@ -78,6 +78,10 @@ python scripts/readiness_scan.py --repo /path/to/your-repo \
 
 GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・merge queueの検査を保持します。古いPRとbranch pushの実行整理、およびreusable workflowとの責務分離は[既存のCI接続説明](docs/repository-consistency-gate.md#github-actions-接続例)に記します。ローカルの成功でhosted CIや人間レビューを省略しません。
 
+テストの対象と必要な環境は各repositoryが所有します。共通ゲートは利用側のpytestを一律に起動しません。差分の選択処理は `scripts/local_check.py --plan-tests --repo TARGET --base-ref BASE --selection-config POLICY --json` で再利用でき、対象・根拠・未解決と版hashを返します。各repositoryのpolicyがroot・関連範囲・明示対応を定め、runnerが選択したtestと必要な検査を実行します。対応不明を全件実行や対象なしへ置き換えません。
+
+本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。
+
 保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
 
 ## 制約

@@ -13,7 +13,7 @@ release 準備と runtime / テスト:
 ```powershell
 python scripts/readiness_scan.py --repo . --release
 python scripts/runtime_smoke.py --repo .
-python -m pytest -q
+python scripts/local_check.py --run-selected-tests --base-ref origin/main --json
 ```
 
 Claude Code / Grok へ skill pointer を配る (書込は `--apply`):
@@ -33,9 +33,10 @@ release準備では `--release` を省略しません。`readme_release_design` 
 
 ## 手元の検査の範囲
 
-- 途中の作業（commit・push の前など）は `python scripts/local_check.py --mode quick` を使う。変えたファイルに関係する試験・black・文書検査だけを回す。関係する試験が決まらない変更（試験の共有部品・依存・設定・`.github` など）は、安全側で全部の試験に戻す。quick は CI の代わりではない。
-- PR を出す前とマージ前は `python scripts/local_check.py`（既定 `--mode full`）で、CI が回す試験と検査のうち手元で回せるものを全部回す。PR 本文の検査（`--pr-event`）・`base_guard`・全 ref の走査は GitHub 側でしか回らないので、full でも回らない。full が緑でも CI の結果は別に確かめる。
-- 名義と個人情報の検査（`identity_gate --public`）は、どのモードでも、比較元から HEAD までの全差分、ステージした差分、まだステージしていない変更と未追跡のファイル（作業ツリー）の全部を見る。作業ツリーは一時の索引に載せて見るので、本物のステージの状態は変わらない。GitHub の必須チェックと CI の中身は変えない。
+- 手元もCIも `scripts/local_check.py` の差分・逆依存・文字参照による同じ選択入口を使う。手元は `python scripts/local_check.py`、計画だけなら `--plan-tests --json`。比較元は `--base-ref` で指定する。`full` / `quick` は既存呼出し用の互換名で、試験対象はどちらも差分から選ぶ。`full` は従来の追加ローカルgateも維持する。
+- repo所有の `.test-selection.json` がsource/test rootsと周辺へ広げる明示ruleを定める。依存・CI・共有fixtureの変更も対応するtest familyと周辺を指定し、全件への暗黙fallbackを使わない。対応関係が不明、またはruleが存在しないtestを指定した場合はunresolvedで停止し、所有者がmappingを直す。PR前・merge前も全件試験を既定にしない。ruleの `dependency_mode` は既定 `auto`。同じ変更にマッチする全ruleが有効な処置付きで `mapped` を明示した場合だけowner指定範囲を使い、自動参照拡張を省く。autoとの重複では拡張を維持し、変更test自身は常に含める。
+- `--plan-tests --repo TARGET --selection-config POLICY --json` は対象repoのpolicyだけを受け、対象・理由・未解決・check IDを返す。check IDと言語・OSごとのrunnerは対象repoが所有する。`--run-selected-tests` はpytest専用で、空planをpytestの全件実行へ変換しない。
+- 名義と個人情報の検査（`identity_gate --public`）は、比較元からHEAD、ステージ、未ステージ・未追跡の全差分を見る。一時索引を使い、本物のステージ状態は変えない。secret/identity/ratchet/base保証・required check名は維持する。Linux/Mac/Windows、Python 3.9/3.11/3.13はpath処理とCLI・hook互換性の既存保証であり、今回も選択した試験を必要な環境で回す。CI結果とローカル結果は別に確認する。
 - 画面には合否・件数・失敗した項目名だけを出し、全文のログは `.git/local-check/` に落とす。
 - release 準備の README 更新の検査（`--intent release` / `--release`）は、このモードとは別に、今までどおり省略しない。
 
