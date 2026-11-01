@@ -190,13 +190,18 @@ def test_content_message_and_path_are_blocked(tmp_path):
     assert "fake" not in joined.lower()
 
 
-def test_push_ranges_from_stdin(tmp_path):
+def test_push_ranges_from_stdin(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     head = git(repo, "rev-parse", "HEAD").strip()
     old = "1" * 40
     text = f"refs/heads/a {head} refs/heads/a {old}\nrefs/heads/b {GUARD.ZERO_SHA} refs/heads/b {old}\n"
+    calls = []
+    monkeypatch.setattr(
+        GUARD, "_advertised_remote_commits", lambda *args: calls.append(args) or [old]
+    )
     ranges = GUARD.push_ranges_from_stdin(repo, "origin", text)
-    assert ranges == [[f"{old}..{head}"]]
+    assert ranges == [[f"{old}..{head}", "--not", old]]
+    assert len(calls) == 1
 
 
 def new_branch_stdin(repo, ref="topic"):
@@ -229,6 +234,85 @@ def published_history(tmp_path):
     git(repo, "config", "user.name", "nexus_ai")
     git(repo, "config", "user.email", PUBLIC_EMAIL)
     return repo, destination, old
+
+
+def updated_branch_commits(repo, remote, old):
+    head = git(repo, "rev-parse", "HEAD").strip()
+    text = f"refs/heads/topic {head} refs/heads/topic {old}\n"
+    return [
+        commit
+        for spec in GUARD.push_ranges_from_stdin(repo, remote, text)
+        for commit in GUARD._rev_list(repo, spec)
+    ]
+
+
+@pytest.mark.parametrize("violation", [None, "author", "content"])
+def test_push_ranges_updated_branch_excludes_published_merge_history(
+    tmp_path, violation
+):
+    repo = make_repo(tmp_path)
+    git(repo, "branch", "-M", "main")
+    old = git(repo, "rev-parse", "HEAD").strip()
+    git(repo, "branch", "topic")
+    legacy_env = dict(
+        os.environ,
+        GIT_AUTHOR_NAME="Fakeo Personaru",
+        GIT_AUTHOR_EMAIL="fake.person@example.invalid",
+    )
+    legacy = commit_file(repo, "既配布の履歴\n", legacy_env)
+    destination = tmp_path / "destination.git"
+    git(tmp_path, "clone", "--bare", str(repo), str(destination))
+    git(repo, "checkout", "-q", "topic")
+    git(repo, "merge", "--no-ff", "-qm", "merge published main", "main")
+    merge = git(repo, "rev-parse", "HEAD").strip()
+    expected = [merge]
+    if violation:
+        expected.append(
+            commit_file(
+                repo,
+                "作者: Fakeo Personaru\n" if violation == "content" else "新規追記\n",
+                legacy_env if violation == "author" else None,
+            )
+        )
+    commits = updated_branch_commits(repo, destination.as_uri(), old)
+    assert commits == expected
+    assert legacy not in commits
+    problems = GUARD.check_commits(
+        repo, commits, identities(), GUARD.DEFAULT_ALLOWED_EMAIL
+    )
+    assert bool(problems) == bool(violation)
+
+
+@pytest.mark.parametrize("failure", ["missing", "multiple", "rewrite"])
+def test_push_ranges_updated_branch_destination_failure_blocks(tmp_path, failure):
+    repo, destination, old = published_history(tmp_path)
+    commit_file(repo)
+    git(repo, "remote", "add", "target", str(destination))
+    if failure == "missing":
+        git(
+            repo, "remote", "set-url", "--push", "target", str(tmp_path / "missing.git")
+        )
+    elif failure == "multiple":
+        git(repo, "remote", "set-url", "--add", "--push", "target", str(destination))
+        git(
+            repo,
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "target",
+            str(tmp_path / "other.git"),
+        )
+    else:
+        git(repo, "remote", "set-url", "--push", "target", destination.as_uri())
+        git(
+            repo,
+            "config",
+            f"url.{(tmp_path / 'other.git').as_uri()}.insteadOf",
+            destination.as_uri(),
+        )
+    with pytest.raises(RuntimeError, match="送信先"):
+        updated_branch_commits(repo, "target", old)
 
 
 @pytest.mark.parametrize("remote_kind", ["path", "url", "alias"])
