@@ -48,7 +48,8 @@
       "tests": [
         "tests/test_public_narrative_contract.py",
         "tests/test_consistency_gate.py"
-      ]
+      ],
+      "dependency_mode": "supplement"
     },
     {
       "changes": [
@@ -89,7 +90,8 @@
         "tests/test_guard_requirements.py",
         "tests/test_release_metadata.py",
         "tests/test_runtime_support.py"
-      ]
+      ],
+      "dependency_mode": "supplement"
     },
     {
       "changes": [
@@ -119,6 +121,36 @@
         "tests/test_identity_fixture_exceptions.py"
       ],
       "dependency_mode": "supplement"
+    },
+    {
+      "changes": [
+        "CHANGELOG.md",
+        "docs/releases/*.md"
+      ],
+      "tests": [
+        "tests/test_release_metadata.py",
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py",
+        "tests/test_runtime_support.py",
+        "tests/test_github_settings_guide.py",
+        "tests/test_ai_entry_contract.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "pyproject.toml"
+      ],
+      "tests": [
+        "tests/test_release_metadata.py",
+        "tests/test_guard_requirements.py",
+        "tests/test_tool_wheel.py",
+        "tests/test_runtime_support.py"
+      ],
+      "dependency_mode": "mapped",
+      "toml_only_keys": [
+        "project.version"
+      ]
     }
   ]
 }
