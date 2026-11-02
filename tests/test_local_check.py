@@ -1485,3 +1485,134 @@ def test_toml_version_condition_does_not_accept_symlink(repo):
     )
     assert config["rules"] == []
     assert evidence[0]["matched"] is False
+
+
+@pytest.mark.parametrize(
+    "body,target",
+    [
+        (
+            'import importlib\nNAME="beta"\ndef change():\n global NAME\n NAME="alpha"\nchange()\nimportlib.import_module(NAME)',
+            "scripts/alpha.py",
+        ),
+        (
+            'import importlib\nNAME="alpha"\nTARGET=NAME\ndef read():\n NAME="beta"\n importlib.import_module(TARGET)\nread()',
+            "scripts/alpha.py",
+        ),
+        (
+            'from pathlib import Path\n(Path(__file__).parent / "data/config.json").read_text()',
+            "tests/data/config.json",
+        ),
+        ('__import__("pkg", fromlist=["alpha"])', "scripts/pkg/alpha.py"),
+        (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd="scripts")',
+            "scripts/pkg/alpha.py",
+        ),
+    ],
+)
+def test_reference_context_never_silently_omits_consumer(repo, body, target):
+    path = repo / target
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("X=1" if target.endswith(".py") else "{}")
+    (repo / "tests/test_direct.py").write_text("TARGET = " + repr(target))
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, [target], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_context.py" in result["selected_tests"]
+    )
+
+
+def test_relative_imported_loader_alias_preserves_package(repo):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("X=1")
+    (repo / "scripts/pkg/helper.py").write_text(
+        'from pathlib import Path\nimport importlib.util\nSOURCE=Path(__file__).parent\ndef load(name):\n return importlib.util.spec_from_file_location(name, SOURCE / (name + ".py"))'
+    )
+    (repo / "scripts/pkg/consumer.py").write_text(
+        'from .helper import load\nload("alpha")'
+    )
+    (repo / "tests/test_context.py").write_text("import pkg.consumer")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_context.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'import importlib\ndef outer():\n name="beta"\n def mutate():\n  nonlocal name\n  name="alpha"\n mutate()\n importlib.import_module(name)\nouter()',
+        '__import__("pkg", fromlist=runtime_names)',
+        '__import__("pkg", fromlist=["alpha"], level=runtime_level)',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd=runtime_cwd)',
+        'import runpy\nNAME=runtime_path\nTARGET=NAME\ndef read():\n NAME="scripts/beta.py"\n runpy.run_path(TARGET)\nread()',
+    ],
+)
+def test_unproven_reference_context_stays_unknown(repo, body):
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_global_mutation_does_not_invalidate_independent_local_binding(repo):
+    (repo / "tests/test_context.py").write_text(
+        'import importlib\nname="beta"\ndef mutate():\n global name\n name=runtime_name\ndef read():\n name="alpha"\n importlib.import_module(name)\nread()'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_context.py" in result["selected_tests"]
+    assert result["status"] == "selected"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'import runpy\nrunpy.run_path("scripts\\\\alpha.py")',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "alpha.py"], cwd="scripts")',
+        'from pathlib import Path\nimport importlib.util\nsource=Path(__file__).parents[1] / "scripts" / "alpha.py"\nimportlib.util.spec_from_file_location("alpha", source)',
+    ],
+)
+def test_file_reference_ids_are_platform_independent(repo, body):
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_context.py" in result["selected_tests"]
+    assert result["status"] == "selected"
+
+
+def test_windows_reference_path_composition_is_posix():
+    base = local_check._reference_path("scripts\\pkg\\loader.py")
+    assert base.with_name("alpha.py").as_posix() == "scripts/pkg/alpha.py"
+    assert (base.parent / "alpha.py").as_posix() == "scripts/pkg/alpha.py"
+
+
+def test_composed_file_reference_does_not_use_repository_root_fragment(repo):
+    for name in ["data/config.json", "tests/data/config.json"]:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    (repo / "tests/test_direct.py").write_text('DATA = "data/config.json"')
+    (repo / "tests/test_context.py").write_text(
+        'from pathlib import Path\nsource = Path(__file__).parent / "data/config.json"\nsource.read_text()'
+    )
+    result = local_check.select_tests(repo, ["data/config.json"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_context.py" not in result["selected_tests"]
+    local = local_check.select_tests(repo, ["tests/data/config.json"], {})
+    assert "tests/test_context.py" in local["selected_tests"]
+
+
+def test_python_cli_cwd_does_not_also_reference_root_script(repo):
+    for name in ["pkg/alpha.py", "scripts/pkg/alpha.py"]:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("X=1")
+    (repo / "tests/test_direct.py").write_text('SOURCE="pkg/alpha.py"')
+    (repo / "tests/test_context.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd="scripts")'
+    )
+    result = local_check.select_tests(
+        repo, ["pkg/alpha.py"], {"source_roots": ["scripts", "pkg"]}
+    )
+    assert result["status"] == "selected"
+    assert "tests/test_context.py" not in result["selected_tests"]

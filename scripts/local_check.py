@@ -23,7 +23,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _IDENTITY_PATH = Path(__file__).resolve().with_name("local_identity_guard.py")
 _IDENTITY_KEY = (
@@ -129,12 +129,19 @@ def _within_root(name: str, root: str) -> bool:
     return prefix == "." or name == prefix or name.startswith(prefix + "/")
 
 
-def _lexical_scopes(tree):
+def _reference_path(value: str) -> PurePosixPath:
+    """Static file identities use POSIX separators on every execution platform."""
+    return PurePosixPath(value.replace("\\", "/"))
+
+
+def _lexical_scopes(tree, package=""):
     """One binding table per lexical scope; never borrow another function's locals."""
     scopes = {}
     tables = {}
+    owners = {}
+    enclosing = {}
 
-    def visit_scope(scope, inherited):
+    def visit_scope(scope, inherited, inherited_owners=None):
         local = []
         children = []
 
@@ -186,7 +193,15 @@ def _lexical_scopes(tree):
                 for entry in node.names:
                     name = entry.asname or entry.name
                     bind(name, None)
-                    imports[name] = (node.module or "") + "." + entry.name
+                    prefix = node.module or ""
+                    if node.level:
+                        try:
+                            prefix = importlib.util.resolve_name(
+                                "." * node.level + prefix, package
+                            )
+                        except (ImportError, ValueError):
+                            prefix = "__unknown_relative_package__"
+                    imports[name] = prefix + "." + entry.name
             elif node is not scope and isinstance(
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
@@ -216,7 +231,9 @@ def _lexical_scopes(tree):
             dict(inherited[1]),
             set(inherited[2]),
         )
+        scope_owners = dict(inherited_owners or {})
         for name, entries in bindings.items():
+            scope_owners[name] = scope
             values.pop(name, None)
             aliases.pop(name, None)
             ambiguous.discard(name)
@@ -233,13 +250,33 @@ def _lexical_scopes(tree):
                 aliases[name] = inherited[1][name]
                 ambiguous.add(name)
         tables[scope] = values, aliases, ambiguous
+        owners[scope] = scope_owners
         for child in children:
+            enclosing[child] = scope
             # Class locals are not the lexical namespace of a method.
             visit_scope(
-                child, inherited if isinstance(scope, ast.ClassDef) else tables[scope]
+                child,
+                inherited if isinstance(scope, ast.ClassDef) else tables[scope],
+                inherited_owners if isinstance(scope, ast.ClassDef) else scope_owners,
             )
 
     visit_scope(tree, ({}, {}, set()))
+    # Declarations can mutate the original binding observed by enclosing readers.
+    # Invalidate that origin and its inherited copies, not unrelated local names.
+    for declaration in ast.walk(tree):
+        if not isinstance(declaration, (ast.Global, ast.Nonlocal)):
+            continue
+        scope = scopes[declaration]
+        for name in declaration.names:
+            origin = (
+                tree
+                if isinstance(declaration, ast.Global)
+                else owners.get(enclosing.get(scope), {}).get(name)
+            )
+            for reader, bindings in owners.items():
+                if bindings.get(name) is origin and origin is not None:
+                    tables[reader][0].pop(name, None)
+                    tables[reader][2].add(name)
     return scopes, tables
 
 
@@ -274,12 +311,17 @@ def _loader_summaries(trees, tables_by_file):
                 continue
 
             def expand(node, seen=frozenset()):
+                defined_values, _, defined_ambiguous = tables[
+                    scopes.get(node, function)
+                ]
+                binding_key = (scopes.get(node, function), getattr(node, "id", None))
                 if (
                     isinstance(node, ast.Name)
-                    and node.id in values
-                    and node.id not in seen
+                    and node.id in defined_values
+                    and node.id not in defined_ambiguous
+                    and binding_key not in seen
                 ):
-                    return expand(values[node.id], seen | {node.id})
+                    return expand(defined_values[node.id], seen | {binding_key})
                 return node
 
             def base_value(node, seen=frozenset()):
@@ -308,7 +350,11 @@ def _loader_summaries(trees, tables_by_file):
                         return base_value(node.func.value, seen)
                 if isinstance(node, ast.Attribute) and node.attr == "parent":
                     base = base_value(node.value, seen)
-                    return str(Path(base).parent) if base is not None else None
+                    return (
+                        _reference_path(base).parent.as_posix()
+                        if base is not None
+                        else None
+                    )
                 return None
 
             candidates = []
@@ -398,7 +444,9 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         if path.endswith(".py") and (repo / path).is_file():
             try:
                 trees[path] = ast.parse((repo / path).read_text(encoding="utf-8"))
-                scopes_by_file[path] = _lexical_scopes(trees[path])
+                scopes_by_file[path] = _lexical_scopes(
+                    trees[path], ".".join(Path(path).parent.parts)
+                )
             except (SyntaxError, UnicodeError):
                 issues.append(
                     {
@@ -434,7 +482,13 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         edge(target)
 
         def filename(value):
-            if not isinstance(value, str) or not Path(value).suffix:
+            if not isinstance(value, str) or not _reference_path(value).suffix:
+                return False
+            if PureWindowsPath(value).drive:
+                return False
+            value = _reference_path(value).as_posix()
+            if ".." in _reference_path(value).parts:
+                issue("relative file path requires owner mapping")
                 return False
             candidates = {value} & paths
             if not candidates and "/" not in value:
@@ -468,16 +522,28 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             current_line = getattr(node, "lineno", 0)
             values, aliases, ambiguous = scope_tables[node_scopes.get(node, tree)]
 
+        def bound_expression(node):
+            if not isinstance(node, ast.Name):
+                return None
+            defined_values, _, defined_ambiguous = scope_tables[
+                node_scopes.get(node, tree)
+            ]
+            return None if node.id in defined_ambiguous else defined_values.get(node.id)
+
         def dotted(node, seen=frozenset()):
+            defined_values, defined_aliases, _ = scope_tables[
+                node_scopes.get(node, tree)
+            ]
             if isinstance(node, ast.Name):
-                assigned = values.get(node.id)
+                assigned = bound_expression(node)
+                binding_key = (node_scopes.get(node, tree), node.id)
                 if (
-                    node.id not in aliases
-                    and node.id not in seen
+                    node.id not in defined_aliases
+                    and binding_key not in seen
                     and isinstance(assigned, (ast.Name, ast.Attribute))
                 ):
-                    return dotted(assigned, seen | {node.id})
-                return aliases.get(node.id, node.id)
+                    return dotted(assigned, seen | {binding_key})
+                return defined_aliases.get(node.id, node.id)
             if isinstance(node, ast.Attribute):
                 return dotted(node.value, seen) + "." + node.attr
             return ""
@@ -485,13 +551,18 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         embedded_nodes = set()
 
         def value(node, seen=frozenset()):
+            defined_values, _, defined_ambiguous = scope_tables[
+                node_scopes.get(node, tree)
+            ]
             if isinstance(node, ast.Constant):
                 return node.value
             if isinstance(node, ast.Name):
                 if node.id == "__file__":
                     return None if node in embedded_nodes else consumer
-                if node.id in values and node.id not in seen:
-                    return value(values[node.id], seen | {node.id})
+                assigned = bound_expression(node)
+                binding_key = (node_scopes.get(node, tree), node.id)
+                if assigned is not None and binding_key not in seen:
+                    return value(assigned, seen | {binding_key})
             if isinstance(node, ast.Call):
                 if dotted(node.func) in ("pathlib.Path", "Path", "str") and node.args:
                     return value(node.args[0], seen)
@@ -507,11 +578,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 ):
                     base, leaf = value(node.func.value, seen), value(node.args[0], seen)
                     if isinstance(base, str) and isinstance(leaf, str):
-                        return str(Path(base).with_name(leaf))
+                        return _reference_path(base).with_name(leaf).as_posix()
             if isinstance(node, ast.Attribute) and node.attr == "parent":
                 base = value(node.value, seen)
                 if isinstance(base, str):
-                    return str(Path(base).parent)
+                    return _reference_path(base).parent.as_posix()
             if (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.value, ast.Attribute)
@@ -521,15 +592,15 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 if (
                     isinstance(base, str)
                     and isinstance(index, int)
-                    and 0 <= index < len(Path(base).parents)
+                    and 0 <= index < len(_reference_path(base).parents)
                 ):
-                    return str(Path(base).parents[index])
+                    return _reference_path(base).parents[index].as_posix()
             if isinstance(node, (ast.List, ast.Tuple)):
                 return [value(item, seen) for item in node.elts]
             if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
                 left, right = value(node.left, seen), value(node.right, seen)
                 if isinstance(left, str) and isinstance(right, str):
-                    return str(Path(left) / right)
+                    return (_reference_path(left) / _reference_path(right)).as_posix()
             return None
 
         parents = {
@@ -573,6 +644,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 issue(f"loader callback escape at line {reference.lineno}: " + name)
         # Literal python -c programs are syntax, never executed during planning.
         nodes = list(ast.walk(tree))
+        contextual_path_nodes = set()
         for node in list(nodes):
             set_scope(node)
             if (
@@ -584,7 +656,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             command = value(node.args[0])
             expression = node.args[0]
             if isinstance(expression, ast.Name):
-                expression = values.get(expression.id, expression)
+                expression = bound_expression(expression) or expression
             executable = (
                 dotted(expression.elts[0])
                 if isinstance(expression, (ast.List, ast.Tuple)) and expression.elts
@@ -596,6 +668,36 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 and isinstance(command[0], str)
                 and Path(command[0]).name.startswith("python")
             )
+            if (
+                python
+                and isinstance(command, list)
+                and isinstance(expression, (ast.List, ast.Tuple))
+            ):
+                position = 1
+                while position < len(command) and command[position] in (
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-E",
+                    "-s",
+                    "-u",
+                ):
+                    position += 1
+                if (
+                    position < len(command)
+                    and isinstance(command[position], str)
+                    and not command[position].startswith("-")
+                ):
+                    target_expression = expression.elts[position]
+                    visited = set()
+                    while (
+                        isinstance(target_expression, ast.Name)
+                        and bound_expression(target_expression) is not None
+                        and target_expression not in visited
+                    ):
+                        visited.add(target_expression)
+                        target_expression = bound_expression(target_expression)
+                    contextual_path_nodes.update(ast.walk(target_expression))
             if python and isinstance(command, list) and "-c" in command:
                 index = command.index("-c") + 1
                 if index < len(command) and isinstance(command[index], str):
@@ -625,19 +727,52 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         issue("Python CLI syntax unavailable")
                 else:
                     issue("opaque Python CLI code")
+        # A composed path is one reference with its own origin, not independent
+        # references to each string fragment interpreted at repository root.
+        composed_paths = {}
+        path_fragments = set(contextual_path_nodes)
+        for expression in nodes:
+            if expression in contextual_path_nodes:
+                continue
+            if (
+                isinstance(expression, ast.BinOp)
+                and isinstance(expression.op, ast.Div)
+                or isinstance(expression, ast.Call)
+                and (
+                    dotted(expression.func) == "pathlib.Path"
+                    or isinstance(expression.func, ast.Attribute)
+                    and expression.func.attr == "with_name"
+                )
+            ):
+                resolved = value(expression)
+                if isinstance(resolved, str) and _reference_path(resolved).suffix:
+                    composed_paths[expression] = resolved
+                    path_fragments.update(
+                        child
+                        for child in ast.walk(expression)
+                        if isinstance(child, ast.Constant)
+                    )
         for node in nodes:
             set_scope(node)
+            if node in composed_paths:
+                filename(composed_paths[node])
             if isinstance(node, ast.Import):
                 for entry in node.names:
                     module(entry.name)
             elif isinstance(node, ast.ImportFrom):
+                if node.level and node in embedded_nodes:
+                    issue("embedded relative import package is unknown")
+                    continue
                 prefix = node.module or ""
                 if node.level:
-                    parts = list(Path(consumer).parent.parts)
-                    prefix = ".".join(
-                        parts[: len(parts) - node.level + 1]
-                        + ([prefix] if prefix else [])
-                    )
+                    package = ".".join(Path(consumer).parent.parts)
+                    try:
+                        prefix = importlib.util.resolve_name(
+                            "." * node.level + prefix, package
+                        )
+                    except (ImportError, ValueError):
+                        issue("relative import package is unknown")
+                        continue
                 module(prefix)
                 for entry in node.names:
                     module(prefix + "." + entry.name)
@@ -658,10 +793,26 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                                 for source in modules.get(origin, set())
                             ):
                                 issue("loader re-export requires owner mapping")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node not in path_fragments
+            ):
                 filename(node.value)
             elif isinstance(node, ast.Call):
                 call = dotted(node.func)
+                if isinstance(node.func, ast.Attribute) and node.func.attr in (
+                    "read_text",
+                    "read_bytes",
+                    "open",
+                ):
+                    target_path = value(node.func.value)
+                    if isinstance(target_path, str):
+                        filename(target_path)
+                elif call == "open" and node.args:
+                    target_path = value(node.args[0])
+                    if isinstance(target_path, str):
+                        filename(target_path)
                 if (
                     node in embedded_nodes
                     and call.endswith(
@@ -717,9 +868,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         issue(f"opaque loader call at line {node.lineno}: " + call)
                     else:
                         path = (
-                            str(Path(base) / (target + ".py"))
+                            (_reference_path(base) / (target + ".py")).as_posix()
                             if mode == "join"
-                            else str(Path(base).with_name(target + ".py"))
+                            else _reference_path(base)
+                            .with_name(target + ".py")
+                            .as_posix()
                         )
                         if not filename(path):
                             issue(
@@ -734,11 +887,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     visited = set()
                     while (
                         isinstance(expression, ast.Name)
-                        and expression.id in values
+                        and bound_expression(expression) is not None
                         and expression.id not in visited
                     ):
                         visited.add(expression.id)
-                        expression = values[expression.id]
+                        expression = bound_expression(expression)
                     if (
                         isinstance(expression, ast.Call)
                         and dotted(expression.func) == "compile"
@@ -747,11 +900,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         expression = expression.args[0]
                         while (
                             isinstance(expression, ast.Name)
-                            and expression.id in values
+                            and bound_expression(expression) is not None
                             and expression.id not in visited
                         ):
                             visited.add(expression.id)
-                            expression = values[expression.id]
+                            expression = bound_expression(expression)
                         if (
                             isinstance(expression, ast.Call)
                             and isinstance(expression.func, ast.Attribute)
@@ -809,7 +962,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                                 iterable.id if isinstance(iterable, ast.Name) else None
                             )
                             literal = (
-                                values.get(binding_name) if binding_name else iterable
+                                bound_expression(iterable) if binding_name else iterable
                             )
                             if (
                                 isinstance(loop_target, ast.Name)
@@ -871,11 +1024,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         visited = set()
                         while (
                             isinstance(expression, ast.Name)
-                            and expression.id in values
+                            and bound_expression(expression) is not None
                             and expression.id not in visited
                         ):
                             visited.add(expression.id)
-                            expression = values[expression.id]
+                            expression = bound_expression(expression)
                         literals = {
                             part.value
                             for part in ast.walk(expression)
@@ -899,7 +1052,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     if call in ("exec", "eval") or not isinstance(target, str):
                         issue("opaque loader: " + call)
                     elif call.endswith(("run_path", "spec_from_file_location")):
-                        if ".." in Path(target).parts:
+                        if ".." in _reference_path(target).parts:
                             issue("loader path escape requires owner mapping: " + call)
                         else:
                             filename(target)
@@ -931,6 +1084,44 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                                 issue("invalid relative import package")
                                 continue
                         module(target)
+                        if call == "__import__":
+                            fromlist_arg = (
+                                node.args[3]
+                                if len(node.args) > 3
+                                else next(
+                                    (
+                                        kw.value
+                                        for kw in node.keywords
+                                        if kw.arg == "fromlist"
+                                    ),
+                                    ast.Constant(value=()),
+                                )
+                            )
+                            level_arg = (
+                                node.args[4]
+                                if len(node.args) > 4
+                                else next(
+                                    (
+                                        kw.value
+                                        for kw in node.keywords
+                                        if kw.arg == "level"
+                                    ),
+                                    ast.Constant(value=0),
+                                )
+                            )
+                            imported = value(fromlist_arg)
+                            if (
+                                value(level_arg) != 0
+                                or not isinstance(imported, (list, tuple))
+                                or not all(
+                                    isinstance(item, str) and item != "*"
+                                    for item in imported
+                                )
+                            ):
+                                issue("opaque __import__ fromlist or level")
+                            else:
+                                for item in imported:
+                                    module(target + "." + item)
                 elif (
                     call
                     in (
@@ -948,7 +1139,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     first = command[0]
                     expression = node.args[0]
                     if isinstance(expression, ast.Name):
-                        expression = values.get(expression.id, expression)
+                        expression = bound_expression(expression) or expression
                     executable = (
                         dotted(expression.elts[0])
                         if isinstance(expression, (ast.List, ast.Tuple))
@@ -958,10 +1149,22 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     python = executable == "sys.executable" or (
                         isinstance(first, str) and Path(first).name.startswith("python")
                     )
-                    for arg in command:
-                        if isinstance(arg, str):
-                            filename(arg)
                     if python:
+                        cwd_arg = next(
+                            (kw.value for kw in node.keywords if kw.arg == "cwd"),
+                            ast.Constant(value="."),
+                        )
+                        cwd = value(cwd_arg)
+                        if (
+                            not isinstance(cwd, str)
+                            or (
+                                _reference_path(cwd).is_absolute()
+                                or bool(PureWindowsPath(cwd).drive)
+                            )
+                            or ".." in _reference_path(cwd).parts
+                        ):
+                            issue("opaque Python CLI cwd")
+                            continue
                         position = 1
                         while position < len(command) and command[position] in (
                             "-I",
@@ -985,7 +1188,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                                 isinstance(command[1], str)
                                 and ".." not in Path(command[1]).parts
                             ):
-                                filename(command[1])
+                                filename(
+                                    (
+                                        _reference_path(cwd)
+                                        / _reference_path(command[1])
+                                    ).as_posix()
+                                )
                             else:
                                 issue("unresolved Python CLI file")
     return reverse, issues
