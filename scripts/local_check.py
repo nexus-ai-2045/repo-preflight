@@ -140,6 +140,7 @@ def _lexical_scopes(tree, package=""):
     tables = {}
     owners = {}
     enclosing = {}
+    origins = {}
     # Pattern captures store identifiers in fields rather than Name(Store).
     # The empty tuple keeps this scanner compatible with Python 3.9 ASTs.
     capture_nodes = tuple(
@@ -148,7 +149,7 @@ def _lexical_scopes(tree, package=""):
         if hasattr(ast, kind)
     )
 
-    def visit_scope(scope, inherited, inherited_owners=None):
+    def visit_scope(scope, inherited, inherited_owners=None, inherited_origins=None):
         local = []
         children = []
 
@@ -202,10 +203,13 @@ def _lexical_scopes(tree, package=""):
 
         walk(scope)
         bindings = {}
+        binding_origins = {}
         imports = {}
 
-        def bind(name, expression):
+        def bind(name, expression, *, origin=True):
             bindings.setdefault(name, []).append(expression)
+            if origin:
+                binding_origins.setdefault(name, []).append(expression)
 
         if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             for arg in scope.args.posonlyargs + scope.args.args + scope.args.kwonlyargs:
@@ -220,11 +224,32 @@ def _lexical_scopes(tree, package=""):
                 ):
                     for part in ast.walk(target):
                         if isinstance(part, ast.Name):
-                            bind(part.id, node.value)
+                            bind(
+                                part.id,
+                                node.value,
+                                origin=isinstance(part.ctx, ast.Store),
+                            )
             elif isinstance(node, (ast.AugAssign, ast.NamedExpr)) and isinstance(
                 node.target, ast.Name
             ):
                 bind(node.target.id, None)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.attr
+                in (
+                    "append",
+                    "extend",
+                    "insert",
+                    "pop",
+                    "remove",
+                    "clear",
+                    "sort",
+                    "reverse",
+                )
+            ):
+                bind(node.func.value.id, None, origin=False)
             elif isinstance(node, ast.Import):
                 for entry in node.names:
                     name = entry.asname or entry.name.split(".")[0]
@@ -297,6 +322,16 @@ def _lexical_scopes(tree, package=""):
                 aliases[name] = inherited[1][name]
                 ambiguous.add(name)
         tables[scope] = values, aliases, ambiguous
+        origins[scope] = {**(inherited_origins or {}), **binding_origins}
+        for declaration in local:
+            if isinstance(declaration, (ast.Global, ast.Nonlocal)):
+                inherited_bindings = (
+                    origins.get(tree, {})
+                    if isinstance(declaration, ast.Global)
+                    else (inherited_origins or {})
+                )
+                for name in declaration.names:
+                    origins[scope][name] = inherited_bindings.get(name, [])
         owners[scope] = scope_owners
         for child in children:
             enclosing[child] = scope
@@ -305,6 +340,11 @@ def _lexical_scopes(tree, package=""):
                 child,
                 inherited if isinstance(scope, ast.ClassDef) else tables[scope],
                 inherited_owners if isinstance(scope, ast.ClassDef) else scope_owners,
+                (
+                    inherited_origins
+                    if isinstance(scope, ast.ClassDef)
+                    else origins[scope]
+                ),
             )
 
     visit_scope(tree, ({}, {}, set()))
@@ -324,14 +364,14 @@ def _lexical_scopes(tree, package=""):
                 if bindings.get(name) is origin and origin is not None:
                     tables[reader][0].pop(name, None)
                     tables[reader][2].add(name)
-    return scopes, tables
+    return scopes, tables, origins
 
 
 def _loader_summaries(trees, tables_by_file):
     """Only a unique base / (formal + suffix) or base.with_name(formal + suffix)."""
     summaries = {}
     for path, tree in trees.items():
-        scopes, tables = tables_by_file[path]
+        scopes, tables, _ = tables_by_file[path]
         module_values, _, module_ambiguous = tables[tree]
         mutable_globals = {
             name
@@ -529,7 +569,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         edge(target)
 
         def filename(value, *, static_path=False):
-            if not isinstance(value, str) or not _reference_path(value).suffix:
+            if not isinstance(value, str):
                 return False
             if PureWindowsPath(value).drive:
                 return False
@@ -549,7 +589,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     issue("static file path cannot be resolved")
                     return False
             candidates = {value} & paths
-            if not candidates and "/" not in value:
+            if not candidates and "/" not in value and _reference_path(value).suffix:
                 candidates = {p for p in paths if Path(p).name == value}
             if len(candidates) > 1:
                 issue("ambiguous file reference: " + value)
@@ -560,7 +600,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         if consumer not in trees:
             continue
         tree = trees[consumer]
-        node_scopes, scope_tables = scopes_by_file[consumer]
+        node_scopes, scope_tables, command_origins = scopes_by_file[consumer]
         # Docstrings are documentation, not executable file references.
         for node in ast.walk(tree):
             if isinstance(
@@ -661,6 +701,24 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     return (_reference_path(left) / _reference_path(right)).as_posix()
             return None
 
+        def known_python_command(node, seen=frozenset()):
+            if isinstance(node, ast.Name):
+                scope = node_scopes.get(node, tree)
+                key = (scope, node.id)
+                return key not in seen and any(
+                    known_python_command(origin, seen | {key})
+                    for origin in command_origins.get(scope, {}).get(node.id, [])
+                    if origin is not None
+                )
+            if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+                first = node.elts[0]
+                literal = value(first)
+                return dotted(first) == "sys.executable" or (
+                    isinstance(literal, str)
+                    and _reference_path(literal).name.startswith("python")
+                )
+            return False
+
         parents = {
             child: parent
             for parent in ast.walk(tree)
@@ -727,11 +785,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 if index < len(command) and isinstance(command[index], str):
                     try:
                         embedded_tree = ast.parse(command[index])
-                        embedded_scopes, embedded_tables = _lexical_scopes(
-                            embedded_tree
+                        embedded_scopes, embedded_tables, embedded_origins = (
+                            _lexical_scopes(embedded_tree)
                         )
                         node_scopes.update(embedded_scopes)
                         scope_tables.update(embedded_tables)
+                        command_origins.update(embedded_origins)
                         parsed_nodes = list(ast.walk(embedded_tree))
                         embedded_nodes.update(parsed_nodes)
                         nodes.extend(parsed_nodes)
@@ -1199,6 +1258,8 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 ):
                     command = value(node.args[0])
                     if not isinstance(command, list) or not command:
+                        if known_python_command(node.args[0]):
+                            issue("opaque Python CLI command construction")
                         continue
                     first = command[0]
                     expression = node.args[0]

@@ -1791,3 +1791,99 @@ def test_non_loader_star_import_does_not_block_known_local_consumer(repo):
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected"
     assert "tests/test_normal.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'from pathlib import Path\nPath("assets/config").read_text()',
+        'open("assets/config").read()',
+        'FILE = "assets/config"',
+    ],
+)
+def test_extensionless_exact_file_reference_keeps_reader(repo, body):
+    (repo / "assets").mkdir()
+    (repo / "assets/config").write_text("value")
+    (repo / "scripts/reader.py").write_text(body)
+    (repo / "tests/test_reader.py").write_text("import reader")
+    policy = {
+        "rules": [
+            {
+                "changes": ["assets/**"],
+                "tests": ["tests/test_beta.py"],
+                "dependency_mode": "supplement",
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["assets/config"], policy)
+    assert result["status"] == "selected"
+    assert "tests/test_reader.py" in result["selected_tests"]
+    assert "tests/test_beta.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        'CMD[1] = "pkg/alpha.py"',
+        "CMD.insert(1, runtime_target)",
+        "CMD += runtime_arguments",
+    ],
+)
+def test_mutated_known_python_command_is_not_silently_ignored(repo, mutation):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("X=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable, "pkg/beta.py"]\n'
+        + mutation
+        + '\nsubprocess.run(CMD, cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "tests/test_command.py" for item in result["unresolved"])
+
+
+def test_unresolved_external_command_does_not_become_python_loader(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess\nCMD=["git", "status"]\nCMD[1]=runtime_option\nsubprocess.run(CMD)\nsubprocess.run(runtime_external_command)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_command_provenance_respects_local_shadowing(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"unrelated.py"]\n'
+        'def external():\n CMD=["git","status"]\n CMD[1]=runtime_option\n subprocess.run(CMD)\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_inherited_python_command_mutation_remains_unknown(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"pkg/beta.py"]\n'
+        'def execute():\n CMD[1]=runtime_target\n subprocess.run(CMD,cwd="scripts")\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_extensionless_basename_does_not_guess_another_directory(repo):
+    (repo / "assets").mkdir()
+    (repo / "assets/config").write_text("value")
+    (repo / "tests/test_message.py").write_text('MESSAGE="config"')
+    policy = {
+        "rules": [
+            {
+                "changes": ["assets/**"],
+                "tests": ["tests/test_beta.py"],
+                "dependency_mode": "supplement",
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["assets/config"], policy)
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_beta.py"]
