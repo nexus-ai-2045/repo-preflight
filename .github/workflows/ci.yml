@@ -63,13 +63,8 @@ jobs:
   # Mac はこのジョブだけで見る。3.9 は Linux でも挙動が同じだったので Mac に絞った。
   # 保全した ai-ratchet-gate wheel と black は 3.11 以上が要るので、上のジョブで回す。
   test-py39:
-    name: test-py39 (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
+    name: test-py39 (macos-latest)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
