@@ -2159,3 +2159,68 @@ def test_regular_module_execution_does_not_execute_package_main(repo):
     (repo / "tests/test_package.py").write_text('import runpy\nrunpy.run_module("pkg")')
     result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
     assert "tests/test_package.py" not in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "comprehension",
+    [
+        "[importlib.import_module(NAME) for _ in (0,)]",
+        "{importlib.import_module(NAME) for _ in (0,)}",
+        "{_: importlib.import_module(NAME) for _ in (0,)}",
+        "(importlib.import_module(NAME) for _ in (0,))",
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_class_comprehension_cannot_borrow_class_loader_binding(
+    repo, comprehension, embedded
+):
+    code = (
+        'import importlib\nNAME="alpha"\nclass Holder:\n NAME="beta"\n values='
+        + comprehension
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_comprehension.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_comprehension.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_class_comprehension_shadowed_loader_alias_requires_mapping(repo, embedded):
+    code = (
+        'from importlib import import_module as load\nNAME="alpha"\n'
+        'class Holder:\n load=lambda name: None\n NAME="beta"\n values=[load(NAME) for _ in (0,)]'
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_comprehension.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("class comprehension" in item["reason"] for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "values=[str(_) for _ in (0,)]",
+        "def helper():\n return [str(_) for _ in (0,)]",
+        "class Holder:\n values=(1, 2)",
+        "class Holder:\n def helper(self):\n  return [str(_) for _ in (0,)]",
+    ],
+)
+def test_nonclass_comprehensions_and_class_data_remain_supported(repo, code):
+    (repo / "tests/test_comprehension.py").write_text("import alpha\n" + code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_comprehension.py" in result["selected_tests"]

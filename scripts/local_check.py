@@ -964,6 +964,13 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     )
         for node in nodes:
             set_scope(node)
+            if isinstance(
+                node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+            ):
+                if isinstance(node_scopes.get(node), ast.ClassDef):
+                    # Class comprehensions have a separate lexical namespace,
+                    # which this bounded extractor does not resolve.
+                    issue("class comprehension requires owner mapping")
             if node in composed_paths:
                 filename(composed_paths[node], static_path=True)
             if isinstance(node, ast.Import):
