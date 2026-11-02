@@ -2224,3 +2224,56 @@ def test_nonclass_comprehensions_and_class_data_remain_supported(repo, code):
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected", result["unresolved"]
     assert "tests/test_comprehension.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ['Path("foo.py").with_name("dir/alpha.py")', 'Path(".").with_name("alpha.py")'],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_invalid_static_filename_remains_unresolved_instead_of_aborting(
+    repo, expression, embedded
+):
+    code = "from pathlib import Path\n" + expression
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_invalid_path.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_invalid_path.py" in result["selected_tests"]
+    )
+    if result["status"] == "unresolved":
+        assert any(
+            "invalid static path" in item["reason"] for item in result["unresolved"]
+        )
+
+
+def test_mapped_invalid_filename_consumer_can_be_explicitly_covered(repo):
+    (repo / "tests/test_invalid_path.py").write_text(
+        'from pathlib import Path\nPath("foo.py").with_name("dir/alpha.py")'
+    )
+    policy = {
+        "rules": [
+            {
+                "changes": ["scripts/alpha.py"],
+                "dependency_mode": "mapped",
+                "tests": ["tests/test_alpha.py", "tests/test_invalid_path.py"],
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "selected", result["unresolved"]
+
+
+def test_invalid_summary_filename_base_remains_unresolved(repo):
+    (repo / "tests/test_invalid_path.py").write_text(
+        'from pathlib import Path\nimport importlib.util\nBASE=Path(".")\n'
+        'def load(name):\n return importlib.util.spec_from_file_location("loaded", BASE.with_name(name + ".py"))\nload("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"

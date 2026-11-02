@@ -736,6 +736,13 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
 
         embedded_nodes = set()
 
+        def static_with_name(base, leaf):
+            try:
+                return _reference_path(base).with_name(leaf).as_posix()
+            except ValueError:
+                issue("invalid static path name requires owner mapping")
+                return None
+
         def value(node, seen=frozenset()):
             defined_values, _, defined_ambiguous = scope_tables[
                 node_scopes.get(node, tree)
@@ -764,7 +771,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 ):
                     base, leaf = value(node.func.value, seen), value(node.args[0], seen)
                     if isinstance(base, str) and isinstance(leaf, str):
-                        return _reference_path(base).with_name(leaf).as_posix()
+                        return static_with_name(base, leaf)
             if isinstance(node, ast.Attribute) and node.attr == "parent":
                 base = value(node.value, seen)
                 if isinstance(base, str):
@@ -1103,9 +1110,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         path = (
                             (_reference_path(base) / (target + ".py")).as_posix()
                             if mode == "join"
-                            else _reference_path(base)
-                            .with_name(target + ".py")
-                            .as_posix()
+                            else static_with_name(base, target + ".py")
                         )
                         if not filename(path):
                             issue(
