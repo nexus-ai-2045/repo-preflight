@@ -15,7 +15,6 @@
   "rules": [
     {
       "changes": [
-        "CHANGELOG.md",
         "CODE_OF_CONDUCT.md",
         "CONTRIBUTING.md",
         "OPERATIONS.md",
@@ -23,9 +22,7 @@
         "PUBLIC_READY.md",
         "README.md",
         "REPO_GOAL.md",
-        "SECURITY.md",
-        "docs/*.md",
-        "references/*.md"
+        "SECURITY.md"
       ],
       "tests": [
         "tests/test_public_narrative_contract.py",
@@ -35,6 +32,9 @@
     },
     {
       "changes": [
+        "CHANGELOG.md",
+        "docs/*.md",
+        "references/*.md",
         "docs/*.txt",
         "docs/*.json",
         "references/*.json",

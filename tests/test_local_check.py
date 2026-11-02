@@ -126,14 +126,14 @@ def test_unknown_script_stops_instead_of_running_everything(repo):
         local_check.build_steps(repo, "quick", "base")
 
 
-def test_configured_fixture_expands_to_declared_neighbors(repo):
+def test_configured_fixture_requires_implicit_impact_review(repo):
     config = {
         "rules": [{"changes": ["tests/conftest.py"], "tests": ["tests/test_alpha.py"]}]
     }
     plan = local_check.select_tests(repo, ["tests/conftest.py"], config)
-    assert plan["status"] == "selected"
-    assert plan["selected_tests"] == ["tests/test_alpha.py"]
-    assert plan["reasons"]["tests/test_alpha.py"][0]["file"] == "tests/conftest.py"
+    assert plan["status"] == "unresolved"
+    assert any("fixture-impact" in item["reason"] for item in plan["unresolved"])
+    assert "tests/test_beta.py" not in plan["selected_tests"]
 
 
 def test_unmapped_fixture_is_unresolved(repo):
@@ -514,6 +514,9 @@ def test_source_symlink_escape_is_rejected(repo, tmp_path):
 
 def test_empty_plan_never_invokes_pytest(repo, monkeypatch):
     monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
         local_check,
         "plan_tests",
         lambda *a: {
@@ -581,6 +584,9 @@ def test_plan_binds_head_merge_base_policy_and_selector(repo):
 
 
 def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, capsys):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
     plan = {
         "unresolved": [],
         "selected_tests": ["tests/test_alpha.py"],
@@ -759,3 +765,110 @@ def test_mapped_rule_cannot_omit_changed_test_itself(repo):
         },
     )
     assert plan["selected_tests"] == ["tests/test_alpha.py", "tests/test_beta.py"]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "changed_files",
+        "selected_tests",
+        "file_reasons",
+        "reasons",
+        "unresolved",
+        "error",
+    ],
+)
+def test_cli_private_plan_stops_without_disclosing_or_executing(
+    repo, monkeypatch, capsys, as_json, field
+):
+    guard = local_check.local_identity_guard
+
+    private = "SyntheticPrivateOperator"
+    identities = guard.collect_identities(sources={"os_account": [private]}, environ={})
+    monkeypatch.setattr(guard, "collect_identities", lambda **kwargs: identities)
+    plan = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    if field == "error":
+
+        def make_plan(*args):
+            raise ValueError("unknown " + private + "/file.py")
+
+    else:
+        plan[field] = {private + "/file.py": "unknown " + private}
+
+        def make_plan(*args):
+            return plan
+
+    monkeypatch.setattr(local_check, "plan_tests", make_plan)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("private plan must never execute")
+
+    monkeypatch.setattr(local_check.subprocess, "run", forbidden)
+    args = ["--repo", str(repo), "--run-selected-tests"] + (
+        ["--json"] if as_json else []
+    )
+    assert local_check.main(args) == 2
+    output = capsys.readouterr()
+    assert private not in output.out + output.err
+    if as_json:
+        report = json.loads(output.out)
+        assert report["status"] == "unresolved"
+        assert not report.get("selected_tests")
+
+
+def test_cli_public_namespace_remains_selectable(repo, monkeypatch, capsys):
+    guard = local_check.local_identity_guard
+
+    collect = guard.collect_identities
+
+    def public_collector(**kwargs):
+        return collect(
+            sources={"os_account": ["nexus-ai-2045", "nexus_ai"]},
+            environ={},
+            public_names=kwargs.get("public_names"),
+        )
+
+    monkeypatch.setattr(guard, "collect_identities", public_collector)
+    plan = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    plan["changed_files"] = ["nexus_ai/public.md"]
+    monkeypatch.setattr(local_check, "plan_tests", lambda *args: plan)
+    assert local_check.main(["--repo", str(repo), "--plan-tests", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["changed_files"] == [
+        "nexus_ai/public.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "document,consumer",
+    [
+        ("CHANGELOG.md", "tests/test_release_metadata.py"),
+        ("docs/ai-constitution-entry-contract.md", "tests/test_ai_entry_contract.py"),
+    ],
+)
+def test_repository_contract_documents_keep_consumers(repo, document, consumer):
+    policy = json.loads((local_check.ROOT / ".test-selection.json").read_text())
+    for name in [
+        consumer,
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py",
+    ]:
+        (repo / name).write_text(repr(Path(document).name))
+    plan = local_check.select_tests(repo, [document], policy)
+    assert plan["status"] == "selected"
+    assert consumer in plan["selected_tests"]
+
+
+def test_mapped_conftest_cannot_hide_implicit_fixture_impact(repo):
+    config = {
+        "rules": [
+            {
+                "changes": ["tests/conftest.py"],
+                "tests": ["tests/test_alpha.py"],
+                "dependency_mode": "mapped",
+            }
+        ]
+    }
+    plan = local_check.select_tests(repo, ["tests/conftest.py"], config)
+    assert plan["status"] == "unresolved"
+    assert any("fixture-impact" in item["reason"] for item in plan["unresolved"])

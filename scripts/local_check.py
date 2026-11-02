@@ -12,6 +12,7 @@ import argparse
 import fnmatch
 import getpass
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -22,6 +23,20 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path, PureWindowsPath
+
+_IDENTITY_PATH = Path(__file__).resolve().with_name("local_identity_guard.py")
+_IDENTITY_KEY = (
+    "_selection_identity_" + hashlib.sha256(_IDENTITY_PATH.read_bytes()).hexdigest()
+)
+if _IDENTITY_KEY not in sys.modules:
+    _identity_spec = importlib.util.spec_from_file_location(
+        _IDENTITY_KEY, _IDENTITY_PATH
+    )
+    local_identity_guard = importlib.util.module_from_spec(_identity_spec)
+    sys.modules[_IDENTITY_KEY] = local_identity_guard
+    _identity_spec.loader.exec_module(local_identity_guard)
+else:
+    local_identity_guard = sys.modules[_IDENTITY_KEY]
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SELECTION = {
@@ -190,6 +205,14 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
     for raw_name in sorted(set(files)):
         name = _safe_relative(repo, raw_name)
         file_reasons[name] = []
+        if Path(name).name == "conftest.py":
+            unresolved.append(
+                {
+                    "file": name,
+                    "reason": "fixture-impact: implicit pytest consumers require owner scope review",
+                }
+            )
+            continue
         matched = False
         dependency_modes: list[str] = []
         unresolved_before_rules = len(unresolved)
@@ -522,11 +545,29 @@ def main(argv: list[str] | None = None) -> int:
     )
     ns = ap.parse_args(argv)
     repo = ns.repo.resolve()
+    identities = local_identity_guard.collect_identities(
+        repo=repo, public_names={"nexus-ai-2045", "nexus_ai"}
+    )
     if ns.identity_worktree:
         return identity_worktree(repo)
     try:
         if ns.plan_tests or ns.run_selected_tests:
             plan = plan_tests(repo, ns.base_ref, ns.selection_config)
+            serialized = json.dumps(plan, ensure_ascii=False, indent=2)
+            if (
+                local_identity_guard.find_hits(serialized, identities)
+                or redact(serialized, repo) != serialized
+            ):
+                # Never hand a consumer redacted paths as executable selection.
+                plan = {
+                    "schema": "test-selection/v1",
+                    "status": "unresolved",
+                    "selected_tests": [],
+                    "checks": [],
+                    "unresolved": [
+                        {"reason": "private identity in plan; owner review required"}
+                    ],
+                }
             print(
                 (
                     json.dumps(plan, ensure_ascii=False, indent=2)
@@ -558,10 +599,11 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--selection-config requires --plan-tests or --run-selected-tests")
         steps = build_steps(repo, ns.mode, ns.base_ref)
     except (ValueError, OSError) as exc:
+        safe_error = local_identity_guard.redact(redact(str(exc), repo), identities)
         print(
-            json.dumps({"status": "unresolved", "error": redact(str(exc), repo)})
+            json.dumps({"status": "unresolved", "error": safe_error})
             if ns.json
-            else f"停止: {redact(str(exc), repo)}"
+            else f"停止: {safe_error}"
         )
         return 2
     except subprocess.CalledProcessError:
@@ -601,7 +643,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             rc = done.returncode
             log.write(f"===== {name}\n")
-            log.write(redact(done.stdout, repo))
+            log.write(
+                local_identity_guard.redact(redact(done.stdout, repo), identities)
+            )
             mark = "緑" if rc == 0 else "赤"
             print(f"{mark} {name} {time.monotonic() - t0:.1f}秒")
             if rc != 0:
