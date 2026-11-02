@@ -337,8 +337,7 @@ def build_proposals_from_scan(
                 question=(
                     "非公開の照合語や個人のパスに当たる内容が見つかりました。"
                     "値を本文へ書かずに検出箇所を直し、再検査しますか?"
-                    "（無視して進む選択肢はありません）"
-                    + PORTABLE_PATH_GUIDANCE
+                    "（無視して進む選択肢はありません）" + PORTABLE_PATH_GUIDANCE
                 ),
                 current={"finding_count": private_scan.get("finding_count")},
                 proposed={"action": "rewrite_private_values_then_rerun"},
