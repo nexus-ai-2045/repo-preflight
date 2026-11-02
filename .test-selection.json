@@ -95,6 +95,14 @@
         "tests/test_consistency_gate.py",
         "tests/test_gate_protection.py"
       ]
+    },
+    {
+      "changes": [
+        "tests/*.py"
+      ],
+      "tests": [
+        "tests/test_identity_fixture_exceptions.py"
+      ]
     }
   ]
 }
