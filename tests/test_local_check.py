@@ -1943,3 +1943,66 @@ def test_python_version_query_is_not_an_unresolved_script(repo):
     )
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected"
+
+
+@pytest.mark.parametrize(
+    "method", ["run", "Popen", "call", "check_call", "check_output"]
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_subprocess_args_keyword_keeps_python_consumer(repo, method, embedded):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    arguments = (
+        '[sys.executable,"-c","import scripts.pkg.alpha"]'
+        if embedded
+        else '[sys.executable,"pkg/alpha.py"],cwd="scripts"'
+    )
+    (repo / "tests/test_keyword.py").write_text(
+        "import subprocess,sys\nsubprocess." + method + "(args=" + arguments + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_keyword.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize("alias", ["OTHER=CMD", "MIDDLE=CMD\nOTHER=MIDDLE"])
+def test_immutable_python_command_alias_keeps_target(repo, alias):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess,sys\nCMD=(sys.executable,"pkg/alpha.py")\n'
+        + alias
+        + '\nsubprocess.run(OTHER,cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_command.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        '[sys.executable,"other.py"],args=[sys.executable,"pkg/alpha.py"]',
+        'args=[sys.executable,"pkg/alpha.py"],**runtime_options',
+    ],
+)
+def test_ambiguous_python_subprocess_arguments_remain_unknown(repo, arguments):
+    (repo / "tests/test_command.py").write_text(
+        "import subprocess,sys\nsubprocess.run(" + arguments + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_subprocess_result_object_and_generic_keyword_command_are_not_python_loaders(
+    repo,
+):
+    (repo / "tests/test_result.py").write_text(
+        'import subprocess,sys\nsubprocess.CompletedProcess(args=[sys.executable,"-c","import alpha"],returncode=0)\n'
+        "subprocess.run(args=runtime_external_command,**runtime_options)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]

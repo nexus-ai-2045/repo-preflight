@@ -40,6 +40,13 @@ else:
     local_identity_guard = sys.modules[_IDENTITY_KEY]
 
 ROOT = Path(__file__).resolve().parents[1]
+SUBPROCESS_CALLS = (
+    "subprocess.run",
+    "subprocess.Popen",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+)
 DEFAULT_SELECTION = {
     "source_roots": ["scripts"],
     "test_roots": ["tests"],
@@ -644,6 +651,23 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             ]
             return None if node.id in defined_ambiguous else defined_values.get(node.id)
 
+        def resolved_expression(node):
+            visited = set()
+            while isinstance(node, ast.Name) and node not in visited:
+                visited.add(node)
+                assigned = bound_expression(node)
+                if assigned is None:
+                    break
+                node = assigned
+            return node
+
+        def subprocess_argument(node):
+            keywords = [kw.value for kw in node.keywords if kw.arg == "args"]
+            if len(keywords) > 1 or (node.args and keywords):
+                issue("ambiguous subprocess args")
+                return None
+            return node.args[0] if node.args else (keywords[0] if keywords else None)
+
         def dotted(node, seen=frozenset()):
             defined_values, defined_aliases, _ = scope_tables[
                 node_scopes.get(node, tree)
@@ -747,25 +771,32 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             set_scope(node)
             if (
                 not isinstance(node, ast.Call)
-                or not dotted(node.func).startswith("subprocess.")
-                or not node.args
+                or dotted(node.func) not in SUBPROCESS_CALLS
             ):
                 continue
-            command = value(node.args[0])
-            expression = node.args[0]
-            if isinstance(expression, ast.Name):
-                expression = bound_expression(expression) or expression
+            argument = subprocess_argument(node)
+            if argument is None:
+                continue
+            command = value(argument)
+            expression = resolved_expression(argument)
             executable = (
                 dotted(expression.elts[0])
                 if isinstance(expression, (ast.List, ast.Tuple)) and expression.elts
                 else ""
             )
-            python = executable == "sys.executable" or (
-                isinstance(command, list)
-                and command
-                and isinstance(command[0], str)
-                and Path(command[0]).name.startswith("python")
+            python = (
+                known_python_command(argument)
+                or executable == "sys.executable"
+                or (
+                    isinstance(command, list)
+                    and command
+                    and isinstance(command[0], str)
+                    and Path(command[0]).name.startswith("python")
+                )
             )
+            if python and any(kw.arg is None for kw in node.keywords):
+                issue("opaque Python CLI keyword arguments")
+                continue
             if (
                 python
                 and isinstance(command, list)
@@ -1267,36 +1298,35 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                             else:
                                 for item in imported:
                                     module(target + "." + item)
-                elif (
-                    call
-                    in (
-                        "subprocess.run",
-                        "subprocess.Popen",
-                        "subprocess.call",
-                        "subprocess.check_call",
-                        "subprocess.check_output",
-                    )
-                    and node.args
-                ):
-                    command = value(node.args[0])
+                elif call in SUBPROCESS_CALLS:
+                    argument = subprocess_argument(node)
+                    if argument is None:
+                        continue
+                    command = value(argument)
                     if not isinstance(command, list) or not command:
-                        if known_python_command(node.args[0]):
+                        if known_python_command(argument):
                             issue("opaque Python CLI command construction")
                         continue
                     first = command[0]
-                    expression = node.args[0]
-                    if isinstance(expression, ast.Name):
-                        expression = bound_expression(expression) or expression
+                    expression = resolved_expression(argument)
                     executable = (
                         dotted(expression.elts[0])
                         if isinstance(expression, (ast.List, ast.Tuple))
                         and expression.elts
                         else ""
                     )
-                    python = executable == "sys.executable" or (
-                        isinstance(first, str) and Path(first).name.startswith("python")
+                    python = (
+                        known_python_command(argument)
+                        or executable == "sys.executable"
+                        or (
+                            isinstance(first, str)
+                            and Path(first).name.startswith("python")
+                        )
                     )
                     if python:
+                        if any(kw.arg is None for kw in node.keywords):
+                            issue("opaque Python CLI keyword arguments")
+                            continue
                         if node in embedded_nodes and "-c" in command:
                             issue(
                                 "nested embedded Python context requires owner mapping"
