@@ -1,0 +1,108 @@
+{
+  "schema": "test-selection-policy/v1",
+  "source_roots": [
+    "scripts"
+  ],
+  "test_roots": [
+    "tests"
+  ],
+  "test_patterns": [
+    "test_*.py"
+  ],
+  "code_suffixes": [
+    ".py"
+  ],
+  "rules": [
+    {
+      "changes": [
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "OPERATIONS.md",
+        "PREFLIGHT.md",
+        "PUBLIC_READY.md",
+        "README.md",
+        "REPO_GOAL.md",
+        "SECURITY.md"
+      ],
+      "tests": [
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "CHANGELOG.md",
+        "docs/*.md",
+        "references/*.md",
+        "docs/*.txt",
+        "docs/*.json",
+        "references/*.json",
+        "runtime/**",
+        "assets/**",
+        "templates/**",
+        "schemas/**",
+        "SKILL.md",
+        "AGENTS.md"
+      ],
+      "tests": [
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py"
+      ]
+    },
+    {
+      "changes": [
+        ".github/**",
+        ".test-selection.json",
+        "scripts/local_check.py"
+      ],
+      "tests": [
+        "tests/test_local_check.py",
+        "tests/test_consistency_gate.py",
+        "tests/test_base_guard.py",
+        "tests/test_gate_protection.py"
+      ]
+    },
+    {
+      "changes": [
+        "pyproject.toml",
+        "requirements*.txt",
+        "vendor/**"
+      ],
+      "tests": [
+        "tests/test_tool_wheel.py",
+        "tests/test_guard_requirements.py",
+        "tests/test_release_metadata.py",
+        "tests/test_runtime_support.py"
+      ]
+    },
+    {
+      "changes": [
+        "tests/conftest.py"
+      ],
+      "tests": [
+        "tests/test_fixture_policy_trust.py",
+        "tests/test_local_check.py",
+        "tests/test_identity_fixture_exceptions.py"
+      ]
+    },
+    {
+      "changes": [
+        ".repo-preflight-consistency.json",
+        ".repo-operating-contracts/**"
+      ],
+      "tests": [
+        "tests/test_consistency_gate.py",
+        "tests/test_gate_protection.py"
+      ]
+    },
+    {
+      "changes": [
+        "tests/*.py"
+      ],
+      "tests": [
+        "tests/test_identity_fixture_exceptions.py"
+      ]
+    }
+  ]
+}
