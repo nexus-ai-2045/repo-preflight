@@ -657,31 +657,36 @@ def parse_commit_identity(value: str) -> tuple[str, str]:
     return match.group(1), match.group(2)
 
 
+def parse_raw_commit(raw: str):
+    """Parse stored commit identities and body without changing raw framing."""
+    if not isinstance(raw, str) or "\n\n" not in raw:
+        raise ValueError("identity_commit_header_invalid")
+    headers, body = raw.split("\n\n", 1)
+    identities = {}
+    previous = None
+    # LF only: splitlines() would also consume controls that must be rejected.
+    for line in headers.split("\n"):
+        if line.startswith(" "):
+            if previous is None or previous in {"author", "committer"}:
+                raise ValueError("identity_commit_header_invalid")
+            continue
+        key, separator, value = line.partition(" ")
+        if not separator or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", key):
+            raise ValueError("identity_commit_header_invalid")
+        previous = key
+        if key in {"author", "committer"}:
+            if key in identities:
+                raise ValueError("identity_commit_header_invalid")
+            identities[key] = parse_commit_identity(value)
+    if set(identities) != {"author", "committer"}:
+        raise ValueError("identity_commit_header_invalid")
+    return identities, body
+
+
 def raw_commits(repo: str, rng: str, run_git):
     """整形ログの区切り文字に依存せず、保存された commit の名義と本文を読む。"""
     for oid in commit_ids(repo, rng, run_git):
-        raw = run_git(repo, "cat-file", "commit", oid)
-        if not isinstance(raw, str) or "\n\n" not in raw:
-            raise ValueError("identity_commit_header_invalid")
-        headers, body = raw.split("\n\n", 1)
-        identities = {}
-        previous = None
-        # splitlines() は RS 等も行境界にするため、絶対に使わない。
-        for line in headers.split("\n"):
-            if line.startswith(" "):
-                if previous is None or previous in {"author", "committer"}:
-                    raise ValueError("identity_commit_header_invalid")
-                continue
-            key, separator, value = line.partition(" ")
-            if not separator or not re.fullmatch(r"[A-Za-z][A-Za-z0-9-]*", key):
-                raise ValueError("identity_commit_header_invalid")
-            previous = key
-            if key in {"author", "committer"}:
-                if key in identities:
-                    raise ValueError("identity_commit_header_invalid")
-                identities[key] = parse_commit_identity(value)
-        if set(identities) != {"author", "committer"}:
-            raise ValueError("identity_commit_header_invalid")
+        identities, body = parse_raw_commit(run_git(repo, "cat-file", "commit", oid))
         yield oid, *identities["author"], *identities["committer"], body
 
 

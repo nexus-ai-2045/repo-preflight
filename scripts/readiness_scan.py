@@ -626,7 +626,7 @@ def load_identity_gate():
     return module
 
 
-def _identity_gate_result(repo, base_ref, identity_base_ref=None):
+def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="HEAD"):
     """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
     try:
@@ -639,7 +639,7 @@ def _identity_gate_result(repo, base_ref, identity_base_ref=None):
     except (OSError, UnicodeError, ValueError, TypeError, re.error):
         return {"status": "tool_error", "reason": "private_patterns_invalid"}
 
-    rng = f"{base_ref}..HEAD" if base_ref else "--all"
+    rng = f"{base_ref}..{head_ref}" if base_ref else "--all"
     try:
         issues = _ig.check_range(
             pol,
@@ -1820,6 +1820,32 @@ def verified_parent_blob(repo: Path, oid: str) -> bytes | None:
     return data
 
 
+def private_commit_identity_view(data: bytes, expected_identity: str) -> bytes:
+    """Mask only exact approved identity fields for the private denylist view."""
+    gate = load_identity_gate()
+    try:
+        expected = gate.parse_commit_identity(expected_identity + " 0 +0000")
+        raw = data.decode("utf-8")
+        identities, _ = gate.parse_raw_commit(raw)
+        if any(value != expected for value in identities.values()):
+            raise ValueError("private_commit_identity_mismatch")
+        headers, body = data.split(b"\n\n", 1)
+        expected_bytes = expected_identity.encode("utf-8")
+        lines = []
+        for line in headers.split(b"\n"):
+            key, separator, value = line.partition(b" ")
+            if key in {b"author", b"committer"}:
+                # Keep byte lengths and offsets, including other encoding views.
+                if not value.startswith(expected_bytes + b" "):
+                    raise ValueError("private_commit_identity_mismatch")
+                value = b" " * len(expected_bytes) + value[len(expected_bytes) :]
+                line = key + separator + value
+            lines.append(line)
+        return b"\n".join(lines) + b"\n\n" + body
+    except (UnicodeError, ValueError) as exc:
+        raise RuntimeError("private_commit_identity_unverified") from exc
+
+
 def history_hits(
     repo: Path,
     rev_args: tuple[str, ...] = ("--all",),
@@ -1827,6 +1853,8 @@ def history_hits(
     private_identity: PrivateIdentityScan | None = None,
     *,
     check_repository_names: bool = False,
+    approved_private_commit_identity: str | None = None,
+    check_raw_commit_payloads: bool = False,
 ) -> tuple[list[str], list[str]]:
     revisions = fixed_history_revisions(repo, rev_args)
     if private_identity is not None:
@@ -2137,6 +2165,17 @@ def history_hits(
                             if path_found:
                                 path_hits.add(f"history:{object_id[:12]}")
                         continue
+                if object_type == "commit" and check_raw_commit_payloads:
+                    # Inspect immutable payload even when another identity gate fails.
+                    if secret_matches(data):
+                        secret_hits.add(f"history:{object_id[:12]}")
+                    normalizer = (
+                        private_identity.path_normalizer if private_identity else None
+                    )
+                    if personal_path_matches(data) or normalized_personal_path_matches(
+                        data, normalizer
+                    ):
+                        path_hits.add(f"history:{object_id[:12]}")
                 if private_identity is not None:
                     if check_repository_names and object_type == "tree":
                         # Tree structure is checked without reclassifying unchanged sibling names.
@@ -2166,8 +2205,16 @@ def history_hits(
                             for alias in names
                         )
                     )
+                    identity_data = data
+                    if object_type == "commit" and approved_private_commit_identity:
+                        identity_data = private_commit_identity_view(
+                            data, approved_private_commit_identity
+                        )
+                        private_identity.report[
+                            "approved_private_commit_identity_fields"
+                        ] += 2
                     private_identity.check(
-                        data,
+                        identity_data,
                         reviewed_raw_paths=reviewed_raw,
                         source_names=(
                             tuple(names or ()) if object_type == "blob" else ()
@@ -3025,7 +3072,23 @@ def scan(
     require_private_identity: bool = False,
     allowed_identities: Path | None = None,
     media_inspection: str = "strict",
+    allow_expected_private_commit_identity: bool = False,
 ) -> dict:
+    if allow_expected_private_commit_identity and (
+        not private_submission or not base_ref or release or not expected_identity
+    ):
+        return {
+            "status": "tool_error",
+            "issues": ["invalid_private_commit_identity_scope"],
+        }
+    if allow_expected_private_commit_identity:
+        try:
+            load_identity_gate().parse_commit_identity(expected_identity + " 0 +0000")
+        except (TypeError, ValueError):
+            return {
+                "status": "tool_error",
+                "issues": ["invalid_private_commit_identity_scope"],
+            }
     if media_inspection not in {"strict", "metadata"} or (
         media_inspection == "metadata"
         and (
@@ -3400,6 +3463,22 @@ def scan(
                 or _bytes_pattern_hit(PATH_PATTERNS, xml)
             ):
                 path_hits.append(label)
+    identity_gate_report = None
+    if allow_expected_private_commit_identity:
+        identity_gate_report = _identity_gate_result(repo, base_oid, head_ref=head)
+    approved_private_commit_identity = None
+    if (
+        allow_expected_private_commit_identity
+        and identity_gate_report["status"] == "pass"
+    ):
+        approved_private_commit_identity = expected_identity
+        private_identity.report.update(
+            approved_private_commit_identity_fields=0,
+            approved_private_commit_identity_sha256=hashlib.sha256(
+                expected_identity.encode("utf-8")
+            ).hexdigest(),
+            approved_private_commit_identity_scope="live_private_committed_submission_author_committer_only",
+        )
     try:
         history_credential_findings, history_path_hits = history_hits(
             repo,
@@ -3411,6 +3490,16 @@ def scan(
             reviewed_exceptions,
             private_identity if private_identity.checker is not None else None,
             **({"check_repository_names": True} if private_submission else {}),
+            **(
+                {"approved_private_commit_identity": approved_private_commit_identity}
+                if approved_private_commit_identity is not None
+                else {}
+            ),
+            **(
+                {"check_raw_commit_payloads": True}
+                if allow_expected_private_commit_identity
+                else {}
+            ),
         )
         credential_finding_count += len(history_credential_findings)
     except RuntimeError:
@@ -3607,8 +3696,12 @@ def scan(
             repo, base_ref, allowed_identity_set
         ),
         "private_identity_scan": private_identity_report,
-        "identity_gate": _identity_gate_result(
-            repo, base_ref, identity_base[1] if identity_base is not None else None
+        "identity_gate": (
+            identity_gate_report
+            if identity_gate_report is not None
+            else _identity_gate_result(
+                repo, base_ref, identity_base[1] if identity_base is not None else None
+            )
         ),
         "commit_identity": {
             "status": (
@@ -3837,6 +3930,7 @@ class ScanOptions:
         reviewed_secret_exceptions: Path | None = None,
         allowed_identities: Path | None = None,
         media_inspection: str = "strict",
+        allow_expected_private_commit_identity: bool = False,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -3847,6 +3941,9 @@ class ScanOptions:
         self.intent = intent
         self.base_ref = base_ref
         self.private_submission = private_submission
+        self.allow_expected_private_commit_identity = (
+            allow_expected_private_commit_identity
+        )
         self.media_inspection = media_inspection
         self.consistency_base_ref = consistency_base_ref
         self.identity_base_ref = identity_base_ref
@@ -3892,6 +3989,7 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
         "interactive": options.interactive,
         "intent": options.intent,
         "private_submission": options.private_submission,
+        "allow_expected_private_commit_identity": options.allow_expected_private_commit_identity,
         "media_inspection": options.media_inspection,
         "base_ref": (
             sanitized_evidence_label(options.base_ref) if options.base_ref else None
@@ -3946,6 +4044,14 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
 
 def build_intent_dialogue(options: ScanOptions) -> dict:
     """AI が外部操作直前に使う質問パケットを作る。"""
+    if options.allow_expected_private_commit_identity and (
+        not options.private_submission
+        or not options.expected_identity
+        or not options.base_ref
+        or options.release
+        or options.intent not in {"push", "open_pr", "merge"}
+    ):
+        raise ValueError("invalid_private_commit_identity_scope")
     if options.media_inspection == "metadata" and not options.private_submission:
         raise ValueError("invalid_media_inspection_scope")
     if options.private_submission and (
@@ -3968,6 +4074,8 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
         }
         if options.private_submission:
             scan_kwargs["private_submission"] = True
+        if options.allow_expected_private_commit_identity:
+            scan_kwargs["allow_expected_private_commit_identity"] = True
         if options.media_inspection != "strict":
             scan_kwargs["media_inspection"] = options.media_inspection
         if options.base_ref:
@@ -3996,6 +4104,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 intent=options.intent,
                 base_ref=options.base_ref,
                 private_submission=options.private_submission,
+                allow_expected_private_commit_identity=options.allow_expected_private_commit_identity,
                 consistency_base_ref=options.consistency_base_ref,
                 identity_base_ref=options.identity_base_ref,
                 github_settings_profile=options.github_settings_profile,
@@ -4395,6 +4504,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="明示private provider/policyを必須にする。未設定をtool_errorで拒否する（intent操作では常に必須）。",
     )
     parser.add_argument(
+        "--allow-expected-private-commit-identity",
+        action="store_true",
+        help="live PRIVATE submissionの完全一致author/committer欄だけ期待名義を許可する。本文・秘密・path検査は維持する。",
+    )
+    parser.add_argument(
         "--expected-identity",
         help='Expected Git author and committer identity, for example "Example <dev@example.com>"',
     )
@@ -4452,6 +4566,19 @@ def resolve_options(
     base_ref = getattr(args, "base_ref", None)
     private_submission = getattr(args, "private_submission", False)
     media_inspection = getattr(args, "media_inspection", "strict")
+    allow_private_identity = getattr(
+        args, "allow_expected_private_commit_identity", False
+    )
+    if allow_private_identity and (
+        not private_submission
+        or not args.expected_identity
+        or not base_ref
+        or intent not in {"push", "open_pr", "merge"}
+        or args.release
+    ):
+        raise SystemExit(
+            "error: private commit identity requires explicit private submission and expected identity"
+        )
     if media_inspection == "metadata" and (
         not private_submission
         or intent not in {"push", "open_pr", "merge"}
@@ -4507,6 +4634,7 @@ def resolve_options(
         options.intent = intent
         options.base_ref = base_ref
         options.private_submission = private_submission
+        options.allow_expected_private_commit_identity = allow_private_identity
         options.media_inspection = media_inspection
         options.consistency_base_ref = consistency_base_ref
         options.identity_base_ref = identity_base_ref
@@ -4527,6 +4655,7 @@ def resolve_options(
             intent=intent,
             base_ref=base_ref,
             private_submission=private_submission,
+            allow_expected_private_commit_identity=allow_private_identity,
             media_inspection=media_inspection,
             consistency_base_ref=consistency_base_ref,
             identity_base_ref=identity_base_ref,
@@ -4549,6 +4678,7 @@ def resolve_options(
         intent=intent,
         base_ref=base_ref,
         private_submission=private_submission,
+        allow_expected_private_commit_identity=allow_private_identity,
         media_inspection=media_inspection,
         consistency_base_ref=consistency_base_ref,
         identity_base_ref=identity_base_ref,
@@ -4712,6 +4842,8 @@ def main(
         }
         if options.private_submission:
             scan_kwargs["private_submission"] = True
+        if options.allow_expected_private_commit_identity:
+            scan_kwargs["allow_expected_private_commit_identity"] = True
         if options.media_inspection != "strict":
             scan_kwargs["media_inspection"] = options.media_inspection
         if options.base_ref:

@@ -133,6 +133,14 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 このリストと名義用の `PREFLIGHT_PRIVATE_PATTERNS_FILE` のJSONは、責務と形式が異なります。名義・共同作者行を確認する既存gateと、正本の正規化検査を両方通してください。非公開のリストやJSONを公開リポジトリへコピーしないでください。
 
+### 非公開送信の承認済みcommit名義
+
+個人用の非公開repoで承認したGit名義を維持する場合は、`scripts/readiness_scan.py`の`--allow-expected-private-commit-identity`を明示できます。`--private-submission`、originの比較元を示す`--base-ref`、`--expected-identity`が必要です。対象intentは`push`・`open_pr`・`merge`に限ります。
+
+liveのPRIVATE・実送信先・固定base/headを照合し、既存の型付き名義policyが成功し、期待名義と完全一致したauthor/committer欄だけを、個人情報検査へ渡す派生viewで同byte長の空白に置換します。元のcommit bytes・OID・本文・未知headerは保持し、秘密情報と正規化pathは元bytesでも検査します。共同作者、本文、ファイル名、素材の許可には使えません。PUBLIC・不明な公開範囲・名義不一致・検査中のref変更は停止します。
+
+報告の`approved_private_commit_identity_fields`に扱った欄数、`approved_private_commit_identity_sha256`に期待名義のhash、`approved_private_commit_identity_scope`に適用範囲を記録します。名義の実値や設定値を公開文書へ加えません。この指定で既存の非公開policyを省略したり、push・PR・mergeの実行承認を発行したりはしません。
+
 共通CIと`preflight_ratchet.py`は、既定で`references/public-commit-identities.json`を使い、作者・コミッター・共同作者等を検査します。伏せ字や許可外の名義は`public_attribution`で失敗し、件数の基準値では免除しません。別の運用名義を使う導入先は、レビューした一覧を`--allowed-identities IDENTITIES.json`で明示してください。
 
 開発道具が本文へ付ける `Claude-Session` 行と、Claude Code のセッションURLも止めます。コミット本文は `public_attribution` と `identity_gate`、PR題名・本文・コメントは `identity_gate.py` のPRイベント検査、ファイルの中身は `secret_scan`（規則 `claude_session`）で数えます。値は出しません。
