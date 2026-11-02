@@ -587,12 +587,22 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         def edge(target):
             reverse.setdefault(target, set()).add(consumer)
 
-        def module(name):
+        def module(name, *, execute=False):
             candidates = modules.get(name, set())
             if len(candidates) > 1:
                 issue("ambiguous local module: " + name)
             for target in candidates:
                 edge(target)
+            if execute and (
+                not candidates or any(p.endswith("/__init__.py") for p in candidates)
+            ):
+                # run_module/package -m execute __main__; a normal import does not.
+                # The module index includes changed tombstones and namespace packages.
+                main_candidates = modules.get(name + ".__main__", set())
+                if len(main_candidates) > 1:
+                    issue("ambiguous package entrypoint: " + name)
+                for target in main_candidates:
+                    edge(target)
             for i in range(1, len(name.split("."))):
                 for target in modules.get(".".join(name.split(".")[:i]), set()):
                     if target.endswith("/__init__.py"):
@@ -1305,7 +1315,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                             except (ImportError, ValueError):
                                 issue("invalid relative import package")
                                 continue
-                        module(target)
+                        module(target, execute=call == "runpy.run_module")
                         if call == "__import__":
                             fromlist_arg = (
                                 node.args[3]
@@ -1407,7 +1417,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                             issue("opaque Python CLI target")
                         elif command[1] == "-m":
                             if len(command) > 2 and isinstance(command[2], str):
-                                module(command[2])
+                                if cwd not in ("", "."):
+                                    issue(
+                                        "Python CLI module cwd requires owner mapping"
+                                    )
+                                else:
+                                    module(command[2], execute=True)
                             else:
                                 issue("opaque Python CLI module")
                         elif command[1] != "-c":

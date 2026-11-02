@@ -2109,3 +2109,53 @@ def test_assigned_non_loader_reexport_does_not_block(repo, helper):
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected"
     assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+@pytest.mark.parametrize("namespace", [False, True])
+@pytest.mark.parametrize("execution", ["runpy", "cli"])
+def test_package_execution_tracks_main_file(repo, deleted, namespace, execution):
+    package = repo / "scripts/pkg"
+    package.mkdir()
+    if not namespace:
+        (package / "__init__.py").write_text("")
+    if not deleted:
+        (package / "__main__.py").write_text("VALUE = 1\n")
+    code = (
+        'import runpy\nrunpy.run_module("pkg", run_name="__main__")'
+        if execution == "runpy"
+        else 'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "pkg"])'
+    )
+    (repo / "tests/test_package.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_package.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "code", ["import pkg", 'import importlib\nimportlib.import_module("pkg")']
+)
+def test_package_import_does_not_execute_main(repo, code):
+    package = repo / "scripts/pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text("VALUE = 1\n")
+    (repo / "tests/test_package.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert "tests/test_package.py" not in result["selected_tests"]
+
+
+def test_python_module_execution_with_changed_cwd_requires_mapping(repo):
+    (repo / "tests/test_package.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "alpha"], cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("module cwd" in item["reason"] for item in result["unresolved"])
+
+
+def test_regular_module_execution_does_not_execute_package_main(repo):
+    (repo / "scripts/pkg.py").write_text("")
+    (repo / "tests/test_package.py").write_text('import runpy\nrunpy.run_module("pkg")')
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert "tests/test_package.py" not in result["selected_tests"]
