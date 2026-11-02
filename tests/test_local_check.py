@@ -886,9 +886,23 @@ def test_repository_contract_documents_keep_consumers(repo, document, consumer):
         "tests/test_consistency_gate.py",
     ]:
         (repo / name).write_text("DOCUMENT = " + repr(Path(document).name))
+    companions = {
+        "tests/test_runtime_support.py",
+        "tests/test_github_settings_guide.py",
+        "tests/test_ai_entry_contract.py",
+    }
+    for name in companions:
+        if not (repo / name).exists():
+            (repo / name).write_text("CONTRACT = True\n")
     plan = local_check.select_tests(repo, [document], policy)
     assert plan["status"] == "selected"
     assert consumer in plan["selected_tests"]
+    if document == "CHANGELOG.md":
+        assert companions | {
+            consumer,
+            "tests/test_public_narrative_contract.py",
+            "tests/test_consistency_gate.py",
+        } <= set(plan["selected_tests"])
 
 
 def test_mapped_conftest_cannot_hide_implicit_fixture_impact(repo):
