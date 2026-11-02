@@ -103,13 +103,34 @@ def _selection_config(repo: Path, config_path: Path | None = None) -> dict:
     return config
 
 
+def _root_files(repo: Path, root: str):
+    omitted = {
+        ".git",
+        ".local",
+        ".worktrees",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+    }
+    for current, directories, files in os.walk(repo / root):
+        directories[:] = sorted(name for name in directories if name not in omitted)
+        for name in sorted(files):
+            yield Path(current) / name
+
+
+def _within_root(name: str, root: str) -> bool:
+    prefix = Path(root).as_posix().rstrip("/")
+    return prefix == "." or name.startswith(prefix + "/")
+
+
 def _module_texts(
     repo: Path, roots: list[str], suffixes: list[str]
 ) -> list[tuple[str, str]]:
     return [
         (p.stem, p.read_text(encoding="utf-8", errors="replace"))
         for root in roots
-        for p in (repo / root).rglob("*")
+        for p in _root_files(repo, root)
         if p.is_file()
         and p.suffix in suffixes
         and _safe_relative(repo, p.relative_to(repo).as_posix())
@@ -159,7 +180,7 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
         {
             _safe_relative(repo, p.relative_to(repo).as_posix())
             for root in policy["test_roots"]
-            for p in (repo / root).rglob("*")
+            for p in _root_files(repo, root)
             if p.is_file()
             and any(fnmatch.fnmatchcase(p.name, pat) for pat in policy["test_patterns"])
         }
@@ -263,9 +284,7 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
                 "owner mapped dependency scope; automatic closure omitted"
             )
             continue
-        in_tests = any(
-            name.startswith(root.rstrip("/") + "/") for root in policy["test_roots"]
-        )
+        in_tests = any(_within_root(name, root) for root in policy["test_roots"])
         deleted_test = (
             in_tests
             and name not in all_tests
@@ -276,9 +295,7 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
         if deleted_test:
             file_reasons[name].append("deleted test; inspect remaining consumers")
         code = Path(name).suffix in policy["code_suffixes"]
-        in_sources = any(
-            name.startswith(root.rstrip("/") + "/") for root in policy["source_roots"]
-        )
+        in_sources = any(_within_root(name, root) for root in policy["source_roots"])
         if code and (in_sources or in_tests):
             pattern = consumers_pattern(
                 Path(name).stem, repo, roots, policy["code_suffixes"], modules

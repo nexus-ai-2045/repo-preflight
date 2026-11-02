@@ -251,6 +251,19 @@ def test_no_test_rule_distinguishes_irrelevant_change(repo):
     assert plan["file_reasons"]["notes.txt"]
 
 
+def test_repository_root_sources_select_top_level_consumers(repo):
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests/test_app.py").write_text("import app\n", encoding="utf-8")
+    for directory in (".venv", "node_modules", ".worktrees", ".local"):
+        ignored = repo / directory
+        ignored.mkdir()
+        (ignored / "bridge.py").write_text("import app\n", encoding="utf-8")
+    (repo / "tests/test_ignored.py").write_text("import bridge\n", encoding="utf-8")
+    plan = local_check.select_tests(repo, ["app.py"], {"source_roots": ["."]})
+    assert plan["status"] == "selected"
+    assert plan["selected_tests"] == ["tests/test_app.py"]
+
+
 def test_configured_consumer_roots_and_string_references(repo):
     (repo / "lib").mkdir()
     (repo / "spec").mkdir()
