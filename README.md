@@ -84,6 +84,19 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 
 保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
 
+## 個人のパスで止まった時の書き方
+
+テストや例に置く架空のパスは、`"\\".join(("C:", "Users", ...))` のような文字列の連結で組み立てると、個人のパスとして止まります。OSの違いを吸収する標準ライブラリ `pathlib` の `PureWindowsPath`（Windows）や `PurePosixPath`（Mac・Linux）で組み立ててください。
+
+```python
+from pathlib import PurePosixPath, PureWindowsPath
+
+windows_sample = str(PureWindowsPath("C:/", "Users", "fixture-person", "notes.txt"))
+posix_sample = str(PurePosixPath("/", "home", "fixture-person", "notes.txt"))
+```
+
+実際のホームを使うコードは、`Path.home()` や `Path(...).expanduser()` で環境変数（`HOME`、Windowsでは `USERPROFILE`）から読み、値をファイルに書き込まないでください。止まった時の確認事項（`--intent`）にも同じ案内を出します。
+
 ## 制約
 
 - 既知の形式による検出であり、個人情報の最終判断、権利確認、依存ライブラリの脆弱性検査は行いません。

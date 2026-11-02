@@ -50,6 +50,14 @@ AGENT_INSTRUCTIONS = (
 )
 
 
+PORTABLE_PATH_GUIDANCE = (
+    "テスト用の架空パスは文字列の連結で組まず、"
+    "pathlib の PureWindowsPath または PurePosixPath で組み立ててください。"
+    "実際のホームは Path.home() または Path(...).expanduser() で"
+    "環境変数から読み、値を書き込まないでください。"
+)
+
+
 def _proposal(
     *,
     id: str,
@@ -307,11 +315,35 @@ def build_proposals_from_scan(
                 question=(
                     "個人環境の絶対パス候補が見つかりました。"
                     "公開・共有前に除去しますか?（無視して進む選択肢はありません）"
+                    + PORTABLE_PATH_GUIDANCE
                 ),
                 current={"file_count": len(paths.get("files") or [])},
                 proposed={"action": "redact_personal_paths_then_rerun"},
                 options=[
                     {"id": "fix", "label": "除去して再検査"},
+                    {"id": "stop", "label": "中止する"},
+                ],
+                default="fix",
+            )
+        )
+
+    private_scan = checks.get("private_identity_scan") or {}
+    if private_scan.get("status") == "fail":
+        proposals.append(
+            _proposal(
+                id="resolve_private_identity_scan",
+                kind="privacy_hold",
+                severity="required",
+                question=(
+                    "非公開の照合語や個人のパスに当たる内容が見つかりました。"
+                    "値を本文へ書かずに検出箇所を直し、再検査しますか?"
+                    "（無視して進む選択肢はありません）"
+                    + PORTABLE_PATH_GUIDANCE
+                ),
+                current={"finding_count": private_scan.get("finding_count")},
+                proposed={"action": "rewrite_private_values_then_rerun"},
+                options=[
+                    {"id": "fix", "label": "検出箇所を直して再検査"},
                     {"id": "stop", "label": "中止する"},
                 ],
                 default="fix",

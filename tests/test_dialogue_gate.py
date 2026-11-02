@@ -3,7 +3,7 @@ import json
 import subprocess
 import sys
 from io import StringIO
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_SCRIPT = ROOT / "scripts" / "readiness_scan.py"
@@ -587,3 +587,31 @@ def test_private_identity_failure_has_non_dismissible_hold(tmp_path):
     assert hold["dismissible"] is False
     assert {o["id"] for o in hold["options"]} == {"fix", "stop"}
     assert "synthetic-private-identity-marker" not in json.dumps(report)
+
+
+def test_personal_path_hold_explains_portable_path_forms(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    sample = str(PurePosixPath("/", "Users", "fixture-person", "notes.txt"))
+    (repo / "notes.md").write_text(sample + "\n", encoding="utf-8")
+    scan = SCAN.scan(repo)
+    report = DIALOGUE.build_dialogue(intent="push", scan=scan)
+    hold = next(p for p in report["proposals"] if p["id"] == "resolve_personal_paths")
+    assert "PureWindowsPath" in hold["question"]
+    assert "PurePosixPath" in hold["question"]
+    assert "Path.home()" in hold["question"]
+    assert {o["id"] for o in hold["options"]} == {"fix", "stop"}
+
+
+def test_private_identity_scan_failure_has_hold_with_guidance():
+    scan = {
+        "status": "blocked",
+        "checks": {"private_identity_scan": {"status": "fail", "finding_count": 2}},
+    }
+    report = DIALOGUE.build_dialogue(intent="push", scan=scan)
+    hold = next(
+        p for p in report["proposals"] if p["id"] == "resolve_private_identity_scan"
+    )
+    assert hold["dismissible"] is False
+    assert hold["current"] == {"finding_count": 2}
+    assert "PureWindowsPath" in hold["question"]
+    assert {o["id"] for o in hold["options"]} == {"fix", "stop"}
