@@ -2373,3 +2373,76 @@ def test_class_loader_alias_cannot_disappear_after_value_rejection(repo, code):
     assert any(
         "class body binding value" in item["reason"] for item in result["unresolved"]
     )
+
+
+@pytest.mark.parametrize("namespace", ["globals()", "locals()", "vars()", "ns()"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_reflective_namespace_cannot_hide_binding_changes(repo, namespace, embedded):
+    code = (
+        'import importlib\nfrom builtins import globals as ns\nNAME="beta"\n'
+        + namespace
+        + '["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_reflective.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_reflective.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "setup,call",
+    [
+        ("", "vars(obj)"),
+        ("inspect=vars\n", "inspect(obj)"),
+        ("from builtins import vars as inspect\n", "inspect(obj)"),
+    ],
+)
+def test_object_vars_observation_does_not_claim_lexical_namespace_mutation(
+    repo, setup, call
+):
+    (repo / "tests/test_object.py").write_text(
+        "import alpha\nfrom types import SimpleNamespace\nobj=SimpleNamespace()\n"
+        + setup
+        + call
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_beta.py" in result["selected_tests"]
+    assert "tests/test_object.py" not in result["selected_tests"]
+
+
+def test_zero_argument_vars_alias_remains_unsupported(repo):
+    (repo / "tests/test_reflective.py").write_text(
+        'import importlib\nNAME="beta"\ninspect=vars\ninspect()["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "lexical namespace reflection" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "call", ["vars(*())", "vars(**{})", "inspect(*())", "inspect(**{})"]
+)
+def test_vars_expanded_arity_cannot_hide_lexical_namespace(repo, call):
+    (repo / "tests/test_reflective.py").write_text(
+        'import importlib\nNAME="beta"\ninspect=vars\nNS='
+        + call
+        + '\nNS["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "lexical namespace reflection" in item["reason"]
+        for item in result["unresolved"]
+    )

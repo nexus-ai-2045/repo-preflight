@@ -935,18 +935,33 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 continue
             set_scope(reference)
             name = dotted(reference)
+            parent = parents.get(reference)
+            bound = (
+                isinstance(parent, ast.Assign)
+                and len(parent.targets) == 1
+                and isinstance(parent.targets[0], ast.Name)
+                and values.get(parent.targets[0].id) is reference
+            )
+            called = isinstance(parent, ast.Call) and parent.func is reference
+            if name in ("globals", "locals", "builtins.globals", "builtins.locals") or (
+                name in ("vars", "builtins.vars")
+                and (
+                    called
+                    and (
+                        len(parent.args) != 1
+                        or isinstance(parent.args[0], ast.Starred)
+                        or parent.keywords
+                    )
+                    or not called
+                    and not bound
+                )
+            ):
+                issue("lexical namespace reflection requires owner mapping: " + name)
             if loader_reexport(name):
                 issue("loader re-export requires owner mapping")
-            parent = parents.get(reference)
             if name in STDLIB_LOADERS and not (
                 isinstance(parent, ast.Call) and parent.func is reference
             ):
-                bound = (
-                    isinstance(parent, ast.Assign)
-                    and len(parent.targets) == 1
-                    and isinstance(parent.targets[0], ast.Name)
-                    and values.get(parent.targets[0].id) is reference
-                )
                 if not bound:
                     issue("opaque loader reference escape: " + name)
             key = (consumer if reference not in embedded_nodes else "", name)
