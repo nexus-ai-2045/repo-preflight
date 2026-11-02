@@ -2006,3 +2006,85 @@ def test_subprocess_result_object_and_generic_keyword_command_are_not_python_loa
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected"
     assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize("consumer,extra", [
+    ('from helper import load\nload("alpha")', {}),
+    ('import helper\nhelper.load("alpha")', {}),
+    ('from middle import load\nload("alpha")',
+     {"scripts/middle.py": "from helper import load\n"}),
+    ('from pkg.client import load\nload("alpha")',
+     {"scripts/pkg/client.py": "from .helper import load\n",
+      "scripts/pkg/helper.py": "from helper import load\n"}),
+    ('from pkg import helper\nhelper.load("alpha")',
+     {"scripts/pkg/helper.py": "from importlib import import_module as load\n"}),
+    ('from helper import *\nload("alpha")', {}),
+])
+def test_standard_loader_reexports_keep_consumer_or_stop(repo, consumer, extra):
+    (repo / "scripts/helper.py").write_text("from importlib import import_module as load\n")
+    for name, body in extra.items():
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body)
+    (repo / "tests/test_reexport.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("loader re-export" in item["reason"] for item in result["unresolved"])
+
+
+@pytest.mark.parametrize("source", [
+    "from runpy import run_path as load",
+    "from runpy import run_module as load",
+    "from importlib.util import spec_from_file_location as load",
+    "from builtins import __import__ as load",
+])
+def test_other_standard_loader_reexports_require_owner_mapping(repo, source):
+    (repo / "scripts/helper.py").write_text(source)
+    (repo / "tests/test_reexport.py").write_text('from helper import load\nload(runtime_target)')
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_ordinary_and_cyclic_reexports_do_not_become_loaders(repo):
+    (repo / "scripts/helper.py").write_text("from math import sqrt as load\nfrom middle import other\n")
+    (repo / "scripts/middle.py").write_text("from helper import other\n")
+    (repo / "tests/test_reexport.py").write_text("from helper import load\nload(4)\nimport alpha\n")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_reexport.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize("shadow", [
+    "condition = False\nif condition:\n    from math import sqrt as load\n",
+    "try:\n    from math import sqrt as load\nexcept ImportError:\n    pass\n",
+])
+def test_conditional_import_shadow_preserves_loader_reexport_taint(repo, shadow):
+    (repo / "scripts/helper.py").write_text(
+        "from importlib import import_module as load\n" + shadow
+    )
+    (repo / "tests/test_reexport.py").write_text(
+        'from helper import load\nload("alpha")\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        item["file"] == "tests/test_reexport.py"
+        and "loader re-export" in item["reason"]
+        for item in result["unresolved"]
+    )
+    mapped = local_check.select_tests(repo, ["scripts/alpha.py"], {
+        "rules": [{"changes": ["scripts/alpha.py"], "tests": ["tests/test_reexport.py"]}]
+    })
+    assert mapped["status"] == "selected"
+    assert "tests/test_reexport.py" in mapped["selected_tests"]
+
+
+def test_unconditional_ordinary_import_shadow_does_not_taint_loader_exports(repo):
+    (repo / "scripts/helper.py").write_text(
+        "from math import sin as load\nfrom math import sqrt as load\n"
+        "def hidden():\n    from importlib import import_module as load\n"
+    )
+    (repo / "tests/test_reexport.py").write_text("from helper import load\nload(4)\n")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]

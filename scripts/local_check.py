@@ -141,7 +141,7 @@ def _reference_path(value: str) -> PurePosixPath:
     return PurePosixPath(value.replace("\\", "/"))
 
 
-def _lexical_scopes(tree, package=""):
+def _lexical_scopes(tree, package="", *, import_candidates=None):
     """One binding table per lexical scope; never borrow another function's locals."""
     scopes = {}
     tables = {}
@@ -305,6 +305,30 @@ def _lexical_scopes(tree, package=""):
                 for name in node.names:
                     bind(name, None)
                     bind(name, None)
+        if import_candidates is not None:
+            # Keep every possible import binding in this lexical namespace.
+            # The final alias alone loses loaders hidden by a conditional import.
+            candidates = import_candidates.setdefault(scope, {})
+            for node in local:
+                if isinstance(node, ast.Import):
+                    for entry in node.names:
+                        name = entry.asname or entry.name.split(".")[0]
+                        candidates.setdefault(name, set()).add(
+                            entry.name if entry.asname else entry.name.split(".")[0]
+                        )
+                elif isinstance(node, ast.ImportFrom):
+                    prefix = node.module or ""
+                    if node.level:
+                        try:
+                            prefix = importlib.util.resolve_name(
+                                "." * node.level + prefix, package
+                            )
+                        except (ImportError, ValueError):
+                            prefix = "__unknown_relative_package__"
+                    for entry in node.names:
+                        candidates.setdefault(entry.asname or entry.name, set()).add(
+                            prefix + "." + entry.name
+                        )
         values, aliases, ambiguous = (
             dict(inherited[0]),
             dict(inherited[1]),
@@ -550,12 +574,15 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
     ]
     trees = {}
     scopes_by_file = {}
+    import_candidates_by_file = {}
     for path in sorted(paths):
         if path.endswith(".py") and (repo / path).is_file():
             try:
                 trees[path] = ast.parse((repo / path).read_text(encoding="utf-8"))
+                import_candidates_by_file[path] = {}
                 scopes_by_file[path] = _lexical_scopes(
-                    trees[path], ".".join(Path(path).parent.parts)
+                    trees[path], ".".join(Path(path).parent.parts),
+                    import_candidates=import_candidates_by_file[path],
                 )
             except (SyntaxError, UnicodeError):
                 issues.append(
@@ -565,6 +592,36 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     }
                 )
     summaries = _loader_summaries(trees, scopes_by_file)
+    # Reuse lexical import aliases, including resolved relative imports. Propagate
+    # standard-loader exports until multi-hop imports reach a fixed point.
+    loader_exports = {path: set() for path in trees}
+    standard_loaders = {
+        "importlib.import_module",
+        "importlib.util.spec_from_file_location",
+        "runpy.run_path",
+        "runpy.run_module",
+        "builtins.__import__",
+    }
+    pending = True
+    while pending:
+        pending = False
+        for path, tree in trees.items():
+            aliases = import_candidates_by_file[path][tree]
+            for name, exported in (
+                (name, candidate)
+                for name, candidates in aliases.items()
+                for candidate in candidates
+            ):
+                origin, _, symbol = exported.rpartition(".")
+                if exported in standard_loaders or any(
+                    symbol in loader_exports[owner]
+                    or (symbol == "*" and loader_exports[owner])
+                    for owner in modules.get(origin, set())
+                    if owner in loader_exports
+                ):
+                    if name not in loader_exports[path]:
+                        loader_exports[path].add(name)
+                        pending = True
     for consumer in sorted(paths):
         if not consumer.endswith(".py") or not (repo / consumer).is_file():
             continue
@@ -923,6 +980,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             if isinstance(node, ast.Import):
                 for entry in node.names:
                     module(entry.name)
+                    if any(
+                        loader_exports.get(owner)
+                        for owner in modules.get(entry.name, set())
+                    ):
+                        issue("loader re-export requires owner mapping")
             elif isinstance(node, ast.ImportFrom):
                 if node.level and node in embedded_nodes:
                     issue("embedded relative import package is unknown")
@@ -946,7 +1008,19 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     ):
                         issue("loader star import requires owner mapping")
                     module(prefix + "." + entry.name)
+                    if any(
+                        loader_exports.get(owner)
+                        for owner in modules.get(prefix + "." + entry.name, set())
+                    ):
+                        issue("loader re-export requires owner mapping")
                     for owner in modules.get(prefix, set()):
+                        exports = loader_exports.get(owner, set())
+                        if (
+                            entry.name in exports
+                            or "*" in exports
+                            or (entry.name == "*" and exports)
+                        ):
+                            issue("loader re-export requires owner mapping")
                         if entry.name == "*" and any(
                             key[0] == owner for key in summaries
                         ):
