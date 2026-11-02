@@ -350,6 +350,7 @@ def _lexical_scopes(tree, package=""):
     visit_scope(tree, ({}, {}, set()))
     # Declarations can mutate the original binding observed by enclosing readers.
     # Invalidate that origin and its inherited copies, not unrelated local names.
+    uncertain_origins = set()
     for declaration in ast.walk(tree):
         if not isinstance(declaration, (ast.Global, ast.Nonlocal)):
             continue
@@ -360,10 +361,25 @@ def _lexical_scopes(tree, package=""):
                 if isinstance(declaration, ast.Global)
                 else owners.get(enclosing.get(scope), {}).get(name)
             )
-            for reader, bindings in owners.items():
-                if bindings.get(name) is origin and origin is not None:
-                    tables[reader][0].pop(name, None)
-                    tables[reader][2].add(name)
+            uncertain_origins.add((origin, name))
+    # A list shared under another name can be mutated through that name. Keep
+    # its Python-prefix provenance, but do not keep a resolved command value.
+    for bindings in origins.values():
+        for expressions in bindings.values():
+            for expression in expressions:
+                if not isinstance(expression, ast.Name):
+                    continue
+                origin = owners[scopes[expression]].get(expression.id)
+                if any(
+                    isinstance(candidate, ast.List)
+                    for candidate in origins.get(origin, {}).get(expression.id, [])
+                ):
+                    uncertain_origins.add((origin, expression.id))
+    for origin, name in uncertain_origins:
+        for reader, bindings in owners.items():
+            if bindings.get(name) is origin and origin is not None:
+                tables[reader][0].pop(name, None)
+                tables[reader][2].add(name)
     return scopes, tables, origins
 
 
@@ -1169,9 +1185,15 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         if len(candidates) == 1:
                             target = next(iter(candidates))
                         elif not candidates and len(literals) == 1:
-                            # A fixed filename outside the local/tombstone universe
-                            # cannot consume this repository's changed producer.
-                            target = next(iter(literals))
+                            literal = next(iter(literals))
+                            # An unknown prefix cannot exclude a known local
+                            # basename just because the partial path differs.
+                            if not any(
+                                _reference_path(path).name
+                                == _reference_path(literal).name
+                                for path in paths
+                            ):
+                                target = literal
                     if call in ("exec", "eval") or not isinstance(target, str):
                         issue("opaque loader: " + call)
                     elif call.endswith(("run_path", "spec_from_file_location")):
@@ -1313,6 +1335,13 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                             else:
                                 issue("opaque Python CLI module")
                         elif command[1] != "-c":
+                            if command[1] in ("-V", "--version", "-h", "--help"):
+                                continue
+                            if isinstance(command[1], str) and command[1].startswith(
+                                "-"
+                            ):
+                                issue("unsupported Python CLI option")
+                                continue
                             if (
                                 isinstance(command[1], str)
                                 and ".." not in Path(command[1]).parts

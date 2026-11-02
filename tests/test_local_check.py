@@ -1887,3 +1887,59 @@ def test_extensionless_basename_does_not_guess_another_directory(repo):
     result = local_check.select_tests(repo, ["assets/config"], policy)
     assert result["status"] == "selected"
     assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+@pytest.mark.parametrize("option", ["-O", "-OO", "-X"])
+def test_unsupported_python_option_is_not_a_filename(repo, option):
+    (repo / "tests/test_command.py").write_text(
+        "import subprocess, sys\nsubprocess.run([sys.executable, "
+        + repr(option)
+        + ', "-m", "alpha"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "loader", ["runpy.run_path", "importlib.util.spec_from_file_location"]
+)
+def test_unknown_loader_prefix_is_not_proven_external(repo, loader):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    target = 'Path(os.environ["SOURCE_ROOT"]) / "pkg/alpha.py"'
+    arguments = target if loader == "runpy.run_path" else '"loaded", ' + target
+    (repo / "tests/test_prefix.py").write_text(
+        "import os, runpy, importlib.util\nfrom pathlib import Path\n"
+        + loader
+        + "("
+        + arguments
+        + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "OTHER=CMD\nOTHER[1]=runtime_target",
+        "OTHER=CMD\nTHIRD=OTHER\nTHIRD.insert(1,runtime_target)",
+    ],
+)
+def test_mutable_command_alias_does_not_leave_original_resolved(repo, alias):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"pkg/beta.py"]\n'
+        + alias
+        + '\nsubprocess.run(CMD,cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_python_version_query_is_not_an_unresolved_script(repo):
+    (repo / "tests/test_version.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable,"--version"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
