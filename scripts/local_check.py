@@ -335,6 +335,17 @@ def _lexical_scopes(tree, package=""):
             if name in inherited[1] and name not in imports:
                 aliases[name] = inherited[1][name]
                 ambiguous.add(name)
+        if any(
+            isinstance(node, ast.ImportFrom)
+            and any(entry.name == "*" for entry in node.names)
+            for node in local
+        ):
+            # Exported names are not proved; a star import may overwrite any binding.
+            ambiguous.update(values)
+            ambiguous.update(aliases)
+            values.clear()
+        if isinstance(scope, ast.ClassDef):
+            ambiguous.update(imports)
         tables[scope] = values, aliases, ambiguous
         origins[scope] = {**(inherited_origins or {}), **binding_origins}
         for declaration in local:
@@ -694,9 +705,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         def bound_expression(node):
             if not isinstance(node, ast.Name):
                 return None
-            defined_values, _, defined_ambiguous = scope_tables[
-                node_scopes.get(node, tree)
-            ]
+            scope = node_scopes.get(node, tree)
+            defined_values, _, defined_ambiguous = scope_tables[scope]
+            if isinstance(scope, ast.ClassDef):
+                if node.id in defined_values or node.id in defined_ambiguous:
+                    issue("class body binding value requires owner mapping")
+                return None
             return None if node.id in defined_ambiguous else defined_values.get(node.id)
 
         def resolved_expression(node):
@@ -755,6 +769,8 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 assigned = bound_expression(node)
                 binding_key = (node_scopes.get(node, tree), node.id)
                 if assigned is not None and binding_key not in seen:
+                    if isinstance(assigned, ast.List):
+                        return None
                     return value(assigned, seen | {binding_key})
             if isinstance(node, ast.Call):
                 if dotted(node.func) in ("pathlib.Path", "Path", "str") and node.args:
@@ -971,6 +987,13 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     )
         for node in nodes:
             set_scope(node)
+            if (
+                isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and isinstance(node_scopes.get(node), ast.ClassDef)
+                and node.id in ambiguous
+            ):
+                issue("class body binding value requires owner mapping")
             if isinstance(
                 node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
             ):

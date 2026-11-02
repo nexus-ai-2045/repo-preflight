@@ -80,7 +80,7 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 
 テストの対象と必要な環境は各repositoryが所有します。共通ゲートは利用側のpytestを一律に起動しません。差分の選択処理は `scripts/local_check.py` で再利用でき、対象・根拠・未解決と版hashを返します。コマンドと設定は[関連検査の運用](OPERATIONS.md)を参照してください。各repositoryのpolicyがroot・関連範囲・明示対応を定め、runnerが選択したtestと必要な検査を実行します。対応不明を全件実行や対象なしへ置き換えません。
 
-本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。
+本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。 star importの束縛、class本体（メソッドのdefault式を含む）で束縛値を必要とするbare nameの静的評価、変数名を経由する可変listのcommand値は静的に確定せず、対応不明としてowner mappingを求めます。確実なimport文の依存、メソッド実行内部の通常scope、直接のliteral argvと不変tupleのargvは維持します。これはPython全体の実行順や外部関数の副作用を推測しないための境界です。
 
 `source_roots` / `test_roots` は repository 相対のディレクトリまたは個別ファイルを指定できます。ディレクトリは再帰列挙し、ファイルは一件だけを親ディレクトリ基準で解析します。重複は一度だけ解析し、`"."` と既存の path・symlink 境界検査を維持します。宣言外の新しいコード変更は、明示 rule がなければ未知として停止します。
 

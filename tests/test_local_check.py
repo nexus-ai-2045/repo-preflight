@@ -1703,11 +1703,25 @@ def test_loader_parent_traversal_still_requires_owner_mapping(repo):
     assert any("path escape" in item["reason"] for item in result["unresolved"])
 
 
-def test_method_default_uses_class_namespace_not_method_body(repo):
+def test_method_default_class_names_require_owner_mapping(repo):
     (repo / "tests/test_header.py").write_text(
         'import importlib\nNAME="beta"\nclass Holder:\n NAME="alpha"\n def reader(arg=importlib.import_module(NAME)):\n  NAME="beta"'
     )
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "class body binding value" in item["reason"] for item in result["unresolved"]
+    )
+    policy = {
+        "rules": [
+            {
+                "changes": ["scripts/alpha.py"],
+                "dependency_mode": "mapped",
+                "tests": ["tests/test_alpha.py", "tests/test_header.py"],
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
     assert result["status"] == "selected", result["unresolved"]
     assert "tests/test_header.py" in result["selected_tests"]
 
@@ -2277,3 +2291,85 @@ def test_invalid_summary_filename_base_remains_unresolved(repo):
     )
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize("kind", ["star", "class", "mutable_escape"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_unproved_scope_or_mutable_binding_cannot_hide_alpha_consumer(
+    repo, kind, embedded
+):
+    (repo / "scripts/settings.py").write_text('NAME="alpha"\n')
+    code = {
+        "star": 'import importlib\nNAME="beta"\nfrom settings import *\nimportlib.import_module(NAME)',
+        "class": 'import importlib\nNAME="alpha"\nclass Holder:\n module=importlib.import_module(NAME)\n NAME="beta"',
+        "mutable_escape": 'import subprocess, sys\ndef rewrite(cmd):\n cmd[1]="scripts/" + "".join(("al", "pha")) + ".py"\nCMD=[sys.executable, "scripts/beta.py"]\nrewrite(CMD)\nsubprocess.run(CMD)',
+    }[kind]
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_unproved.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_unproved.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['[sys.executable, "scripts/alpha.py"]', '(sys.executable, "scripts/alpha.py")'],
+)
+def test_direct_literal_or_immutable_tuple_command_remains_supported(repo, command):
+    code = "import subprocess, sys\n"
+    code += (
+        "CMD=" + command + "\nsubprocess.run(CMD)"
+        if command.startswith("(")
+        else "subprocess.run(" + command + ")"
+    )
+    (repo / "tests/test_supported_command.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_supported_command.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "class Holder:\n import alpha",
+        'import importlib\nNAME="alpha"\nclass Holder:\n NAME="beta"\n def reader(self):\n  return importlib.import_module(NAME)',
+    ],
+)
+def test_class_import_edges_and_method_execution_scope_remain_supported(repo, code):
+    (repo / "tests/test_supported_class.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_supported_class.py" in result["selected_tests"]
+
+
+def test_mutable_command_name_is_unknown_without_mutator_enumeration(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"scripts/beta.py"]\n'
+        'def rewrite():\n CMD[1]="scripts/" + "".join(("al","pha")) + ".py"\nrewrite()\nsubprocess.run(CMD)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("opaque Python" in item["reason"] for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'import importlib\nNAME="alpha"\nclass Holder:\n alias=importlib.import_module\n module=alias(NAME)',
+        'from runpy import run_module as load\nclass Holder:\n module=load("pkg")\n from importlib import import_module as load',
+    ],
+)
+def test_class_loader_alias_cannot_disappear_after_value_rejection(repo, code):
+    (repo / "tests/test_alias.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "class body binding value" in item["reason"] for item in result["unresolved"]
+    )
