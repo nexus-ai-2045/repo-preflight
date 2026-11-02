@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### CI の環境を必要な分に絞る
+
+- CI の環境を 7 つから 4 つにした（ubuntu の Python 3.11・3.13、Windows の 3.13、macOS の 3.9）。Mac の 3.11・3.13 と Linux の 3.9 を外した。直近 16 回の CI 失敗のうち、これらの環境だけで落ちた回は 0 回で、いつも残す環境と一緒に落ちていた。job の合計時間はおよそ半分になる。必須チェック `test (3.11)`・`test (3.13)` の名前は変えていない。
+
 ### 依存の警告を解消
 
 - optional の `media`・`test` 依存の pypdf を 6.21.2 から 6.21.4 に上げ、GitHub の Dependabot 警告（high 7件）を解消。PDF 検査が束縛する pypdf の内部実装の source hash（`_reader`・`generic._data_structures`）も新しい版に合わせた。`generic._utils` と pdfminer の hash は変わらない。

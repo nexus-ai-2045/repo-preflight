@@ -117,9 +117,9 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 `ratchet` は締める方向にしか進みません。問題が減ったときは、見逃す枠も一緒に縮めます。
 
-このリポジトリ自身は `enforce` に固定し、CIで毎回検査しています（ubuntu / macOS は Python 3.9・3.11・3.13、Windows は 3.13 のみ）。設定を消したり段階を下げたりすると、CIが失敗します。設定例は [リポジトリ整合性ゲート](repository-consistency-gate.md)、設計判断は [ADR一覧](adr/README.md)、実行環境は [docs/runtime-support.md](runtime-support.md) です。
+このリポジトリ自身は `enforce` に固定し、CIで毎回検査しています（ubuntu は Python 3.11・3.13、Windows は 3.13、macOS は 3.9）。設定を消したり段階を下げたりすると、CIが失敗します。設定例は [リポジトリ整合性ゲート](repository-consistency-gate.md)、設計判断は [ADR一覧](adr/README.md)、実行環境は [docs/runtime-support.md](runtime-support.md) です。
 
-加えて、trackedなのにignore対象でもあるpathの新規増加は、原本のまま同梱したrelease wheelとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1とreview済みbaselineを使って全CI jobで止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
+加えて、trackedなのにignore対象でもあるpathの新規増加は、原本のまま同梱したrelease wheelとSHA-256を`requirements-tools.txt`で固定した `ai-ratchet-gate` v0.1.1とreview済みbaselineを使ってPython 3.11以上の全CI job（ubuntuとWindows）で止めます。baselineの作成・拡大・縮小は人間レビュー対象です。
 
 持ち主の個人名義を人に書かせずに照合する `scripts/local_identity_guard.py` の使い方は [docs/local-identity-guard.md](local-identity-guard.md) を参照してください。
 

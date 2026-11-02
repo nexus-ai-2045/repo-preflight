@@ -59,55 +59,12 @@ jobs:
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
-  # Mac 保証用。ruleset 必須ではないが CI で毎回通す
-  test-macos:
-    name: test-macos (${{ matrix.python-version }})
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # 一覧は include の形で書く。consistency_gate の Action 参照読み取り器は
-        # jobs 内の流れ形式やスカラーの列を読まずに fail-closed にするため。
-        include:
-          - python-version: "3.11"
-          - python-version: "3.13"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      # 秘密情報検査の試験は本物の gitleaks を要る。preflight-gate と同じ固定版を、
-      # references/gitleaks-pins.json の配布物ハッシュと本体ハッシュで確かめて入れる。
-      - name: Install pinned gitleaks
-        run: python scripts/install_pinned_gitleaks.py --dest "${{ runner.temp }}/gitleaks" --github-path
-      - run: python -m pip install --upgrade "pip>=26.1.2"
-      - run: python -m pip install -e ".[test]"
-      - run: python -m pip install --require-hashes -r requirements-tools.txt
-      - run: python -m ai_ratchet_gate --repo .
-      # PR/merge queue: compare their base; main push: compare the preceding revision.
-      # All OS/Python compatibility jobs keep their guarantees for the selected paths.
-      - name: pytest (changed paths and dependency neighbors)
-        shell: bash
-        env:
-          SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --base-ref "$SELECTION_BASE" --json
-      - name: runtime smoke (CLI + skill adapters)
-        run: python scripts/runtime_smoke.py --repo .
-
   # Mac 標準の Python 3.9 で検査とフックが動くことの保証。ruleset 必須ではない。
+  # Mac はこのジョブだけで見る。3.9 は Linux でも挙動が同じだったので Mac に絞った。
   # 保全した ai-ratchet-gate wheel と black は 3.11 以上が要るので、上のジョブで回す。
   test-py39:
-    name: test-py39 (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-          - os: macos-latest
+    name: test-py39 (macos-latest)
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
