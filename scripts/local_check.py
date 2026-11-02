@@ -152,10 +152,46 @@ def _lexical_scopes(tree, package=""):
             ):
                 children.append(node)
                 local.append(node)
+                # Definition headers execute in the enclosing namespace. Only
+                # the function/class body introduces the child namespace.
+                headers = list(getattr(node, "decorator_list", []))
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+                ):
+                    headers.extend(node.args.defaults)
+                    headers.extend(
+                        value for value in node.args.kw_defaults if value is not None
+                    )
+                    arguments = (
+                        node.args.posonlyargs
+                        + node.args.args
+                        + node.args.kwonlyargs
+                        + [node.args.vararg, node.args.kwarg]
+                    )
+                    headers.extend(
+                        arg.annotation
+                        for arg in arguments
+                        if arg is not None and arg.annotation is not None
+                    )
+                    if getattr(node, "returns", None) is not None:
+                        headers.append(node.returns)
+                elif isinstance(node, ast.ClassDef):
+                    headers.extend(node.bases)
+                    headers.extend(keyword.value for keyword in node.keywords)
+                for header in headers:
+                    walk(header)
                 return
             local.append(node)
-            for child in ast.iter_child_nodes(node):
-                walk(child)
+            if node is scope and isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                for statement in node.body:
+                    walk(statement)
+            elif node is scope and isinstance(node, ast.Lambda):
+                walk(node.body)
+            else:
+                for child in ast.iter_child_nodes(node):
+                    walk(child)
 
         walk(scope)
         bindings = {}
@@ -481,15 +517,26 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     if target.endswith("/__init__.py"):
                         edge(target)
 
-        def filename(value):
+        def filename(value, *, static_path=False):
             if not isinstance(value, str) or not _reference_path(value).suffix:
                 return False
             if PureWindowsPath(value).drive:
                 return False
             value = _reference_path(value).as_posix()
             if ".." in _reference_path(value).parts:
-                issue("relative file path requires owner mapping")
-                return False
+                # Arbitrary strings (including negative-test data) are not path
+                # expressions. Only an evaluated path can establish containment.
+                if not static_path:
+                    return False
+                try:
+                    resolved = (repo / value).resolve()
+                    value = resolved.relative_to(repo.resolve()).as_posix()
+                except ValueError:
+                    # A statically known external read is not a local producer.
+                    return False
+                except (OSError, RuntimeError):
+                    issue("static file path cannot be resolved")
+                    return False
             candidates = {value} & paths
             if not candidates and "/" not in value:
                 candidates = {p for p in paths if Path(p).name == value}
@@ -608,40 +655,6 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             for parent in ast.walk(tree)
             for child in ast.iter_child_nodes(parent)
         }
-        for reference in ast.walk(tree):
-            if not isinstance(reference, (ast.Name, ast.Attribute)) or not isinstance(
-                reference.ctx, ast.Load
-            ):
-                continue
-            set_scope(reference)
-            name = dotted(reference)
-            parent = parents.get(reference)
-            if name in (
-                "importlib.import_module",
-                "importlib.util.spec_from_file_location",
-                "runpy.run_path",
-                "runpy.run_module",
-                "__import__",
-            ) and not (isinstance(parent, ast.Call) and parent.func is reference):
-                bound = (
-                    isinstance(parent, ast.Assign)
-                    and len(parent.targets) == 1
-                    and isinstance(parent.targets[0], ast.Name)
-                    and values.get(parent.targets[0].id) is reference
-                )
-                if not bound:
-                    issue("opaque loader reference escape: " + name)
-            key = (consumer, name)
-            if "." in name:
-                module_name, function_name = name.rsplit(".", 1)
-                owners = modules.get(module_name, set())
-                if len(owners) == 1:
-                    key = (next(iter(owners)), function_name)
-            if key not in summaries:
-                continue
-            parent = parents.get(reference)
-            if not (isinstance(parent, ast.Call) and parent.func is reference):
-                issue(f"loader callback escape at line {reference.lineno}: " + name)
         # Literal python -c programs are syntax, never executed during planning.
         nodes = list(ast.walk(tree))
         contextual_path_nodes = set()
@@ -727,6 +740,40 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         issue("Python CLI syntax unavailable")
                 else:
                     issue("opaque Python CLI code")
+        for reference in nodes:
+            if not isinstance(reference, (ast.Name, ast.Attribute)) or not isinstance(
+                reference.ctx, ast.Load
+            ):
+                continue
+            set_scope(reference)
+            name = dotted(reference)
+            parent = parents.get(reference)
+            if name in (
+                "importlib.import_module",
+                "importlib.util.spec_from_file_location",
+                "runpy.run_path",
+                "runpy.run_module",
+                "__import__",
+            ) and not (isinstance(parent, ast.Call) and parent.func is reference):
+                bound = (
+                    isinstance(parent, ast.Assign)
+                    and len(parent.targets) == 1
+                    and isinstance(parent.targets[0], ast.Name)
+                    and values.get(parent.targets[0].id) is reference
+                )
+                if not bound:
+                    issue("opaque loader reference escape: " + name)
+            key = (consumer if reference not in embedded_nodes else "", name)
+            if "." in name:
+                module_name, function_name = name.rsplit(".", 1)
+                owners = modules.get(module_name, set())
+                if len(owners) == 1:
+                    key = (next(iter(owners)), function_name)
+            if key not in summaries:
+                continue
+            parent = parents.get(reference)
+            if not (isinstance(parent, ast.Call) and parent.func is reference):
+                issue(f"loader callback escape at line {reference.lineno}: " + name)
         # A composed path is one reference with its own origin, not independent
         # references to each string fragment interpreted at repository root.
         composed_paths = {}
@@ -755,7 +802,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
         for node in nodes:
             set_scope(node)
             if node in composed_paths:
-                filename(composed_paths[node])
+                filename(composed_paths[node], static_path=True)
             if isinstance(node, ast.Import):
                 for entry in node.names:
                     module(entry.name)
@@ -808,11 +855,11 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 ):
                     target_path = value(node.func.value)
                     if isinstance(target_path, str):
-                        filename(target_path)
+                        filename(target_path, static_path=True)
                 elif call == "open" and node.args:
                     target_path = value(node.args[0])
                     if isinstance(target_path, str):
-                        filename(target_path)
+                        filename(target_path, static_path=True)
                 if (
                     node in embedded_nodes
                     and call.endswith(
@@ -1150,6 +1197,10 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         isinstance(first, str) and Path(first).name.startswith("python")
                     )
                     if python:
+                        if node in embedded_nodes and "-c" in command:
+                            issue(
+                                "nested embedded Python context requires owner mapping"
+                            )
                         cwd_arg = next(
                             (kw.value for kw in node.keywords if kw.arg == "cwd"),
                             ast.Constant(value="."),

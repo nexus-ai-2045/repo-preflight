@@ -1616,3 +1616,110 @@ def test_python_cli_cwd_does_not_also_reference_root_script(repo):
     )
     assert result["status"] == "selected"
     assert "tests/test_context.py" not in result["selected_tests"]
+
+
+def test_parent_segment_in_ordinary_marker_data_is_not_dependency(repo):
+    (repo / "tests/test_marker.py").write_text(
+        'original = "codex.exe"\nmarker = original.replace("codex.exe", "../codex.exe")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_static_file_parent_segments_resolve_within_repository(repo):
+    (repo / "tests/data").mkdir()
+    (repo / "tests/config.json").write_text("{}")
+    (repo / "tests/test_reader.py").write_text(
+        'from pathlib import Path\np = Path(__file__).parent / "data" / ".." / "config.json"\np.read_text()'
+    )
+    result = local_check.select_tests(repo, ["tests/config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_reader.py" in result["selected_tests"]
+
+
+def test_static_external_file_is_not_local_producer(repo):
+    (repo / "config.json").write_text("{}")
+    (repo / "tests/test_direct.py").write_text('DOC = "config.json"')
+    (repo / "tests/test_external.py").write_text(
+        'from pathlib import Path\np = Path(__file__).parents[1] / ".." / "config.json"\np.read_text()'
+    )
+    result = local_check.select_tests(repo, ["config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_external.py" not in result["selected_tests"]
+
+
+def test_changed_file_parent_segments_still_reject(repo):
+    with pytest.raises(ValueError, match="repository-relative"):
+        local_check.select_tests(repo, ["scripts/../scripts/alpha.py"], {})
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        'def reader(arg=importlib.import_module(NAME)):\n NAME="beta"',
+        'def reader(*, arg=importlib.import_module(NAME)):\n NAME="beta"',
+        '@importlib.import_module(NAME).decorate\ndef reader():\n NAME="beta"',
+        'def reader() -> importlib.import_module(NAME):\n NAME="beta"',
+        'def reader(arg: importlib.import_module(NAME)):\n NAME="beta"',
+        "reader = lambda NAME=importlib.import_module(NAME): NAME",
+        'class Reader(metaclass=importlib.import_module(NAME).Meta):\n NAME="beta"',
+        'class Reader(importlib.import_module(NAME).Base):\n NAME="beta"',
+        '@importlib.import_module(NAME).decorate\nclass Reader:\n NAME="beta"',
+    ],
+)
+def test_definition_headers_use_enclosing_scope(repo, definition):
+    (repo / "tests/test_header.py").write_text(
+        'import importlib\nNAME="alpha"\n' + definition
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_header.py" in result["selected_tests"]
+    assert result["status"] == "selected", result["unresolved"]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_loader_callback_escape_is_checked_in_every_parsed_tree(repo, embedded):
+    code = 'import importlib\nlist(map(importlib.import_module, ["alpha"]))'
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_callback.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        item["file"] == "tests/test_callback.py" for item in result["unresolved"]
+    )
+
+
+def test_loader_parent_traversal_still_requires_owner_mapping(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import runpy\nrunpy.run_path("scripts/../scripts/alpha.py")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("path escape" in item["reason"] for item in result["unresolved"])
+
+
+def test_method_default_uses_class_namespace_not_method_body(repo):
+    (repo / "tests/test_header.py").write_text(
+        'import importlib\nNAME="beta"\nclass Holder:\n NAME="alpha"\n def reader(arg=importlib.import_module(NAME)):\n  NAME="beta"'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_header.py" in result["selected_tests"]
+
+
+def test_embedded_imported_callback_alias_remains_unknown(repo):
+    code = 'from importlib import import_module as load\nlist(map(load, ["alpha"]))'
+    (repo / "tests/test_callback.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+        + repr(code)
+        + "])"
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
