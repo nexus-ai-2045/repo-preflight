@@ -41,6 +41,19 @@ def repo(tmp_path):
     )
     (tmp_path / "tests" / "test_beta.py").write_text("import beta\n", encoding="utf-8")
     (tmp_path / "README.md").write_text("# t\n", encoding="utf-8")
+    (tmp_path / ".test-selection.json").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "changes": ["README.md", "notes.txt", ".test-selection.json"],
+                        "no_tests": True,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     _git(tmp_path, "add", "-A")
     _git(tmp_path, "commit", "-q", "-m", "base")
     _git(tmp_path, "branch", "base")
@@ -57,7 +70,7 @@ def _commit(repo, rel, text):
     _git(repo, "commit", "-q", "-m", "change")
 
 
-def test_cli_default_runs_full_set(repo):
+def test_cli_default_runs_selected_set(repo):
     out = subprocess.run(
         [
             sys.executable,
@@ -73,7 +86,7 @@ def test_cli_default_runs_full_set(repo):
         encoding="utf-8",
     )
     assert out.returncode == 0, out.stderr
-    assert "pytest（全部）" in out.stdout
+    assert "pytest（全部）" not in out.stdout
     assert "identity_gate（全差分）" in out.stdout
 
 
@@ -107,18 +120,26 @@ def test_quick_runs_only_related_tests(repo):
     assert "tests/test_beta.py" not in pytest_steps[0]
 
 
-def test_quick_falls_back_to_full_tests_for_shared_fixtures(repo):
-    _commit(repo, "tests/conftest.py", "\n")
-    assert "pytest（全部・安全側）" in _names(
-        local_check.build_steps(repo, "quick", "base")
-    )
-
-
-def test_quick_falls_back_when_no_test_mentions_the_script(repo):
+def test_unknown_script_stops_instead_of_running_everything(repo):
     _commit(repo, "scripts/gamma.py", "Z = 1\n")
-    assert "pytest（全部・安全側）" in _names(
+    with pytest.raises(ValueError, match="unresolved"):
         local_check.build_steps(repo, "quick", "base")
-    )
+
+
+def test_configured_fixture_requires_implicit_impact_review(repo):
+    config = {
+        "rules": [{"changes": ["tests/conftest.py"], "tests": ["tests/test_alpha.py"]}]
+    }
+    plan = local_check.select_tests(repo, ["tests/conftest.py"], config)
+    assert plan["status"] == "unresolved"
+    assert any("fixture-impact" in item["reason"] for item in plan["unresolved"])
+    assert "tests/test_beta.py" not in plan["selected_tests"]
+
+
+def test_unmapped_fixture_is_unresolved(repo):
+    plan = local_check.select_tests(repo, ["tests/conftest.py"], {})
+    assert plan["status"] == "unresolved"
+    assert plan["selected_tests"] == []
 
 
 def test_quick_runs_readme_gate_when_readme_changes(repo):
@@ -216,11 +237,94 @@ def test_doc_change_selects_tests_that_watch_that_file(repo):
     assert "tests/test_digest.py" in cmd
 
 
-def test_unknown_non_python_file_falls_back_to_full(repo):
-    _commit(repo, "LICENSE", "x\n")
-    assert "pytest（全部・安全側）" in _names(
-        local_check.build_steps(repo, "quick", "base")
+def test_unknown_non_python_file_is_unresolved(repo):
+    plan = local_check.select_tests(repo, ["LICENSE"], {})
+    assert plan["status"] == "unresolved"
+
+
+def test_no_test_rule_distinguishes_irrelevant_change(repo):
+    plan = local_check.select_tests(
+        repo, ["notes.txt"], {"rules": [{"changes": ["notes.txt"], "no_tests": True}]}
     )
+    assert plan["status"] == "no_tests"
+    assert plan["unresolved"] == []
+    assert plan["file_reasons"]["notes.txt"]
+
+
+def test_repository_root_sources_select_top_level_consumers(repo):
+    (repo / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests/test_app.py").write_text("import app\n", encoding="utf-8")
+    for directory in (".venv", "node_modules", ".worktrees", ".local"):
+        ignored = repo / directory
+        ignored.mkdir()
+        (ignored / "bridge.py").write_text("import app\n", encoding="utf-8")
+    (repo / "tests/test_ignored.py").write_text("import bridge\n", encoding="utf-8")
+    plan = local_check.select_tests(repo, ["app.py"], {"source_roots": ["."]})
+    assert plan["status"] == "selected"
+    assert plan["selected_tests"] == ["tests/test_app.py"]
+
+
+def test_configured_consumer_roots_and_string_references(repo):
+    (repo / "lib").mkdir()
+    (repo / "spec").mkdir()
+    (repo / "lib/core.js").write_text("export const value = 1", encoding="utf-8")
+    (repo / "lib/use.js").write_text("require('./core')", encoding="utf-8")
+    (repo / "spec/use.spec.js").write_text("const name = 'use'", encoding="utf-8")
+    plan = local_check.select_tests(
+        repo,
+        ["lib/core.js"],
+        {
+            "source_roots": ["lib"],
+            "test_roots": ["spec"],
+            "test_patterns": ["*.spec.js"],
+            "code_suffixes": [".js"],
+        },
+    )
+    assert plan["selected_tests"] == ["spec/use.spec.js"]
+    assert plan["status"] == "selected"
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["../elsewhere", "/tmp/outside", "tests/../../outside"]
+)
+def test_selection_rejects_path_escape(repo, unsafe):
+    with pytest.raises(ValueError):
+        local_check.select_tests(repo, [unsafe], {})
+
+
+def test_rename_and_deletion_keep_old_dependency_name(repo):
+    _git(repo, "mv", "scripts/alpha.py", "scripts/renamed.py")
+    assert "scripts/alpha.py" in local_check.changed_files(repo, "base")
+    plan = local_check.plan_tests(repo, "base")
+    assert "tests/test_alpha.py" in plan["selected_tests"]
+    assert any(x["file"] == "scripts/renamed.py" for x in plan["unresolved"])
+
+
+def test_deleted_test_is_reported_without_passing_empty_pytest_argv(repo):
+    (repo / "tests/test_alpha.py").unlink()
+    plan = local_check.select_tests(repo, ["tests/test_alpha.py"], {})
+    assert plan["status"] == "no_tests"
+    assert "deleted test" in plan["file_reasons"]["tests/test_alpha.py"][0]
+
+
+def test_selection_cli_returns_json_and_fails_closed(repo):
+    (repo / "scripts/gamma.py").write_text("Z = 1", encoding="utf-8")
+    out = subprocess.run(
+        [
+            sys.executable,
+            local_check.__file__,
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "base",
+            "--plan-tests",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 2
+    assert json.loads(out.stdout)["status"] == "unresolved"
 
 
 def test_non_ascii_and_space_filenames_are_kept(repo):
@@ -374,4 +478,410 @@ def test_quick_summary_says_it_is_not_a_ci_substitute(repo):
         encoding="utf-8",
         env=_ENV,
     )
-    assert "CI の代わりではありません" in out.stdout
+    assert "CI の結果は別に確認" in out.stdout
+
+
+def test_policy_cannot_escape_target_repository(repo, tmp_path):
+    outside = tmp_path.parent / "external-selection.json"
+    outside.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="target repository"):
+        local_check.plan_tests(repo, "base", outside)
+
+
+def test_empty_rule_glob_is_unresolved_even_with_check_id(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["requirements.txt"],
+        {
+            "rules": [
+                {
+                    "changes": ["requirements.txt"],
+                    "tests": ["tests/test_missing.py"],
+                    "checks": ["dependency-check"],
+                }
+            ]
+        },
+    )
+    assert plan["status"] == "unresolved"
+    assert plan["checks"] == ["dependency-check"]
+
+
+def test_checks_only_plan_is_explicit_and_does_not_run_commands(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["schema.sql"],
+        {"rules": [{"changes": ["*.sql"], "checks": ["sql-contract"]}]},
+    )
+    assert plan["status"] == "no_tests"
+    assert plan["checks"] == ["sql-contract"]
+    assert plan["unresolved"] == []
+
+
+def test_source_symlink_escape_is_rejected(repo, tmp_path):
+    outside = tmp_path.parent / "outside.py"
+    outside.write_text("import alpha", encoding="utf-8")
+    (repo / "scripts/escape.py").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes"):
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})
+
+
+def test_empty_plan_never_invokes_pytest(repo, monkeypatch):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: {
+            "unresolved": [],
+            "selected_tests": [],
+            "checks": [],
+            "status": "no_tests",
+        },
+    )
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("empty plan ran pytest"),
+    )
+    assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 0
+
+
+def test_common_runner_requires_consumer_to_handle_check_ids(repo, monkeypatch):
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: {
+            "unresolved": [],
+            "selected_tests": [],
+            "checks": ["sql-contract"],
+            "status": "no_tests",
+        },
+    )
+    assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
+
+
+def test_each_explicit_test_pattern_must_resolve(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["requirements.txt"],
+        {
+            "rules": [
+                {
+                    "changes": ["requirements.txt"],
+                    "tests": ["tests/test_alpha.py", "tests/test_missing.py"],
+                }
+            ]
+        },
+    )
+    assert plan["status"] == "unresolved"
+    assert plan["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_plan_binds_head_merge_base_policy_and_selector(repo):
+    before = local_check.plan_tests(repo, "base")
+    _commit(repo, "scripts/alpha.py", "X = 9\n")
+    after = local_check.plan_tests(repo, "base")
+    assert after["head_oid"] != before["head_oid"]
+    assert after["base_oid"] == before["base_oid"]
+    assert after["base_kind"] == "merge-base"
+    assert after["policy_sha256"] == before["policy_sha256"]
+    assert len(after["selector_source_sha256"]) == 64
+    assert str(repo) not in json.dumps(after)
+    policy = json.loads((repo / ".test-selection.json").read_text())
+    policy["rules"][0]["changes"].append("ignored.txt")
+    (repo / ".test-selection.json").write_text(json.dumps(policy), encoding="utf-8")
+    assert (
+        local_check.plan_tests(repo, "base")["policy_sha256"] != after["policy_sha256"]
+    )
+
+
+def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, capsys):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    plan = {
+        "unresolved": [],
+        "selected_tests": ["tests/test_alpha.py"],
+        "checks": [],
+        "status": "selected",
+    }
+    monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
+
+    def run(command, **kwargs):
+        assert command == [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--",
+            "tests/test_alpha.py",
+        ]
+        assert kwargs["cwd"] == repo
+        assert kwargs["stdout"] is sys.stderr
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(local_check.subprocess, "run", run)
+    assert (
+        local_check.main(["--run-selected-tests", "--json", "--repo", str(repo)]) == 0
+    )
+    assert json.loads(capsys.readouterr().out) == plan
+
+
+@pytest.mark.parametrize("value", ["false", None, 0])
+def test_invalid_no_tests_type_fails_closed(repo, value):
+    with pytest.raises(ValueError, match="no_tests"):
+        local_check.select_tests(
+            repo,
+            ["scripts/unmapped.py"],
+            {"rules": [{"changes": ["scripts/unmapped.py"], "no_tests": value}]},
+        )
+
+
+@pytest.mark.parametrize("value", [None, "", "test-selection-policy/v2"])
+def test_unknown_policy_schema_fails_closed(repo, value):
+    with pytest.raises(ValueError, match="schema"):
+        local_check.select_tests(repo, [], {"schema": value})
+
+
+@pytest.mark.parametrize("check_id", ["", " ", " padded "])
+def test_invalid_check_id_fails_closed(repo, check_id):
+    with pytest.raises(ValueError, match="check"):
+        local_check.select_tests(
+            repo,
+            ["schema.sql"],
+            {"rules": [{"changes": ["schema.sql"], "checks": [check_id]}]},
+        )
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_changed_test_provider_selects_importing_tests(repo, deleted):
+    provider = repo / "tests/test_provider.py"
+    provider.write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests/test_consumer.py").write_text(
+        "from test_provider import VALUE\n", encoding="utf-8"
+    )
+    if deleted:
+        provider.unlink()
+    plan = local_check.select_tests(repo, ["tests/test_provider.py"], {})
+    assert plan["status"] == "selected"
+    assert "tests/test_consumer.py" in plan["selected_tests"]
+    assert ("tests/test_provider.py" in plan["selected_tests"]) is not deleted
+    assert "tests/test_beta.py" not in plan["selected_tests"]
+
+
+@pytest.mark.parametrize("filename", ["config.json", "seed.txt"])
+def test_data_filename_reference_follows_source_to_test(repo, filename):
+    (repo / "scripts/data_reader.py").write_text(
+        f"FILE = '{filename}'\n", encoding="utf-8"
+    )
+    (repo / "scripts/data_consumer.py").write_text(
+        "import data_reader\n", encoding="utf-8"
+    )
+    (repo / "tests/test_data_consumer.py").write_text(
+        "import data_consumer\n", encoding="utf-8"
+    )
+    plan = local_check.select_tests(repo, [filename], {})
+    assert plan["status"] == "selected"
+    assert plan["selected_tests"] == ["tests/test_data_consumer.py"]
+    assert plan["reasons"]["tests/test_data_consumer.py"][0]["file"] == filename
+
+
+def test_mapped_document_limits_automatic_consumers(repo):
+    (repo / "scripts/reader.py").write_text("DOC = 'README.md'\n", encoding="utf-8")
+    (repo / "tests/test_reader.py").write_text("import reader\n", encoding="utf-8")
+    plan = local_check.select_tests(
+        repo,
+        ["README.md"],
+        {
+            "rules": [
+                {
+                    "changes": ["README.md"],
+                    "tests": ["tests/test_alpha.py"],
+                    "dependency_mode": "mapped",
+                }
+            ]
+        },
+    )
+    assert plan["selected_tests"] == ["tests/test_alpha.py"]
+    assert plan["status"] == "selected"
+    assert any("mapped" in reason for reason in plan["file_reasons"]["README.md"])
+
+
+def test_overlapping_auto_rule_preserves_automatic_consumers(repo):
+    (repo / "scripts/reader.py").write_text("DOC = 'README.md'\n", encoding="utf-8")
+    (repo / "tests/test_reader.py").write_text("import reader\n", encoding="utf-8")
+    plan = local_check.select_tests(
+        repo,
+        ["README.md"],
+        {
+            "rules": [
+                {
+                    "changes": ["README.md"],
+                    "tests": ["tests/test_alpha.py"],
+                    "dependency_mode": "mapped",
+                },
+                {"changes": ["README.md"], "tests": ["tests/test_beta.py"]},
+            ]
+        },
+    )
+    assert set(plan["selected_tests"]) == {
+        "tests/test_alpha.py",
+        "tests/test_beta.py",
+        "tests/test_reader.py",
+    }
+
+
+@pytest.mark.parametrize("mode", [None, "", "off", 0])
+def test_invalid_dependency_mode_is_rejected(repo, mode):
+    with pytest.raises(ValueError, match="dependency_mode"):
+        local_check.select_tests(
+            repo,
+            [],
+            {
+                "rules": [
+                    {
+                        "changes": ["README.md"],
+                        "no_tests": True,
+                        "dependency_mode": mode,
+                    }
+                ]
+            },
+        )
+
+
+def test_empty_mapped_rule_is_unresolved(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["README.md"],
+        {
+            "rules": [
+                {"changes": ["README.md"], "dependency_mode": "mapped", "tests": []}
+            ]
+        },
+    )
+    assert plan["status"] == "unresolved"
+
+
+def test_mapped_rule_cannot_omit_changed_test_itself(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["tests/test_alpha.py"],
+        {
+            "rules": [
+                {
+                    "changes": ["tests/test_alpha.py"],
+                    "dependency_mode": "mapped",
+                    "tests": ["tests/test_beta.py"],
+                }
+            ]
+        },
+    )
+    assert plan["selected_tests"] == ["tests/test_alpha.py", "tests/test_beta.py"]
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "changed_files",
+        "selected_tests",
+        "file_reasons",
+        "reasons",
+        "unresolved",
+        "error",
+    ],
+)
+def test_cli_private_plan_stops_without_disclosing_or_executing(
+    repo, monkeypatch, capsys, as_json, field
+):
+    guard = local_check.local_identity_guard
+
+    private = "SyntheticPrivateOperator"
+    identities = guard.collect_identities(sources={"os_account": [private]}, environ={})
+    monkeypatch.setattr(guard, "collect_identities", lambda **kwargs: identities)
+    plan = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    if field == "error":
+
+        def make_plan(*args):
+            raise ValueError("unknown " + private + "/file.py")
+
+    else:
+        plan[field] = {private + "/file.py": "unknown " + private}
+
+        def make_plan(*args):
+            return plan
+
+    monkeypatch.setattr(local_check, "plan_tests", make_plan)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("private plan must never execute")
+
+    monkeypatch.setattr(local_check.subprocess, "run", forbidden)
+    args = ["--repo", str(repo), "--run-selected-tests"] + (
+        ["--json"] if as_json else []
+    )
+    assert local_check.main(args) == 2
+    output = capsys.readouterr()
+    assert private not in output.out + output.err
+    if as_json:
+        report = json.loads(output.out)
+        assert report["status"] == "unresolved"
+        assert not report.get("selected_tests")
+
+
+def test_cli_public_namespace_remains_selectable(repo, monkeypatch, capsys):
+    guard = local_check.local_identity_guard
+
+    collect = guard.collect_identities
+
+    def public_collector(**kwargs):
+        return collect(
+            sources={"os_account": ["nexus-ai-2045", "nexus_ai"]},
+            environ={},
+            public_names=kwargs.get("public_names"),
+        )
+
+    monkeypatch.setattr(guard, "collect_identities", public_collector)
+    plan = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    plan["changed_files"] = ["nexus_ai/public.md"]
+    monkeypatch.setattr(local_check, "plan_tests", lambda *args: plan)
+    assert local_check.main(["--repo", str(repo), "--plan-tests", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["changed_files"] == [
+        "nexus_ai/public.md"
+    ]
+
+
+@pytest.mark.parametrize(
+    "document,consumer",
+    [
+        ("CHANGELOG.md", "tests/test_release_metadata.py"),
+        ("docs/ai-constitution-entry-contract.md", "tests/test_ai_entry_contract.py"),
+    ],
+)
+def test_repository_contract_documents_keep_consumers(repo, document, consumer):
+    policy = json.loads((local_check.ROOT / ".test-selection.json").read_text())
+    for name in [
+        consumer,
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py",
+    ]:
+        (repo / name).write_text(repr(Path(document).name))
+    plan = local_check.select_tests(repo, [document], policy)
+    assert plan["status"] == "selected"
+    assert consumer in plan["selected_tests"]
+
+
+def test_mapped_conftest_cannot_hide_implicit_fixture_impact(repo):
+    config = {
+        "rules": [
+            {
+                "changes": ["tests/conftest.py"],
+                "tests": ["tests/test_alpha.py"],
+                "dependency_mode": "mapped",
+            }
+        ]
+    }
+    plan = local_check.select_tests(repo, ["tests/conftest.py"], config)
+    assert plan["status"] == "unresolved"
+    assert any("fixture-impact" in item["reason"] for item in plan["unresolved"])

@@ -549,14 +549,13 @@ def push_ranges_from_stdin(repo: Path, remote: str, stdin_text: str) -> list[lis
         _local_ref, local_sha, _remote_ref, remote_sha = fields
         if local_sha == ZERO_SHA:
             continue
-        if remote_sha != ZERO_SHA:
-            ranges.append([f"{remote_sha}..{local_sha}"])
-        else:
-            if remote_commits is None:
-                remote_commits = _advertised_remote_commits(repo, remote)
-            ranges.append(
-                [local_sha, "--not", *remote_commits] if remote_commits else [local_sha]
-            )
+        if remote_commits is None:
+            remote_commits = _advertised_remote_commits(repo, remote)
+        revision = f"{remote_sha}..{local_sha}" if remote_sha != ZERO_SHA else local_sha
+        # 更新branchでも、同じ実送信先の別branchから取り込んだ既配布履歴を除く。
+        ranges.append(
+            [revision, "--not", *remote_commits] if remote_commits else [revision]
+        )
     return ranges
 
 
