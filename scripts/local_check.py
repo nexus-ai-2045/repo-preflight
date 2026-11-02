@@ -140,6 +140,13 @@ def _lexical_scopes(tree, package=""):
     tables = {}
     owners = {}
     enclosing = {}
+    # Pattern captures store identifiers in fields rather than Name(Store).
+    # The empty tuple keeps this scanner compatible with Python 3.9 ASTs.
+    capture_nodes = tuple(
+        getattr(ast, kind)
+        for kind in ("MatchAs", "MatchStar", "MatchMapping")
+        if hasattr(ast, kind)
+    )
 
     def visit_scope(scope, inherited, inherited_owners=None):
         local = []
@@ -242,6 +249,10 @@ def _lexical_scopes(tree, package=""):
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
                 bind(node.name, node)
+            elif isinstance(node, capture_nodes):
+                captured = getattr(node, "name", None) or getattr(node, "rest", None)
+                if captured is not None:
+                    bind(captured, None)
             elif isinstance(node, (ast.For, ast.AsyncFor)):
                 for target in ast.walk(node.target):
                     if isinstance(target, ast.Name):
@@ -822,6 +833,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         continue
                 module(prefix)
                 for entry in node.names:
+                    if entry.name == "*" and prefix in (
+                        "importlib",
+                        "importlib.util",
+                        "runpy",
+                    ):
+                        issue("loader star import requires owner mapping")
                     module(prefix + "." + entry.name)
                     for owner in modules.get(prefix, set()):
                         if entry.name == "*" and any(

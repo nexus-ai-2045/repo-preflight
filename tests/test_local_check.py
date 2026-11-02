@@ -1723,3 +1723,71 @@ def test_embedded_imported_callback_alias_remains_unknown(repo):
         local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
         == "unresolved"
     )
+
+
+@pytest.mark.parametrize(
+    "pattern,subject",
+    [
+        ("str(NAME)", '"alpha"'),
+        ("[NAME]", '["alpha"]'),
+        ('{"key": NAME}', '{"key": "alpha"}'),
+        ("[*NAME]", '["alpha"]'),
+        ("{**NAME}", '{"key": "alpha"}'),
+        ('{"key": [str(NAME)]}', '{"key": ["alpha"]}'),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_pattern_capture_invalidates_previous_loader_target(
+    repo, pattern, subject, embedded
+):
+    code = (
+        'import importlib\nNAME="beta"\nmatch '
+        + subject
+        + ":\n case "
+        + pattern
+        + ":\n  importlib.import_module(NAME)\n"
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_capture.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "tests/test_capture.py" for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "module,call",
+    [
+        ("importlib", 'import_module("alpha")'),
+        ("importlib.util", 'spec_from_file_location("loaded", runtime_target)'),
+        ("runpy", 'run_module("alpha")'),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_supported_loader_star_import_is_not_silently_ignored(
+    repo, module, call, embedded
+):
+    code = "from " + module + " import *\n" + call
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_star_loader.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        item["file"] == "tests/test_star_loader.py" for item in result["unresolved"]
+    )
+
+
+def test_non_loader_star_import_does_not_block_known_local_consumer(repo):
+    (repo / "tests/test_normal.py").write_text("from math import *\nimport alpha")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_normal.py" in result["selected_tests"]
