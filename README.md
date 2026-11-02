@@ -82,6 +82,10 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 
 本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。
 
+`source_roots` / `test_roots` は repository 相対のディレクトリまたは個別ファイルを指定できます。ディレクトリは再帰列挙し、ファイルは一件だけを親ディレクトリ基準で解析します。重複は一度だけ解析し、`"."` と既存の path・symlink 境界検査を維持します。宣言外の新しいコード変更は、明示 rule がなければ未知として停止します。
+
+rule の `dependency_mode: "supplement"` は必須の `tests` / `checks` を追加し、依存解析 mode は決めません。他の一致 rule が無ければ `auto`、明示 `auto` が一件でもあれば `auto`、残りがすべて `mapped` の場合だけ owner の完全な対応表を使います。未知 mode と未解決の依存は停止し、全件実行へ切り替えません。
+
 保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
 
 ## 制約

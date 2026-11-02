@@ -52,16 +52,31 @@
     },
     {
       "changes": [
-        ".github/**",
+        "scripts/local_check.py",
+        "tests/test_local_check.py",
         ".test-selection.json",
-        "scripts/local_check.py"
+        ".github/workflows/ci.yml"
+      ],
+      "tests": [
+        "tests/test_local_check.py",
+        "tests/test_consistency_gate.py",
+        "tests/test_base_guard.py",
+        "tests/test_gate_protection.py",
+        "tests/test_identity_fixture_exceptions.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/**"
       ],
       "tests": [
         "tests/test_local_check.py",
         "tests/test_consistency_gate.py",
         "tests/test_base_guard.py",
         "tests/test_gate_protection.py"
-      ]
+      ],
+      "dependency_mode": "supplement"
     },
     {
       "changes": [
@@ -102,7 +117,8 @@
       ],
       "tests": [
         "tests/test_identity_fixture_exceptions.py"
-      ]
+      ],
+      "dependency_mode": "supplement"
     }
   ]
 }

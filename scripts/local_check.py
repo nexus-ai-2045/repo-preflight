@@ -9,6 +9,7 @@ identity / consistency の必須ゲートは選択せず維持する。
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import getpass
 import hashlib
@@ -104,6 +105,10 @@ def _selection_config(repo: Path, config_path: Path | None = None) -> dict:
 
 
 def _root_files(repo: Path, root: str):
+    path = repo / _safe_relative(repo, root)
+    if path.is_file():
+        yield path
+        return
     omitted = {
         ".git",
         ".local",
@@ -121,44 +126,508 @@ def _root_files(repo: Path, root: str):
 
 def _within_root(name: str, root: str) -> bool:
     prefix = Path(root).as_posix().rstrip("/")
-    return prefix == "." or name.startswith(prefix + "/")
+    return prefix == "." or name == prefix or name.startswith(prefix + "/")
 
 
-def _module_texts(
-    repo: Path, roots: list[str], suffixes: list[str]
-) -> list[tuple[str, str]]:
-    return [
-        (p.stem, p.read_text(encoding="utf-8", errors="replace"))
-        for root in roots
-        for p in _root_files(repo, root)
-        if p.is_file()
-        and p.suffix in suffixes
-        and _safe_relative(repo, p.relative_to(repo).as_posix())
+def _lexical_scopes(tree):
+    """One binding table per lexical scope; never borrow another function's locals."""
+    scopes = {}
+    tables = {}
+
+    def visit_scope(scope, inherited):
+        local = []
+        children = []
+        def walk(node):
+            scopes[node] = scope
+            if node is not scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                children.append(node)
+                local.append(node)
+                return
+            local.append(node)
+            for child in ast.iter_child_nodes(node):
+                walk(child)
+        walk(scope)
+        bindings = {}
+        imports = {}
+        def bind(name, expression):
+            bindings.setdefault(name, []).append(expression)
+        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            for arg in scope.args.posonlyargs + scope.args.args + scope.args.kwonlyargs:
+                bind(arg.arg, None)
+            for arg in (scope.args.vararg, scope.args.kwarg):
+                if arg:
+                    bind(arg.arg, None)
+        for node in local:
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    for part in ast.walk(target):
+                        if isinstance(part, ast.Name):
+                            bind(part.id, node.value)
+            elif isinstance(node, (ast.AugAssign, ast.NamedExpr)) and isinstance(node.target, ast.Name):
+                bind(node.target.id, None)
+            elif isinstance(node, ast.Import):
+                for entry in node.names:
+                    name = entry.asname or entry.name.split('.')[0]
+                    bind(name, None)
+                    imports[name] = entry.name if entry.asname else entry.name.split('.')[0]
+            elif isinstance(node, ast.ImportFrom):
+                for entry in node.names:
+                    name = entry.asname or entry.name
+                    bind(name, None)
+                    imports[name] = (node.module or '') + '.' + entry.name
+            elif node is not scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bind(node.name, node)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                for target in ast.walk(node.target):
+                    if isinstance(target, ast.Name):
+                        bind(target.id, None)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bind(node.name, None)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars:
+                        for target in ast.walk(item.optional_vars):
+                            if isinstance(target, ast.Name):
+                                bind(target.id, None)
+            elif isinstance(node, ast.comprehension):
+                for target in ast.walk(node.target):
+                    if isinstance(target, ast.Name):
+                        bind(target.id, None)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                for name in node.names:
+                    bind(name, None)
+                    bind(name, None)
+        values, aliases, ambiguous = (dict(inherited[0]), dict(inherited[1]), set(inherited[2]))
+        for name, entries in bindings.items():
+            values.pop(name, None)
+            aliases.pop(name, None)
+            ambiguous.discard(name)
+            if len(entries) == 1:
+                if entries[0] is not None:
+                    values[name] = entries[0]
+                if name in imports:
+                    aliases[name] = imports[name]
+            else:
+                ambiguous.add(name)
+                if name in imports:
+                    aliases[name] = imports[name]
+            if name in inherited[1] and name not in imports:
+                aliases[name] = inherited[1][name]
+                ambiguous.add(name)
+        tables[scope] = values, aliases, ambiguous
+        for child in children:
+            # Class locals are not the lexical namespace of a method.
+            visit_scope(child, inherited if isinstance(scope, ast.ClassDef) else tables[scope])
+    visit_scope(tree, ({}, {}, set()))
+    return scopes, tables
+
+
+def _loader_summaries(trees, tables_by_file):
+    """Only a unique base / (formal + suffix) or base.with_name(formal + suffix)."""
+    summaries = {}
+    for path, tree in trees.items():
+        scopes, tables = tables_by_file[path]
+        module_values, _, module_ambiguous = tables[tree]
+        mutable_globals = {name for node in ast.walk(tree) if isinstance(node, ast.Global) for name in node.names}
+        for function in tree.body:
+            if not isinstance(function, ast.FunctionDef) or function.name in module_ambiguous:
+                continue
+            args = function.args.posonlyargs + function.args.args + function.args.kwonlyargs
+            if len(args) != 1 or function.args.vararg or function.args.kwarg:
+                continue
+            formal = args[0].arg
+            values, aliases, ambiguous = tables[function]
+            if formal in ambiguous:
+                continue
+            def expand(node, seen=frozenset()):
+                if isinstance(node, ast.Name) and node.id in values and node.id not in seen:
+                    return expand(values[node.id], seen | {node.id})
+                return node
+            def base_value(node, seen=frozenset()):
+                if isinstance(node, ast.Name):
+                    if node.id == '__file__':
+                        return path
+                    if node.id in module_values and node.id not in mutable_globals and values.get(node.id) is module_values[node.id] and node.id not in seen:
+                        return base_value(module_values[node.id], seen | {node.id})
+                if isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name) and aliases.get(node.func.id, node.func.id) in ('Path', 'pathlib.Path') and node.args:
+                        return base_value(node.args[0], seen)
+                    if isinstance(node.func, ast.Attribute) and node.func.attr in ('resolve', 'absolute'):
+                        return base_value(node.func.value, seen)
+                if isinstance(node, ast.Attribute) and node.attr == 'parent':
+                    base = base_value(node.value, seen)
+                    return str(Path(base).parent) if base is not None else None
+                return None
+            candidates = []
+            for call in ast.walk(function):
+                if scopes.get(call) is not function or not isinstance(call, ast.Call) or len(call.args) < 2:
+                    continue
+                if not isinstance(call.func, ast.Attribute) or call.func.attr != 'spec_from_file_location':
+                    continue
+                target = expand(call.args[1])
+                mode = None
+                if isinstance(target, ast.BinOp) and isinstance(target.op, ast.Div):
+                    base, leaf, mode = target.left, target.right, 'join'
+                elif isinstance(target, ast.Call) and isinstance(target.func, ast.Attribute) and target.func.attr == 'with_name' and len(target.args) == 1:
+                    base, leaf, mode = target.func.value, target.args[0], 'with_name'
+                if mode is None:
+                    continue
+                leaf = expand(leaf)
+                if not (isinstance(leaf, ast.BinOp) and isinstance(leaf.op, ast.Add) and isinstance(leaf.left, ast.Name) and leaf.left.id == formal and isinstance(leaf.right, ast.Constant) and leaf.right.value == '.py'):
+                    continue
+                resolved = base_value(base)
+                if resolved is not None:
+                    candidates.append((call, formal, resolved, mode))
+            if len(candidates) == 1:
+                summaries[path, function.name] = candidates[0]
+    return summaries
+
+
+def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes=None):
+    """Resolve Python syntax to file identities; opaque loaders remain explicit issues."""
+    paths = {p.relative_to(repo).as_posix() for root in roots
+             for p in _root_files(repo, root) if p.is_file()
+             and _safe_relative(repo, p.relative_to(repo).as_posix())}
+    paths.update(_safe_relative(repo, p) for p in changed)
+    modules: dict[str, set[str]] = {}
+    for path in paths:
+        if not path.endswith('.py'):
+            continue
+        for root in ['.'] + roots:
+            if root != '.' and not _within_root(path, root):
+                continue
+            module_root = Path(root).parent if (repo / root).is_file() or root == path else Path(root)
+            relative = Path(path) if root == '.' else Path(path).relative_to(module_root)
+            parts = list(relative.with_suffix('').parts)
+            if parts[-1] == '__init__':
+                parts.pop()
+            modules.setdefault('.'.join(parts), set()).add(path)
+    reverse: dict[str, set[str]] = {}
+    issues: list[dict] = [
+        {'file': path, 'reason': 'unsupported dependency language; owner mapping required'}
+        for path in sorted(paths) if Path(path).suffix in (suffixes or ['.py'])
+        and Path(path).suffix != '.py'
     ]
+    trees = {}
+    scopes_by_file = {}
+    for path in sorted(paths):
+        if path.endswith('.py') and (repo / path).is_file():
+            try:
+                trees[path] = ast.parse((repo / path).read_text(encoding='utf-8'))
+                scopes_by_file[path] = _lexical_scopes(trees[path])
+            except (SyntaxError, UnicodeError):
+                issues.append({'file': path, 'reason': 'Python syntax unavailable; owner mapping required'})
+    summaries = _loader_summaries(trees, scopes_by_file)
+    for consumer in sorted(paths):
+        if not consumer.endswith('.py') or not (repo / consumer).is_file():
+            continue
+        current_line = 0
+        def issue(reason):
+            if current_line and ' at line ' not in reason:
+                reason += f' at line {current_line}'
+            item = {'file': consumer, 'reason': reason}
+            if item not in issues:
+                issues.append(item)
+        def edge(target):
+            reverse.setdefault(target, set()).add(consumer)
+        def module(name):
+            candidates = modules.get(name, set())
+            if len(candidates) > 1:
+                issue('ambiguous local module: ' + name)
+            for target in candidates:
+                edge(target)
+            for i in range(1, len(name.split('.'))):
+                for target in modules.get('.'.join(name.split('.')[:i]), set()):
+                    if target.endswith('/__init__.py'):
+                        edge(target)
+        def filename(value):
+            if not isinstance(value, str) or not Path(value).suffix:
+                return False
+            candidates = {value} & paths
+            if not candidates and '/' not in value:
+                candidates = {p for p in paths if Path(p).name == value}
+            if len(candidates) > 1:
+                issue('ambiguous file reference: ' + value)
+            for target in candidates:
+                edge(target)
+            return bool(candidates)
+        if consumer not in trees:
+            continue
+        tree = trees[consumer]
+        node_scopes, scope_tables = scopes_by_file[consumer]
+        # Docstrings are documentation, not executable file references.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+                    node.body = node.body[1:]
+        values, aliases, ambiguous = scope_tables[tree]
+        def set_scope(node):
+            nonlocal values, aliases, ambiguous, current_line
+            current_line = getattr(node, 'lineno', 0)
+            values, aliases, ambiguous = scope_tables[node_scopes.get(node, tree)]
+        def dotted(node):
+            if isinstance(node, ast.Name):
+                return aliases.get(node.id, node.id)
+            if isinstance(node, ast.Attribute):
+                return dotted(node.value) + '.' + node.attr
+            return ''
+        embedded_nodes = set()
+        def value(node, seen=frozenset()):
+            if isinstance(node, ast.Constant):
+                return node.value
+            if isinstance(node, ast.Name):
+                if node.id == '__file__':
+                    return None if node in embedded_nodes else consumer
+                if node.id in values and node.id not in seen:
+                    return value(values[node.id], seen | {node.id})
+            if isinstance(node, ast.Call):
+                if dotted(node.func) in ('pathlib.Path', 'Path', 'str') and node.args:
+                    return value(node.args[0], seen)
+                if isinstance(node.func, ast.Attribute) and node.func.attr in ('resolve', 'absolute'):
+                    return value(node.func.value, seen)
+                if isinstance(node.func, ast.Attribute) and node.func.attr == 'with_name' and node.args:
+                    base, leaf = value(node.func.value, seen), value(node.args[0], seen)
+                    if isinstance(base, str) and isinstance(leaf, str):
+                        return str(Path(base).with_name(leaf))
+            if isinstance(node, ast.Attribute) and node.attr == 'parent':
+                base = value(node.value, seen)
+                if isinstance(base, str):
+                    return str(Path(base).parent)
+            if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) and node.value.attr == 'parents':
+                base, index = value(node.value.value, seen), value(node.slice, seen)
+                if isinstance(base, str) and isinstance(index, int) and 0 <= index < len(Path(base).parents):
+                    return str(Path(base).parents[index])
+            if isinstance(node, (ast.List, ast.Tuple)):
+                return [value(item, seen) for item in node.elts]
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                left, right = value(node.left, seen), value(node.right, seen)
+                if isinstance(left, str) and isinstance(right, str):
+                    return str(Path(left) / right)
+            return None
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        for reference in ast.walk(tree):
+            if not isinstance(reference, (ast.Name, ast.Attribute)) or not isinstance(reference.ctx, ast.Load):
+                continue
+            set_scope(reference)
+            name = dotted(reference)
+            key = (consumer, name)
+            if '.' in name:
+                module_name, function_name = name.rsplit('.', 1)
+                owners = modules.get(module_name, set())
+                if len(owners) == 1:
+                    key = (next(iter(owners)), function_name)
+            if key not in summaries:
+                continue
+            parent = parents.get(reference)
+            if not (isinstance(parent, ast.Call) and parent.func is reference):
+                issue(f'loader callback escape at line {reference.lineno}: ' + name)
+        # Literal python -c programs are syntax, never executed during planning.
+        nodes = list(ast.walk(tree))
+        for node in list(nodes):
+            set_scope(node)
+            if not isinstance(node, ast.Call) or not dotted(node.func).startswith('subprocess.') or not node.args:
+                continue
+            command = value(node.args[0])
+            expression = node.args[0]
+            if isinstance(expression, ast.Name):
+                expression = values.get(expression.id, expression)
+            executable = dotted(expression.elts[0]) if isinstance(expression, (ast.List, ast.Tuple)) and expression.elts else ''
+            python = executable == 'sys.executable' or (isinstance(command, list) and command and isinstance(command[0], str) and Path(command[0]).name.startswith('python'))
+            if python and isinstance(command, list) and '-c' in command:
+                index = command.index('-c') + 1
+                if index < len(command) and isinstance(command[index], str):
+                    try:
+                        embedded_tree = ast.parse(command[index])
+                        embedded_scopes, embedded_tables = _lexical_scopes(embedded_tree)
+                        node_scopes.update(embedded_scopes)
+                        scope_tables.update(embedded_tables)
+                        parsed_nodes = list(ast.walk(embedded_tree))
+                        embedded_nodes.update(parsed_nodes)
+                        nodes.extend(parsed_nodes)
+                        parents.update({child: parent for parent in ast.walk(embedded_tree) for child in ast.iter_child_nodes(parent)})
+                        for keyword in node.keywords:
+                            if keyword.arg == 'cwd' and value(keyword.value) != '.':
+                                issue('embedded Python cwd outside supported repository context')
+                    except SyntaxError:
+                        issue('Python CLI syntax unavailable')
+                else:
+                    issue('opaque Python CLI code')
+        for node in nodes:
+            set_scope(node)
+            if isinstance(node, ast.Import):
+                for entry in node.names:
+                    module(entry.name)
+            elif isinstance(node, ast.ImportFrom):
+                prefix = node.module or ''
+                if node.level:
+                    parts = list(Path(consumer).parent.parts)
+                    prefix = '.'.join(parts[:len(parts) - node.level + 1] + ([prefix] if prefix else []))
+                module(prefix)
+                for entry in node.names:
+                    module(prefix + '.' + entry.name)
+                    for owner in modules.get(prefix, set()):
+                        if entry.name == '*' and any(key[0] == owner for key in summaries):
+                            issue('loader star import requires owner mapping')
+                        if owner not in scopes_by_file:
+                            continue
+                        exported = scopes_by_file[owner][1][trees[owner]][1].get(entry.name, '')
+                        if '.' in exported:
+                            origin, symbol = exported.rsplit('.', 1)
+                            if any((source, symbol) in summaries for source in modules.get(origin, set())):
+                                issue('loader re-export requires owner mapping')
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                filename(node.value)
+            elif isinstance(node, ast.Call):
+                call = dotted(node.func)
+                if node in embedded_nodes and call.endswith(('.import_module', '.run_path', '.run_module', '.spec_from_file_location')) and call not in ('importlib.import_module', 'runpy.run_path', 'runpy.run_module', 'importlib.util.spec_from_file_location'):
+                    issue('opaque embedded loader alias: ' + call)
+                    continue
+                summary_key = (consumer if node not in embedded_nodes else "", call)
+                if summary_key not in summaries and '.' in call:
+                    owner_module, function_name = call.rsplit('.', 1)
+                    owners = modules.get(owner_module, set())
+                    if len(owners) == 1:
+                        summary_key = (next(iter(owners)), function_name)
+                if summary_key in summaries:
+                    _, formal, base, mode = summaries[summary_key]
+                    root_name = node.func
+                    while isinstance(root_name, ast.Attribute):
+                        root_name = root_name.value
+                    actual = node.args[0] if len(node.args) == 1 else next((kw.value for kw in node.keywords if kw.arg == formal), None)
+                    target = value(actual)
+                    if (summary_key[0] == consumer and '.' not in call and not isinstance(values.get(call), ast.FunctionDef)) or (isinstance(root_name, ast.Name) and root_name.id in ambiguous) or not isinstance(target, str) or not target.isidentifier():
+                        issue(f'opaque loader call at line {node.lineno}: ' + call)
+                    else:
+                        path = str(Path(base) / (target + '.py')) if mode == 'join' else str(Path(base).with_name(target + '.py'))
+                        if not filename(path):
+                            issue(f'unresolved loader call at line {node.lineno}: ' + call)
+                    continue
+                if any(node is summary[0] for summary in summaries.values()):
+                    continue
+
+                if call == 'exec' and node.args:
+                    expression = node.args[0]
+                    visited = set()
+                    while isinstance(expression, ast.Name) and expression.id in values and expression.id not in visited:
+                        visited.add(expression.id)
+                        expression = values[expression.id]
+                    if isinstance(expression, ast.Call) and dotted(expression.func) == 'compile' and expression.args:
+                        expression = expression.args[0]
+                        while isinstance(expression, ast.Name) and expression.id in values and expression.id not in visited:
+                            visited.add(expression.id)
+                            expression = values[expression.id]
+                        if isinstance(expression, ast.Call) and isinstance(expression.func, ast.Attribute) and expression.func.attr in ('read_bytes', 'read_text'):
+                            source = value(expression.func.value)
+                            if isinstance(source, str) and filename(source):
+                                continue
+                index = 1 if call.endswith('.spec_from_file_location') else 0
+                if call in ('__import__', 'importlib.import_module', 'runpy.run_module', 'runpy.run_path', 'importlib.util.spec_from_file_location', 'exec', 'eval'):
+                    root = node.func
+                    while isinstance(root, ast.Attribute):
+                        root = root.value
+                    if isinstance(root, ast.Name) and root.id in ambiguous:
+                        issue(f'shadowed loader binding at line {node.lineno}: ' + call)
+                        continue
+                    target = value(node.args[index]) if len(node.args) > index else None
+                    if target is None and call in ('importlib.import_module', '__import__') and node.args and isinstance(node.args[0], ast.Name):
+                        actual = node.args[0].id
+                        ancestor = parents.get(node)
+                        while ancestor is not None and not isinstance(ancestor, (ast.For, ast.FunctionDef, ast.AsyncFunctionDef)):
+                            ancestor = parents.get(ancestor)
+                        if isinstance(ancestor, ast.For):
+                            loop_target = ancestor.target
+                            iterable = ancestor.iter
+                            items = isinstance(iterable, ast.Call) and isinstance(iterable.func, ast.Attribute) and iterable.func.attr == 'items' and not iterable.args
+                            if items:
+                                iterable = iterable.func.value
+                                if isinstance(loop_target, (ast.Tuple, ast.List)) and loop_target.elts:
+                                    loop_target = loop_target.elts[0]
+                            binding_name = iterable.id if isinstance(iterable, ast.Name) else None
+                            literal = values.get(binding_name) if binding_name else iterable
+                            if isinstance(loop_target, ast.Name) and loop_target.id == actual and isinstance(literal, (ast.Dict, ast.Tuple)):
+                                entries = literal.keys if isinstance(literal, ast.Dict) else literal.elts
+                                names = [entry.value for entry in entries if isinstance(entry, ast.Constant) and isinstance(entry.value, str)]
+                                reassigned = any(isinstance(part, ast.Name) and part.id == actual and isinstance(part.ctx, ast.Store) for statement in ancestor.body for part in ast.walk(statement))
+                                escaped = False
+                                if isinstance(literal, ast.Dict) and binding_name:
+                                    for reference in ast.walk(tree):
+                                        if isinstance(reference, ast.Name) and reference.id == binding_name and isinstance(reference.ctx, ast.Load):
+                                            parent = parents.get(reference)
+                                            if not (isinstance(parent, ast.For) and parent.iter is reference or isinstance(parent, ast.Subscript) and isinstance(parent.ctx, ast.Load) or isinstance(parent, ast.Attribute) and parent.attr in ('items', 'keys')):
+                                                escaped = True
+                                if len(names) == len(entries) and not reassigned and not escaped:
+                                    for name in names:
+                                        module(name)
+                                    continue
+                    if target is None and call.endswith(('run_path', 'spec_from_file_location')) and len(node.args) > index:
+                        # A computed base with a literal local filename still identifies
+                        # a dependency; follow only the target expression's assignments.
+                        expression = node.args[index]
+                        visited = set()
+                        while isinstance(expression, ast.Name) and expression.id in values and expression.id not in visited:
+                            visited.add(expression.id)
+                            expression = values[expression.id]
+                        literals = {part.value for part in ast.walk(expression)
+                                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                                    and Path(part.value).suffix == '.py'}
+                        candidates = {path for path in paths for literal in literals
+                                      if path == literal or ('/' not in literal and Path(path).name == literal)}
+                        if len(candidates) == 1:
+                            target = next(iter(candidates))
+                        elif not candidates and len(literals) == 1:
+                            # A fixed filename outside the local/tombstone universe
+                            # cannot consume this repository's changed producer.
+                            target = next(iter(literals))
+                    if call in ('exec', 'eval') or not isinstance(target, str):
+                        issue('opaque loader: ' + call)
+                    elif call.endswith(('run_path', 'spec_from_file_location')):
+                        if '..' in Path(target).parts:
+                            issue('loader path escape requires owner mapping: ' + call)
+                        else:
+                            filename(target)
+                    else:
+                        module(target)
+                elif call in ('subprocess.run', 'subprocess.Popen', 'subprocess.call', 'subprocess.check_call', 'subprocess.check_output') and node.args:
+                    command = value(node.args[0])
+                    if not isinstance(command, list) or not command:
+                        continue
+                    first = command[0]
+                    expression = node.args[0]
+                    if isinstance(expression, ast.Name):
+                        expression = values.get(expression.id, expression)
+                    executable = dotted(expression.elts[0]) if isinstance(expression, (ast.List, ast.Tuple)) and expression.elts else ''
+                    python = executable == 'sys.executable' or (isinstance(first, str) and Path(first).name.startswith('python'))
+                    for arg in command:
+                        if isinstance(arg, str):
+                            filename(arg)
+                    if python:
+                        position = 1
+                        while position < len(command) and command[position] in ('-I', '-S', '-B', '-E', '-s', '-u'):
+                            position += 1
+                        command = command[:1] + command[position:]
+                        if len(command) < 2 or command[1] is None:
+                            issue('opaque Python CLI target')
+                        elif command[1] == '-m':
+                            if len(command) > 2 and isinstance(command[2], str):
+                                module(command[2])
+                            else:
+                                issue('opaque Python CLI module')
+                        elif command[1] != '-c':
+                            if isinstance(command[1], str) and '..' not in Path(command[1]).parts:
+                                filename(command[1])
+                            else:
+                                issue('unresolved Python CLI file')
+    return reverse, issues
 
 
-def consumers_pattern(
-    module: str,
-    repo: Path,
-    source_roots: list[str] | None = None,
-    code_suffixes: list[str] | None = None,
-    module_texts: list[tuple[str, str]] | None = None,
-) -> re.Pattern[str]:
-    """Existing name-reference reverse dependency closure, configurable by the owner."""
-    sources = (
-        module_texts
-        if module_texts is not None
-        else _module_texts(repo, source_roots or ["scripts"], code_suffixes or [".py"])
-    )
-    names = {module}
-    while True:
-        pattern = re.compile(
-            r"\b(?:" + "|".join(map(re.escape, sorted(names))) + r")\b"
-        )
-        grown = names | {stem for stem, text in sources if pattern.search(text)}
-        if grown == names:
-            return pattern
-        names = grown
+def _dependents(reverse, seed):
+    found = {seed}
+    pending = [seed]
+    while pending:
+        for consumer in reverse.get(pending.pop(), set()) - found:
+            found.add(consumer)
+            pending.append(consumer)
+    return found
 
 
 def select_tests(repo: Path, files: list[str], config: dict) -> dict:
@@ -185,9 +654,6 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
             and any(fnmatch.fnmatchcase(p.name, pat) for pat in policy["test_patterns"])
         }
     )
-    texts = {
-        t: (repo / t).read_text(encoding="utf-8", errors="replace") for t in all_tests
-    }
     rules = policy["rules"]
     if not isinstance(rules, list):
         raise ValueError("rules must be a list")
@@ -200,8 +666,8 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
                 isinstance(x, str) for x in values
             ):
                 raise ValueError(f"rule {key} must be a list of strings")
-        if rule.get("dependency_mode", "auto") not in ("auto", "mapped"):
-            raise ValueError("rule dependency_mode must be auto or mapped")
+        if rule.get("dependency_mode", "auto") not in ("auto", "mapped", "supplement"):
+            raise ValueError("rule dependency_mode must be auto, mapped or supplement")
         if "no_tests" in rule and not isinstance(rule["no_tests"], bool):
             raise ValueError("rule no_tests must be a boolean")
         if any(
@@ -213,11 +679,12 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
             )
         for pattern in rule["changes"] + rule.get("tests", []):
             _safe_relative(repo, pattern)
-    modules = _module_texts(repo, roots, policy["code_suffixes"])
+    reverse, dependency_issues = _dependency_graph(repo, roots, files, policy["code_suffixes"])
     reasons: dict[str, list[dict]] = {}
     file_reasons: dict[str, list[str]] = {}
     unresolved: list[dict] = []
     checks: set[str] = set()
+    affected: dict[str, set[str]] = {}
 
     def add(test: str, name: str, reason: str):
         reasons.setdefault(test, []).append({"file": name, "reason": reason})
@@ -243,7 +710,9 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
             ):
                 continue
             matched = True
-            dependency_modes.append(rule.get("dependency_mode", "auto"))
+            mode = rule.get("dependency_mode", "auto")
+            if mode != "supplement":
+                dependency_modes.append(mode)
             checks.update(rule.get("checks", []))
             hits = [
                 t
@@ -294,31 +763,16 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
         )
         if deleted_test:
             file_reasons[name].append("deleted test; inspect remaining consumers")
-        code = Path(name).suffix in policy["code_suffixes"]
-        in_sources = any(_within_root(name, root) for root in policy["source_roots"])
-        if code and (in_sources or in_tests):
-            pattern = consumers_pattern(
-                Path(name).stem, repo, roots, policy["code_suffixes"], modules
-            )
-            hits = [t for t, body in texts.items() if pattern.search(body)]
-            for test in hits:
-                add(test, name, "reverse dependency or name reference")
-        else:
-            direct = {t for t, body in texts.items() if Path(name).name in body}
-            seeds = {stem for stem, body in modules if Path(name).name in body}
-            hits = set(direct)
-            for seed in sorted(seeds):
-                pattern = consumers_pattern(
-                    seed, repo, roots, policy["code_suffixes"], modules
-                )
-                hits.update(t for t, body in texts.items() if pattern.search(body))
-            for test in sorted(hits):
-                reason = (
-                    "file name reference"
-                    if test in direct
-                    else "file name reference through reverse dependency"
-                )
-                add(test, name, reason)
+        if Path(name).suffix in policy['code_suffixes'] and not any(_within_root(name, root) for root in roots) and not matched:
+            unresolved.append({'file': name, 'reason': 'code outside owner-declared roots; explicit mapping required'})
+            continue
+        affected[name] = _dependents(reverse, name)
+        hits = sorted(set(all_tests) & affected[name])
+        for test in hits:
+            add(test, name, "Python syntax file dependency")
+        for issue in dependency_issues:
+            if issue not in unresolved:
+                unresolved.append(issue)
         if not hits and not matched and name not in all_tests and not deleted_test:
             unresolved.append(
                 {
@@ -326,6 +780,29 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
                     "reason": "no dependency or explicit mapping; owner review required",
                 }
             )
+    # An unresolved incoming edge cannot enlarge a consumer already reached by
+    # this change. Other opaque consumers remain unknown, even with no tests.
+    covered = set()
+    for closure in affected.values():
+        covered.update(closure)
+    # Manual tests are covered only when their known downstream tail is covered
+    # too (a test module can itself be imported as a helper by another test).
+    available = covered | set(reasons)
+    covered.update(test for test in reasons if _dependents(reverse, test) <= available)
+    remaining = []
+    for issue in unresolved:
+        if (issue in dependency_issues and issue['file'] in covered
+                and 'path escape' not in issue['reason']):
+            for name in file_reasons:
+                if issue['file'] in affected.get(name, set()) or any(
+                    item['file'] == name for item in reasons.get(issue['file'], [])
+                ):
+                    evidence = 'dependency uncertainty already covered: ' + issue['file']
+                    if evidence not in file_reasons[name]:
+                        file_reasons[name].append(evidence)
+        else:
+            remaining.append(issue)
+    unresolved = remaining
     return {
         "schema": "test-selection/v1",
         "status": (
