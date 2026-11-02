@@ -106,7 +106,7 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 | 変更点・更新 | [CHANGELOG](CHANGELOG.md)・[v0.9.0](docs/releases/v0.9.0.md) |
 | 開発・設計判断 | [CONTRIBUTING](CONTRIBUTING.md)・[ADR一覧](docs/adr/README.md) |
 
-CIの対象はLinux/macOSがPython 3.9・3.11・3.13、WindowsがPython 3.13です（3.9 は検査の試験だけで、開発用の整形と ai-ratchet-gate は 3.11 以上）。ランタイムの検査は次で実行できます。
+CIの対象はLinuxがPython 3.11・3.13、WindowsがPython 3.13、macOSがPython 3.9です（3.9 は検査の試験だけで、開発用の整形と ai-ratchet-gate は 3.11 以上）。ランタイムの検査は次で実行できます。
 
 ```bash
 python scripts/runtime_smoke.py --repo .
