@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 依存の警告を解消
+
+- optional の `media`・`test` 依存の pypdf を 6.21.2 から 6.21.4 に上げ、GitHub の Dependabot 警告（high 7件）を解消。PDF 検査が束縛する pypdf の内部実装の source hash（`_reader`・`generic._data_structures`）も新しい版に合わせた。`generic._utils` と pdfminer の hash は変わらない。
+
 ## 0.12.0 - 2026-10-30
 
 ### 保護変更を登録された判断連鎖へ結び付ける
