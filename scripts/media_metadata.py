@@ -189,7 +189,10 @@ def _check_mp4_boxes(path: Path, size: int, xml_reader=None):
                     source.seek(body)
                     typed_header = source.read(min(8, limit - body))
                     # FullBox type 13 (JPEG), version/flags fixed, locale retained.
-                    if len(typed_header) != 8 or typed_header[:4] != b"\x00\x00\x00\x0d":
+                    if (
+                        len(typed_header) != 8
+                        or typed_header[:4] != b"\x00\x00\x00\x0d"
+                    ):
                         _fail("unsupported_cover_type")
                     payload_size = limit - body - 8
                     if payload_size > TEXT_LIMIT:
@@ -198,7 +201,9 @@ def _check_mp4_boxes(path: Path, size: int, xml_reader=None):
                     if not payload.startswith(b"\xff\xd8\xff"):
                         _fail("format_invalid")
                     _check_jpeg_data_boundaries(payload)
-                    cover_views = _image_metadata(io.BytesIO(payload), ".jpg", xml_reader)
+                    cover_views = _image_metadata(
+                        io.BytesIO(payload), ".jpg", xml_reader
+                    )
                     emit(box[:header_size] + typed_header)
                     for value in cover_views:
                         emit(value)
@@ -231,7 +236,10 @@ def _check_mp4_boxes(path: Path, size: int, xml_reader=None):
             header = source.read(8)
             if len(header) != 8 or header[4:8] != b"ftyp":
                 _fail("format_mismatch")
-            if struct.unpack(">I", header[:4])[0] < 8 and header[:4] != b"\x00\x00\x00\x01":
+            if (
+                struct.unpack(">I", header[:4])[0] < 8
+                and header[:4] != b"\x00\x00\x00\x01"
+            ):
                 _fail("format_invalid")
             walk(source, 0, size)
     except OSError:
@@ -246,7 +254,7 @@ def _sample_without_covers(sample, start, cover_ranges):
         left = max(left, start)
         right = min(right, start + len(sample))
         if left < right:
-            result[left - start:right - start] = b"\x00" * (right - left)
+            result[left - start : right - start] = b"\x00" * (right - left)
     return bytes(result)
 
 
@@ -595,9 +603,7 @@ def inspect_media_metadata(
     if ext == ".mp4":
         container_views, cover_ranges = _check_mp4_boxes(path, before[2], xml_reader)
         head = _sample_without_covers(head, 0, cover_ranges)
-        tail = _sample_without_covers(
-            tail, before[2] - len(tail), cover_ranges
-        )
+        tail = _sample_without_covers(tail, before[2] - len(tail), cover_ranges)
         if head[4:8] != b"ftyp":
             _fail("format_mismatch")
         if probe_runner is None:

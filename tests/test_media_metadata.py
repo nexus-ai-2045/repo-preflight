@@ -686,7 +686,9 @@ def mp4_box(kind, body, *, extended=False):
 
 
 def mp4_cover(payload, *, data_type=13, extra=b"", extended=False):
-    data = mp4_box(b"data", struct.pack(">II", data_type, 0) + payload, extended=extended)
+    data = mp4_box(
+        b"data", struct.pack(">II", data_type, 0) + payload, extended=extended
+    )
     covr = mp4_box(b"covr", data + extra)
     ilst = mp4_box(b"ilst", covr)
     meta = mp4_box(b"meta", b"\0" * 4 + ilst)
@@ -701,9 +703,13 @@ def inspect_test_mp4(tmp_path, raw):
     )
 
 
-def test_typed_jpeg_cover_excludes_compressed_bytes_but_keeps_metadata_and_sha(tmp_path):
+def test_typed_jpeg_cover_excludes_compressed_bytes_but_keeps_metadata_and_sha(
+    tmp_path,
+):
     output = io.BytesIO()
-    Image.new("RGB", (2, 2), "white").save(output, format="JPEG", comment=b"retained-comment")
+    Image.new("RGB", (2, 2), "white").save(
+        output, format="JPEG", comment=b"retained-comment"
+    )
     # A marker in the entropy-coded region must not become a text view.
     jpeg = output.getvalue()[:-2] + b"entropy-only-marker" + b"\xff\xd9"
     raw = mp4_cover(jpeg, extended=True)
@@ -716,13 +722,15 @@ def test_typed_jpeg_cover_excludes_compressed_bytes_but_keeps_metadata_and_sha(t
     # Samples still retain the enclosing typed field headers.
     assert b"covr" in result["head_sample"]
     data_offset = result["head_sample"].index(b"data") - 4
-    assert result["head_sample"][data_offset + 16:data_offset + 20] == b"\0\0\0\r"
+    assert result["head_sample"][data_offset + 16 : data_offset + 20] == b"\0\0\0\r"
 
 
 def test_cover_unknown_fields_and_surrounding_literal_remain_scanned(tmp_path):
     output = io.BytesIO()
     Image.new("RGB", (2, 2), "white").save(output, format="JPEG")
-    raw = mp4_cover(output.getvalue(), extra=mp4_box(b"name", b"literal-private-marker"))
+    raw = mp4_cover(
+        output.getvalue(), extra=mp4_box(b"name", b"literal-private-marker")
+    )
     raw += mp4_box(b"free", b"outside-cover-marker")
     result = inspect_test_mp4(tmp_path, raw)
     combined = b"".join(result["metadata_views"])
@@ -740,10 +748,14 @@ def test_untyped_cover_like_bytes_stay_raw(tmp_path):
 @pytest.mark.parametrize("data_type", [0, 1, 14, 0x0100000D])
 def test_unsupported_cover_types_fail_closed(tmp_path, data_type):
     with pytest.raises(reader.MediaMetadataError, match="unsupported_cover_type"):
-        inspect_test_mp4(tmp_path, mp4_cover(b"not-a-verified-jpeg", data_type=data_type))
+        inspect_test_mp4(
+            tmp_path, mp4_cover(b"not-a-verified-jpeg", data_type=data_type)
+        )
 
 
-@pytest.mark.parametrize("payload", [b"bad", b"\xff\xd8\xff\xe1\x00\x20short", b"\xff\xd8\xff\xd9"])
+@pytest.mark.parametrize(
+    "payload", [b"bad", b"\xff\xd8\xff\xe1\x00\x20short", b"\xff\xd8\xff\xd9"]
+)
 def test_malformed_cover_fails_closed(tmp_path, payload):
     with pytest.raises(reader.MediaMetadataError, match="format_invalid"):
         inspect_test_mp4(tmp_path, mp4_cover(payload))
