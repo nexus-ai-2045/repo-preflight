@@ -299,7 +299,7 @@ Git履歴の通常batch予算16,000,000 byteは維持します。現在の作業
 
 worktreeと到達可能なGit blobは同じdispatchを使い、blobの全path aliasもextension照合に使う。媒体はdecoder環境をlookup前に完全束縛するまでclean-pass cacheのlookup/recordを行わない。他の文書・画像のcache契約は維持する。reportにはadapter SHAと実decoder versionsを付ける。これらの証拠は利用側CIや原本参照の採用を代替しない。
 
-このCLIのPDF完全原本検査はPython 3.11以上と安全なPillow 13系を必要とするoptional機能（pypdf 6.21.2 / pdfminer.six 20260107）。個々のparser依存の上流下限が3.10でも、この実行入口でPython 3.10のPDF検査成功は保証しない。Python 3.9/3.10のcore TEXT・標準PNG契約は維持し、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
+このCLIのPDF完全原本検査はPython 3.11以上と安全なPillow 13系を必要とするoptional機能（pypdf 6.21.4 / pdfminer.six 20260107）。個々のparser依存の上流下限が3.10でも、この実行入口でPython 3.10のPDF検査成功は保証しない。Python 3.9/3.10のcore TEXT・標準PNG契約は維持し、同環境のPDFは検査不能として停止する。原本I/Oとinitialized stream identityを束縛し、圧縮領域以外のheader・comment・free object等も検査する。既存tokenizerは位置だけに使い、文字列/hex/nameの値はpypdf primitiveが確定する。依存source hashの変化・range不整合・不完全EOF・未知filter chainは停止する。全linked xref componentを同じ原本で再読し、旧版も意味検査する。XRef streamはW/Indexとexact decoded length・完全消費を確認し、cycle/補正/partial overlapは停止する。未圧縮binaryをPDF構文として読むのではなく、raw照合とその実decoderのmetadata検査を行う。
 
 限定null互換は、xref_free_entryで明示freeかつlive xref/object streamに存在しない正確なgeneration/idだけに適用する。その他のstrict読取り失敗は維持し、元free bytesの検査と数値の適用回数を残す。mailtoは非空targetのinert metadataとして原文・percent復号を検査し、外部へ送信しない。文字列件数は既存object上限100000に整合し、2MB等の他上限は維持する。
 

@@ -334,8 +334,8 @@ def _font(data, subtype, output, lengths=None):
 
 
 PDF_IMPLEMENTATIONS = {
-    "pypdf._reader": "0f65aa59c8b2dc89b67a07a076de21ccab56a7a385d52220f260b5fce366b066",
-    "pypdf.generic._data_structures": "68e58bac82fde745fbc3fdb4f84dd1a67b4cd819065499c5b4d9d41eef781841",
+    "pypdf._reader": "55bbb1b10a5721a7bad12954a598f6f8beaaacd138d2f771cd97e8b99a1d0514",
+    "pypdf.generic._data_structures": "a2c0ee0c3bac0d584659177263e2e26e4222e5315d7e72838e9f0eb001d7c79f",
     "pypdf.generic._utils": "33c8bde72a42e65d9eef5d74f157aaf74bdb6d4b65427beefbe256fc0b32c793",
     "pdfminer.psparser": "169247c80a69cee45f7d132e60944e8488944d2633524bfd2a97f915eefc08bf",
 }
@@ -348,7 +348,7 @@ def _pdf_dependencies(output):
     import pypdf
     import pdfminer
 
-    if pypdf.__version__ != "6.21.2" or pdfminer.__version__ != "20260107":
+    if pypdf.__version__ != "6.21.4" or pdfminer.__version__ != "20260107":
         raise MediaError("dependency_unavailable")
     for name, expected in PDF_IMPLEMENTATIONS.items():
         module = importlib.import_module(name)
