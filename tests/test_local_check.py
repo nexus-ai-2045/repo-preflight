@@ -2006,3 +2006,106 @@ def test_subprocess_result_object_and_generic_keyword_command_are_not_python_loa
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected"
     assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize(
+    "helper,consumer",
+    [
+        (
+            "from importlib import import_module as load",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "from runpy import run_module as fetch",
+            'import helper\nhelper.fetch("alpha")',
+        ),
+        (
+            "from importlib.util import spec_from_file_location as load",
+            'from helper import *\nload("loaded",runtime_target)',
+        ),
+        (
+            "import importlib as library",
+            'import helper\nhelper.library.import_module("alpha")',
+        ),
+        (
+            "from importlib import import_module as fetch\nfetch=lambda name: None",
+            'from helper import fetch\nfetch("alpha")',
+        ),
+    ],
+)
+def test_standard_loader_reexport_requires_owner_mapping(repo, helper, consumer):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_reexport.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "re-export" in item["reason"] or "star import" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "consumer", ["from helper import load\nload(4)", "import helper\nhelper.load(4)"]
+)
+def test_non_loader_reexport_with_same_alias_does_not_block(repo, consumer):
+    (repo / "scripts/helper.py").write_text("from math import sqrt as load")
+    (repo / "tests/test_math.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_star_module_reexport_cannot_hide_a_supported_loader(repo):
+    (repo / "scripts/helper.py").write_text("import importlib as library")
+    (repo / "tests/test_reexport.py").write_text(
+        'from helper import *\nlibrary.import_module("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "helper,consumer",
+    [
+        (
+            "import importlib\nload=importlib.import_module",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib as lib\nfetch=lib.import_module",
+            'import helper\nhelper.fetch("alpha")',
+        ),
+        (
+            "import importlib as lib\nload=lib.import_module\nload=lambda name: None",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib as lib\nfirst=lib.import_module\nfirst=lambda name: None\nload=first",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib\nlibrary=importlib\nlibrary=object()\nload=library.import_module",
+            'import helper\nhelper.load("alpha")',
+        ),
+    ],
+)
+def test_assigned_standard_loader_reexport_remains_unknown(repo, helper, consumer):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_reexport.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "import math\nload=math.sqrt",
+        "from math import sqrt\nload=sqrt\nload=lambda value: value",
+    ],
+)
+def test_assigned_non_loader_reexport_does_not_block(repo, helper):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_math.py").write_text("from helper import load\nload(4)")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]

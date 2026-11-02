@@ -47,6 +47,13 @@ SUBPROCESS_CALLS = (
     "subprocess.check_call",
     "subprocess.check_output",
 )
+STDLIB_LOADERS = (
+    "importlib.import_module",
+    "importlib.util.spec_from_file_location",
+    "runpy.run_path",
+    "runpy.run_module",
+    "__import__",
+)
 DEFAULT_SELECTION = {
     "source_roots": ["scripts"],
     "test_roots": ["tests"],
@@ -620,6 +627,37 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 edge(target)
             return bool(candidates)
 
+        def exported_loader(owner, symbol, suffix=(), seen=frozenset()):
+            if owner not in scopes_by_file or symbol in seen:
+                return False
+            _, tables, origins = scopes_by_file[owner]
+            exported = tables[trees[owner]][1].get(symbol, "")
+            expressions = origins[trees[owner]].get(symbol, [])
+            if symbol == "__import__" and not expressions:
+                exported = symbol
+            if exported and ".".join([exported, *suffix]) in STDLIB_LOADERS:
+                return True
+            # Examine only existing module Name/Attribute binding origins.
+            # A possible loader requires mapping; nothing is imported or run.
+            for expression in expressions:
+                attributes = []
+                while isinstance(expression, ast.Attribute):
+                    attributes.insert(0, expression.attr)
+                    expression = expression.value
+                if isinstance(expression, ast.Name) and exported_loader(
+                    owner, expression.id, (*attributes, *suffix), seen | {symbol}
+                ):
+                    return True
+            return False
+
+        def loader_reexport(name):
+            parts = name.split(".")
+            for position in range(1, len(parts)):
+                for owner in modules.get(".".join(parts[:position]), set()):
+                    if exported_loader(owner, parts[position], parts[position + 1 :]):
+                        return True
+            return False
+
         if consumer not in trees:
             continue
         tree = trees[consumer]
@@ -864,14 +902,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 continue
             set_scope(reference)
             name = dotted(reference)
+            if loader_reexport(name):
+                issue("loader re-export requires owner mapping")
             parent = parents.get(reference)
-            if name in (
-                "importlib.import_module",
-                "importlib.util.spec_from_file_location",
-                "runpy.run_path",
-                "runpy.run_module",
-                "__import__",
-            ) and not (isinstance(parent, ast.Call) and parent.func is reference):
+            if name in STDLIB_LOADERS and not (
+                isinstance(parent, ast.Call) and parent.func is reference
+            ):
                 bound = (
                     isinstance(parent, ast.Assign)
                     and len(parent.targets) == 1
@@ -947,15 +983,25 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         issue("loader star import requires owner mapping")
                     module(prefix + "." + entry.name)
                     for owner in modules.get(prefix, set()):
-                        if entry.name == "*" and any(
-                            key[0] == owner for key in summaries
-                        ):
-                            issue("loader star import requires owner mapping")
                         if owner not in scopes_by_file:
                             continue
-                        exported = scopes_by_file[owner][1][trees[owner]][1].get(
-                            entry.name, ""
+                        exports = scopes_by_file[owner][1][trees[owner]][1]
+                        export_names = set(exports) | set(
+                            scopes_by_file[owner][2][trees[owner]]
                         )
+                        if entry.name == "*" and (
+                            any(key[0] == owner for key in summaries)
+                            or any(
+                                exported_loader(owner, name)
+                                or exports.get(name)
+                                in ("importlib", "importlib.util", "runpy")
+                                for name in export_names
+                            )
+                        ):
+                            issue("loader star import requires owner mapping")
+                        exported = exports.get(entry.name, "")
+                        if exported_loader(owner, entry.name):
+                            issue("loader re-export requires owner mapping")
                         if "." in exported:
                             origin, symbol = exported.rsplit(".", 1)
                             if any(
