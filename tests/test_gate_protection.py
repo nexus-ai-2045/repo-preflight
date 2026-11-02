@@ -83,9 +83,9 @@ def test_ci_pins_and_runs_ai_ratchet_gate_in_every_job():
     assert 'PYTHONUTF8: "1"' in body
     assert (
         body.count("python -m pip install --require-hashes -r requirements-tools.txt")
-        == 3
+        == 2
     )
-    assert body.count("python -m ai_ratchet_gate --repo .") == 3
+    assert body.count("python -m ai_ratchet_gate --repo .") == 2
     assert "./vendor/ai_ratchet_gate-0.1.1-py3-none-any.whl" in requirements
     assert (
         "sha256:b3f22ab772699d57906326e42189e0ab7a0ee9e33dcad55a90909ece35106cd7"
