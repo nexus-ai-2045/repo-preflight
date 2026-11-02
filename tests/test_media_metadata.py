@@ -698,9 +698,33 @@ def mp4_cover(payload, *, data_type=13, extra=b"", extended=False):
 def inspect_test_mp4(tmp_path, raw):
     path = tmp_path / "cover.mp4"
     path.write_bytes(raw)
-    return reader.inspect_media_metadata(
-        path, (path.name,), probe_runner=lambda *_a, **_k: (0, video_probe_json(), b"")
-    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(
+            reader.shutil,
+            "which",
+            lambda name: "/ffprobe" if name == "ffprobe" else None,
+        )
+        return reader.inspect_media_metadata(
+            path,
+            (path.name,),
+            probe_runner=lambda *_a, **_k: (0, video_probe_json(), b""),
+        )
+
+
+def test_synthetic_mp4_helper_is_independent_of_host_ffprobe(tmp_path, monkeypatch):
+    monkeypatch.setattr(reader.shutil, "which", lambda _name: None)
+    raw = mp4_bytes()
+    result = inspect_test_mp4(tmp_path, raw)
+    assert result["source_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert reader.shutil.which("ffprobe") is None
+    with pytest.raises(reader.MediaMetadataError, match="^dependency_unavailable$"):
+        reader.inspect_media_metadata(
+            tmp_path / "cover.mp4",
+            (),
+            probe_runner=lambda *_a, **_k: pytest.fail(
+                "missing executable must fail before invoking the probe runner"
+            ),
+        )
 
 
 def test_typed_jpeg_cover_excludes_compressed_bytes_but_keeps_metadata_and_sha(
