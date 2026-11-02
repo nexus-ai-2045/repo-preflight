@@ -1507,7 +1507,8 @@ def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]
             ("runtime_smoke", [py, "scripts/runtime_smoke.py", "--repo", "."]),
             ("readme_release_gate", readme),
         ]
-    files = changed_files(repo, base)
+    plan = plan_tests(repo, base)
+    files = plan["changed_files"]
     steps.append(("consistency_gate", consistency))  # 0.1 秒程度で、差分だけを見る
     if mode == "quick" and any(
         f == "README.md" or f == "scripts/readme_release_gate.py" for f in files
@@ -1524,7 +1525,12 @@ def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]
         steps.append(
             ("black（変えたファイル）", [py, "-m", "black", "--check", *py_files])
         )
-    tests = related_tests(repo, files)
+    if plan["unresolved"]:
+        raise ValueError(
+            "unresolved test selection: "
+            + ", ".join(item["file"] for item in plan["unresolved"])
+        )
+    tests = plan["selected_tests"]
     if tests:
         steps.append(
             (

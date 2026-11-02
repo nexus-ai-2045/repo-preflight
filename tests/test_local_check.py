@@ -1362,7 +1362,10 @@ def test_toml_condition_requires_internal_base_proof(repo):
 @pytest.mark.parametrize(
     "extra,status", [("", "selected"), ('dependencies = ["new"]\n', "unresolved")]
 )
-def test_toml_version_only_condition_preserves_dependency_auto(repo, extra, status):
+@pytest.mark.parametrize("entry", ["plan", "full", "quick"])
+def test_toml_version_only_condition_preserves_dependency_auto(
+    repo, extra, status, entry
+):
     (repo / "pyproject.toml").write_text('[project]\nversion = "1.0"\n')
     (repo / "tests/test_opaque.py").write_text(
         "import importlib\nimportlib.import_module(runtime_name)"
@@ -1390,8 +1393,20 @@ def test_toml_version_only_condition_preserves_dependency_auto(repo, extra, stat
     _git(repo, "commit", "-qm", "manifest base")
     _git(repo, "branch", "-f", "base")
     (repo / "pyproject.toml").write_text('[project]\nversion = "2.0"\n' + extra)
-    result = local_check.plan_tests(repo, "base")
-    assert result["status"] == status
+    if entry == "plan":
+        result = local_check.plan_tests(repo, "base")
+        assert result["status"] == status
+    elif status == "unresolved":
+        with pytest.raises(ValueError, match="unresolved test selection"):
+            local_check.build_steps(repo, entry, "base")
+    else:
+        steps = local_check.build_steps(repo, entry, "base")
+        commands = [command for name, command in steps if name.startswith("pytest")]
+        assert len(commands) == 1
+        assert commands[0][commands[0].index("--") + 1 :] == [
+            "tests/test_alpha.py",
+            "tests/test_beta.py",
+        ]
 
 
 @pytest.mark.parametrize(
