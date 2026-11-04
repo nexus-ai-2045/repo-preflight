@@ -264,12 +264,12 @@ def test_repository_root_sources_select_top_level_consumers(repo):
     assert plan["selected_tests"] == ["tests/test_app.py"]
 
 
-def test_configured_consumer_roots_and_string_references(repo):
+def test_non_python_consumers_require_owner_mapping(repo):
     (repo / "lib").mkdir()
     (repo / "spec").mkdir()
     (repo / "lib/core.js").write_text("export const value = 1", encoding="utf-8")
     (repo / "lib/use.js").write_text("require('./core')", encoding="utf-8")
-    (repo / "spec/use.spec.js").write_text("const name = 'use'", encoding="utf-8")
+    (repo / "spec/use.spec.js").write_text("require('../lib/use')", encoding="utf-8")
     plan = local_check.select_tests(
         repo,
         ["lib/core.js"],
@@ -280,8 +280,27 @@ def test_configured_consumer_roots_and_string_references(repo):
             "code_suffixes": [".js"],
         },
     )
-    assert plan["selected_tests"] == ["spec/use.spec.js"]
-    assert plan["status"] == "selected"
+    assert plan["selected_tests"] == []
+    assert plan["status"] == "unresolved"
+    mapped = local_check.select_tests(
+        repo,
+        ["lib/core.js"],
+        {
+            "source_roots": ["lib"],
+            "test_roots": ["spec"],
+            "test_patterns": ["*.spec.js"],
+            "code_suffixes": [".js"],
+            "rules": [
+                {
+                    "changes": ["lib/*.js"],
+                    "tests": ["spec/use.spec.js"],
+                    "dependency_mode": "mapped",
+                }
+            ],
+        },
+    )
+    assert mapped["selected_tests"] == ["spec/use.spec.js"]
+    assert mapped["status"] == "selected"
 
 
 @pytest.mark.parametrize(
@@ -866,10 +885,24 @@ def test_repository_contract_documents_keep_consumers(repo, document, consumer):
         "tests/test_public_narrative_contract.py",
         "tests/test_consistency_gate.py",
     ]:
-        (repo / name).write_text(repr(Path(document).name))
+        (repo / name).write_text("DOCUMENT = " + repr(Path(document).name))
+    companions = {
+        "tests/test_runtime_support.py",
+        "tests/test_github_settings_guide.py",
+        "tests/test_ai_entry_contract.py",
+    }
+    for name in companions:
+        if not (repo / name).exists():
+            (repo / name).write_text("CONTRACT = True\n")
     plan = local_check.select_tests(repo, [document], policy)
     assert plan["status"] == "selected"
     assert consumer in plan["selected_tests"]
+    if document == "CHANGELOG.md":
+        assert companions | {
+            consumer,
+            "tests/test_public_narrative_contract.py",
+            "tests/test_consistency_gate.py",
+        } <= set(plan["selected_tests"])
 
 
 def test_mapped_conftest_cannot_hide_implicit_fixture_impact(repo):
@@ -885,3 +918,1871 @@ def test_mapped_conftest_cannot_hide_implicit_fixture_impact(repo):
     plan = local_check.select_tests(repo, ["tests/conftest.py"], config)
     assert plan["status"] == "unresolved"
     assert any("fixture-impact" in item["reason"] for item in plan["unresolved"])
+
+
+def test_semantic_dependencies_ignore_prose_and_names(repo):
+    (repo / "scripts/app.py").write_text("import alpha\n")
+    (repo / "tests/test_real.py").write_text("import app as ui\n")
+    (repo / "tests/test_false.py").write_text(
+        "app = '/app'\nmessage = 'app input forbidden'\n"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_real.py" in result["selected_tests"]
+    assert "tests/test_false.py" not in result["selected_tests"]
+
+
+def test_semantic_python_cli(repo):
+    (repo / "tests/test_cli.py").write_text(
+        "import subprocess, sys\nsubprocess.run([sys.executable, 'scripts/alpha.py'])\n"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_cli.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'import importlib as il\nil.import_module("alpha")',
+        'from importlib import import_module as load\nload("alpha")',
+        'import runpy\nrunpy.run_path("scripts/alpha.py")',
+        'import importlib.util\nfrom pathlib import Path\nP = Path(__file__).resolve().parents[1] / "scripts" / "alpha.py"\nimportlib.util.spec_from_file_location("loaded", P)',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "alpha"])',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "import alpha"])',
+    ],
+)
+def test_semantic_literal_loaders(repo, body):
+    (repo / "tests/test_loader.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_loader.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "import importlib\nimportlib.import_module(user_input)",
+        "import runpy\nrunpy.run_path(user_input)",
+        "import subprocess, sys\nsubprocess.run([sys.executable, user_input])",
+        "exec(user_input)",
+        "def malformed(",
+    ],
+)
+def test_semantic_opaque_consumer_stops_even_without_known_edge(repo, body):
+    (repo / "tests/test_loader.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(x["file"] == "tests/test_loader.py" for x in result["unresolved"])
+
+
+def test_semantic_same_stem_packages_and_relative_import(repo):
+    for package in ("one", "two"):
+        (repo / "scripts" / package).mkdir()
+        (repo / "scripts" / package / "__init__.py").write_text("")
+        (repo / "scripts" / package / "item.py").write_text("X=1")
+    (repo / "scripts/one/reader.py").write_text("from . import item")
+    (repo / "tests/test_one.py").write_text("from one import reader")
+    (repo / "tests/test_two.py").write_text("from two import item")
+    result = local_check.select_tests(repo, ["scripts/one/item.py"], {})
+    assert result["selected_tests"] == ["tests/test_one.py"]
+
+
+def test_semantic_computed_base_explicit_local_filename(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import importlib.util\nfrom pathlib import Path\nP = resolve_base() / "alpha.py"\nimportlib.util.spec_from_file_location("loaded", P)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_loader.py" in result["selected_tests"]
+
+
+def test_semantic_general_command_is_not_python_dependency(repo):
+    (repo / "tests/test_git.py").write_text(
+        'import subprocess\nsubprocess.run(command)\nsubprocess.run(["git", "-c", "core.hooksPath=", "status"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize(
+    "expression,base",
+    [
+        ('_SOURCE / (name + ".py")', "Path(__file__).parent"),
+        ('_SOURCE.with_name(name + ".py")', "Path(__file__)"),
+    ],
+)
+@pytest.mark.parametrize(
+    "invoke", ['load("alpha")', 'load(name="alpha")', 'NAME = "alpha"\nload(NAME)']
+)
+def test_semantic_parameterized_loader(repo, expression, base, invoke):
+    (repo / "scripts/loader.py").write_text(
+        f"import importlib.util\nfrom pathlib import Path\n_SOURCE = {base}\ndef load(name):\n    path = {expression}\n    return importlib.util.spec_from_file_location(name, path)\n"
+    )
+    (repo / "tests/test_loader.py").write_text("from loader import load\n" + invoke)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_loader.py" in result["selected_tests"]
+
+
+def test_semantic_loader_alias_and_unknown_actual(repo):
+    (repo / "scripts/loader.py").write_text(
+        'import importlib.util\nfrom pathlib import Path\n_SOURCE = Path(__file__).parent\ndef load(name):\n    path = _SOURCE / (name + ".py")\n    return importlib.util.spec_from_file_location(name, path)\n'
+    )
+    (repo / "tests/test_loader.py").write_text(
+        'from loader import load as fetch\nfetch(name="alpha")'
+    )
+    assert (
+        "tests/test_loader.py"
+        in local_check.select_tests(repo, ["scripts/alpha.py"], {})["selected_tests"]
+    )
+    (repo / "tests/test_loader.py").write_text(
+        "from loader import load as fetch\nfetch(user_input)"
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+def test_semantic_scope_shadow_never_borrows_other_function_value(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import importlib\ndef first():\n    name = "alpha"\ndef second(name):\n    importlib.import_module(name)\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert "tests/test_loader.py" not in result["selected_tests"]
+
+
+def test_semantic_loader_callback_and_rebinding_stop(repo):
+    source = 'import importlib.util\nfrom pathlib import Path\n_SOURCE = Path(__file__).parent\ndef load(name):\n    path = _SOURCE / (name + ".py")\n    return importlib.util.spec_from_file_location(name, path)\n'
+    (repo / "scripts/loader.py").write_text(source)
+    (repo / "tests/test_loader.py").write_text(
+        "from loader import load\ncallback = load"
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+    (repo / "scripts/loader.py").write_text(source + "\nload = bootstrap().load\n")
+    (repo / "tests/test_loader.py").write_text('from loader import load\nload("alpha")')
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+def test_semantic_exec_compiled_local_read(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'from pathlib import Path\nsource = Path(__file__).parents[1] / "scripts" / "alpha.py"\nraw = source.read_bytes()\nexec(compile(raw, str(source), "exec"), {})'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_loader.py" in result["selected_tests"]
+
+
+def test_semantic_import_alias_shadow_is_unresolved(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import importlib as il\ndef run(il):\n    il.import_module("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_semantic_external_test_runner_payload_is_not_loader_target(repo):
+    (repo / "tests/test_runner.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "unittest", *test_names])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+
+
+def test_semantic_loader_formal_reassignment_is_not_summary(repo):
+    (repo / "scripts/loader.py").write_text(
+        'import importlib.util\nfrom pathlib import Path\n_SOURCE = Path(__file__).parent\ndef load(name):\n    name = runtime_name()\n    path = _SOURCE / (name + ".py")\n    return importlib.util.spec_from_file_location(name, path)'
+    )
+    (repo / "tests/test_loader.py").write_text('from loader import load\nload("alpha")')
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_semantic_known_external_file_does_not_block_local_change(repo):
+    (repo / "tests/test_external.py").write_text(
+        'import importlib.util\npath = workspace_root() / "shared/scripts/external_tool.py"\nimportlib.util.spec_from_file_location("helper", path)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_semantic_deleted_literal_loader_remains_local_edge(repo):
+    (repo / "tests/test_deleted.py").write_text(
+        'import runpy\nrunpy.run_path("scripts/deleted.py")'
+    )
+    result = local_check.select_tests(repo, ["scripts/deleted.py"], {})
+    assert result["selected_tests"] == ["tests/test_deleted.py"]
+
+
+def test_semantic_selected_opaque_test_is_already_covered(repo):
+    (repo / "tests/test_alpha.py").write_text(
+        "import alpha, importlib\nimportlib.import_module(runtime_name)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_semantic_opaque_source_in_closure_is_covered_but_other_source_is_not(repo):
+    (repo / "scripts/reader.py").write_text(
+        "import alpha, importlib\nimportlib.import_module(runtime_name)"
+    )
+    (repo / "tests/test_reader.py").write_text("import reader")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_reader.py" in result["selected_tests"]
+    (repo / "scripts/unrelated.py").write_text(
+        "import importlib\nimportlib.import_module(runtime_name)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "scripts/unrelated.py" for item in result["unresolved"])
+
+
+def test_semantic_finite_import_dictionary_preserves_local_members(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import importlib\nMODULES = {"alpha": "hash", "json": "hash"}\nfor name, digest in MODULES.items():\n    importlib.import_module(name)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_loader.py" in result["selected_tests"]
+
+
+def test_semantic_manual_test_coverage_requires_its_downstream_tail(repo):
+    (repo / "tests/test_opaque.py").write_text(
+        "import importlib\nimportlib.import_module(runtime_name)"
+    )
+    policy = {
+        "rules": [{"changes": ["scripts/alpha.py"], "tests": ["tests/test_opaque.py"]}]
+    }
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "selected"
+    (repo / "tests/test_tail.py").write_text("import test_opaque")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "unresolved"
+
+
+def test_semantic_mutable_import_dictionary_is_unknown(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import importlib\nMODULES = {"alpha": "hash"}\nMODULES.update(user_modules)\nfor name in MODULES:\n    importlib.import_module(name)'
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+def test_semantic_file_source_root_selects_flat_consumer(repo):
+    (repo / "app.py").write_text("import alpha")
+    (repo / "tests/test_app.py").write_text("import app")
+    policy = {"source_roots": ["scripts/alpha.py", "app.py"]}
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_app.py" in result["selected_tests"]
+
+
+def test_semantic_unlisted_sibling_source_is_unknown(repo):
+    (repo / "app.py").write_text("X=1")
+    (repo / "newproduct.py").write_text("X=1")
+    (repo / "tests/test_new.py").write_text("import newproduct")
+    result = local_check.select_tests(
+        repo, ["newproduct.py"], {"source_roots": ["app.py"]}
+    )
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "newproduct.py" for item in result["unresolved"])
+
+
+def test_semantic_overlapping_file_directory_roots_parse_once(repo, monkeypatch):
+    calls = []
+    original = local_check.ast.parse
+
+    def record(text, *args, **kwargs):
+        calls.append(text)
+        return original(text, *args, **kwargs)
+
+    monkeypatch.setattr(local_check.ast, "parse", record)
+    local_check.select_tests(
+        repo, ["scripts/alpha.py"], {"source_roots": ["scripts", "scripts/alpha.py"]}
+    )
+    assert calls.count("X = 1\n") == 1
+
+
+def test_semantic_file_root_symlink_escape_is_rejected(repo, tmp_path_factory):
+    external = tmp_path_factory.mktemp("outside") / "external.py"
+    external.write_text("X=1")
+    (repo / "escape.py").symlink_to(external)
+    with pytest.raises(ValueError, match="escapes repository"):
+        local_check.select_tests(
+            repo, ["scripts/alpha.py"], {"source_roots": ["escape.py"]}
+        )
+
+
+@pytest.mark.parametrize(
+    "modes,expect_auto",
+    [
+        (["supplement"], True),
+        (["mapped", "supplement"], False),
+        (["mapped", "auto", "supplement"], True),
+    ],
+)
+def test_supplement_adds_mandatory_checks_without_overriding_dependency_mode(
+    repo, modes, expect_auto
+):
+    (repo / "tests/test_consumer.py").write_text("import alpha")
+    rules = [
+        {
+            "changes": ["scripts/alpha.py"],
+            "tests": ["tests/test_beta.py"],
+            "checks": ["mandatory-contract"],
+            "dependency_mode": mode,
+        }
+        for mode in modes
+    ]
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {"rules": rules})
+    assert result["status"] == "selected"
+    assert "tests/test_beta.py" in result["selected_tests"]
+    assert result["checks"] == ["mandatory-contract"]
+    assert ("tests/test_consumer.py" in result["selected_tests"]) is expect_auto
+
+
+@pytest.mark.parametrize("mode", ["invalid", None, 1, [], {}])
+def test_dependency_mode_rejects_unknown_values(repo, mode):
+    with pytest.raises(ValueError, match="dependency_mode"):
+        local_check.select_tests(
+            repo,
+            ["scripts/alpha.py"],
+            {
+                "rules": [
+                    {
+                        "changes": ["scripts/alpha.py"],
+                        "tests": ["tests/test_alpha.py"],
+                        "dependency_mode": mode,
+                    }
+                ]
+            },
+        )
+
+
+def test_embedded_python_alias_has_own_scope(repo):
+    (repo / "tests/test_embedded.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "import importlib as il; il.import_module(\'alpha\')"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_embedded.py" in result["selected_tests"]
+
+
+def test_embedded_python_does_not_inherit_outer_alias_or_file(repo):
+    (repo / "tests/test_embedded.py").write_text(
+        'import subprocess, sys, importlib as il\nsubprocess.run([sys.executable, "-c", "il.import_module(name)"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_embedded_nested_alias_does_not_use_outer_shadow(repo):
+    (repo / "tests/test_embedded.py").write_text(
+        'import subprocess, sys\nil = object()\nsubprocess.run([sys.executable, "-c", "def load():\\n import importlib as il\\n il.import_module(\'alpha\')\\nload()"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_embedded.py" in result["selected_tests"]
+
+
+def test_embedded_file_has_no_outer_file_value(repo):
+    (repo / "tests/test_embedded.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "import runpy; runpy.run_path(__file__)"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "cwd,status", [('"."', "selected"), ("runtime_directory", "unresolved")]
+)
+def test_embedded_cwd_subset_is_explicit(repo, cwd, status):
+    (repo / "tests/test_embedded.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", "import json"], cwd='
+        + cwd
+        + ")"
+    )
+    assert local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"] == status
+
+
+def test_assignment_loader_alias_is_not_silently_skipped(repo):
+    (repo / "tests/test_alias.py").write_text(
+        'import importlib\nload = importlib.import_module\nload("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_alias.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize("package", ['"pkg"', 'package="pkg"'])
+def test_relative_dynamic_import_has_package_context(repo, package):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("X=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    (repo / "tests/test_dynamic.py").write_text(
+        'import importlib\nimportlib.import_module(".alpha", ' + package + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert "tests/test_dynamic.py" in result["selected_tests"]
+
+
+def test_rebound_assignment_loader_alias_stays_unknown(repo):
+    (repo / "tests/test_alias.py").write_text(
+        'import importlib\nload = importlib.import_module\nload = runtime_loader\nload("alpha")'
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+def test_relative_dynamic_import_unknown_package_stays_unknown(repo):
+    (repo / "tests/test_dynamic.py").write_text(
+        'import importlib\nimportlib.import_module(".alpha", package=runtime_package)'
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+def test_toml_condition_requires_internal_base_proof(repo):
+    rule = {
+        "changes": ["pyproject.toml"],
+        "tests": ["tests/test_alpha.py"],
+        "dependency_mode": "mapped",
+        "toml_only_keys": ["project.version"],
+        "condition_verified": True,
+    }
+    result = local_check.select_tests(repo, ["pyproject.toml"], {"rules": [rule]})
+    assert result["status"] == "unresolved"
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {"rules": [rule]})[
+            "status"
+        ]
+        == "selected"
+    )
+
+
+@pytest.mark.parametrize(
+    "extra,status", [("", "selected"), ('dependencies = ["new"]\n', "unresolved")]
+)
+@pytest.mark.parametrize("entry", ["plan", "full", "quick"])
+def test_toml_version_only_condition_preserves_dependency_auto(
+    repo, extra, status, entry
+):
+    (repo / "pyproject.toml").write_text('[project]\nversion = "1.0"\n')
+    (repo / "tests/test_opaque.py").write_text(
+        "import importlib\nimportlib.import_module(runtime_name)"
+    )
+    (repo / ".test-selection.json").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "changes": ["pyproject.toml"],
+                        "tests": ["tests/test_alpha.py"],
+                        "dependency_mode": "mapped",
+                        "toml_only_keys": ["project.version"],
+                    },
+                    {
+                        "changes": ["pyproject.toml"],
+                        "tests": ["tests/test_beta.py"],
+                        "dependency_mode": "supplement",
+                    },
+                ]
+            }
+        )
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "manifest base")
+    _git(repo, "branch", "-f", "base")
+    (repo / "pyproject.toml").write_text('[project]\nversion = "2.0"\n' + extra)
+    if entry == "plan":
+        result = local_check.plan_tests(repo, "base")
+        assert result["status"] == status
+    elif status == "unresolved":
+        with pytest.raises(ValueError, match="unresolved test selection"):
+            local_check.build_steps(repo, entry, "base")
+    else:
+        steps = local_check.build_steps(repo, entry, "base")
+        commands = [command for name, command in steps if name.startswith("pytest")]
+        assert len(commands) == 1
+        assert commands[0][commands[0].index("--") + 1 :] == [
+            "tests/test_alpha.py",
+            "tests/test_beta.py",
+        ]
+
+
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ("flag = 1", "flag = true"),
+        ("flag = 1", ""),
+        ("", "flag = 1"),
+        ("flag = 1", "flag = ["),
+    ],
+)
+def test_toml_condition_rejects_other_type_keys_and_parse_errors(repo, before, after):
+    name = "pyproject.toml"
+    (repo / name).write_text('[project]\nversion = "1.0"\n' + before)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "toml base")
+    (repo / name).write_text('[project]\nversion = "2.0"\n' + after)
+    base = local_check.git(repo, "rev-parse", "HEAD").strip()
+    config, evidence = local_check._toml_scoped_config(
+        repo,
+        [name],
+        {
+            "rules": [
+                {
+                    "changes": [name],
+                    "toml_only_keys": ["project.version"],
+                    "dependency_mode": "mapped",
+                    "tests": ["tests/test_alpha.py"],
+                }
+            ]
+        },
+        base,
+    )
+    assert config["rules"] == []
+    assert evidence[0]["matched"] is False
+    assert "flag" not in json.dumps(evidence)
+
+
+def test_toml_version_condition_does_not_accept_symlink(repo):
+    manifest = repo / "pyproject.toml"
+    manifest.write_text('[project]\nversion = "1.0"\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "toml base")
+    base = local_check.git(repo, "rev-parse", "HEAD").strip()
+    manifest.unlink()
+    (repo / "target.toml").write_text('[project]\nversion = "2.0"\n')
+    manifest.symlink_to("target.toml")
+    config, evidence = local_check._toml_scoped_config(
+        repo,
+        ["pyproject.toml"],
+        {
+            "rules": [
+                {
+                    "changes": ["pyproject.toml"],
+                    "toml_only_keys": ["project.version"],
+                    "tests": ["tests/test_alpha.py"],
+                    "dependency_mode": "mapped",
+                }
+            ]
+        },
+        base,
+    )
+    assert config["rules"] == []
+    assert evidence[0]["matched"] is False
+
+
+@pytest.mark.parametrize(
+    "body,target",
+    [
+        (
+            'import importlib\nNAME="beta"\ndef change():\n global NAME\n NAME="alpha"\nchange()\nimportlib.import_module(NAME)',
+            "scripts/alpha.py",
+        ),
+        (
+            'import importlib\nNAME="alpha"\nTARGET=NAME\ndef read():\n NAME="beta"\n importlib.import_module(TARGET)\nread()',
+            "scripts/alpha.py",
+        ),
+        (
+            'from pathlib import Path\n(Path(__file__).parent / "data/config.json").read_text()',
+            "tests/data/config.json",
+        ),
+        ('__import__("pkg", fromlist=["alpha"])', "scripts/pkg/alpha.py"),
+        (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd="scripts")',
+            "scripts/pkg/alpha.py",
+        ),
+    ],
+)
+def test_reference_context_never_silently_omits_consumer(repo, body, target):
+    path = repo / target
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("X=1" if target.endswith(".py") else "{}")
+    (repo / "tests/test_direct.py").write_text("TARGET = " + repr(target))
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, [target], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_context.py" in result["selected_tests"]
+    )
+
+
+def test_relative_imported_loader_alias_preserves_package(repo):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("X=1")
+    (repo / "scripts/pkg/helper.py").write_text(
+        'from pathlib import Path\nimport importlib.util\nSOURCE=Path(__file__).parent\ndef load(name):\n return importlib.util.spec_from_file_location(name, SOURCE / (name + ".py"))'
+    )
+    (repo / "scripts/pkg/consumer.py").write_text(
+        'from .helper import load\nload("alpha")'
+    )
+    (repo / "tests/test_context.py").write_text("import pkg.consumer")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_context.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'import importlib\ndef outer():\n name="beta"\n def mutate():\n  nonlocal name\n  name="alpha"\n mutate()\n importlib.import_module(name)\nouter()',
+        '__import__("pkg", fromlist=runtime_names)',
+        '__import__("pkg", fromlist=["alpha"], level=runtime_level)',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd=runtime_cwd)',
+        'import runpy\nNAME=runtime_path\nTARGET=NAME\ndef read():\n NAME="scripts/beta.py"\n runpy.run_path(TARGET)\nread()',
+    ],
+)
+def test_unproven_reference_context_stays_unknown(repo, body):
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_global_mutation_does_not_invalidate_independent_local_binding(repo):
+    (repo / "tests/test_context.py").write_text(
+        'import importlib\nname="beta"\ndef mutate():\n global name\n name=runtime_name\ndef read():\n name="alpha"\n importlib.import_module(name)\nread()'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_context.py" in result["selected_tests"]
+    assert result["status"] == "selected"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'import runpy\nrunpy.run_path("scripts\\\\alpha.py")',
+        'import subprocess, sys\nsubprocess.run([sys.executable, "alpha.py"], cwd="scripts")',
+        'from pathlib import Path\nimport importlib.util\nsource=Path(__file__).parents[1] / "scripts" / "alpha.py"\nimportlib.util.spec_from_file_location("alpha", source)',
+    ],
+)
+def test_file_reference_ids_are_platform_independent(repo, body):
+    (repo / "tests/test_context.py").write_text(body)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_context.py" in result["selected_tests"]
+    assert result["status"] == "selected"
+
+
+def test_windows_reference_path_composition_is_posix():
+    base = local_check._reference_path("scripts\\pkg\\loader.py")
+    assert base.with_name("alpha.py").as_posix() == "scripts/pkg/alpha.py"
+    assert (base.parent / "alpha.py").as_posix() == "scripts/pkg/alpha.py"
+
+
+def test_composed_file_reference_does_not_use_repository_root_fragment(repo):
+    for name in ["data/config.json", "tests/data/config.json"]:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}")
+    (repo / "tests/test_direct.py").write_text('DATA = "data/config.json"')
+    (repo / "tests/test_context.py").write_text(
+        'from pathlib import Path\nsource = Path(__file__).parent / "data/config.json"\nsource.read_text()'
+    )
+    result = local_check.select_tests(repo, ["data/config.json"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_context.py" not in result["selected_tests"]
+    local = local_check.select_tests(repo, ["tests/data/config.json"], {})
+    assert "tests/test_context.py" in local["selected_tests"]
+
+
+def test_python_cli_cwd_does_not_also_reference_root_script(repo):
+    for name in ["pkg/alpha.py", "scripts/pkg/alpha.py"]:
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("X=1")
+    (repo / "tests/test_direct.py").write_text('SOURCE="pkg/alpha.py"')
+    (repo / "tests/test_context.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "pkg/alpha.py"], cwd="scripts")'
+    )
+    result = local_check.select_tests(
+        repo, ["pkg/alpha.py"], {"source_roots": ["scripts", "pkg"]}
+    )
+    assert result["status"] == "selected"
+    assert "tests/test_context.py" not in result["selected_tests"]
+
+
+def test_parent_segment_in_ordinary_marker_data_is_not_dependency(repo):
+    (repo / "tests/test_marker.py").write_text(
+        'original = "codex.exe"\nmarker = original.replace("codex.exe", "../codex.exe")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_static_file_parent_segments_resolve_within_repository(repo):
+    (repo / "tests/data").mkdir()
+    (repo / "tests/config.json").write_text("{}")
+    (repo / "tests/test_reader.py").write_text(
+        'from pathlib import Path\np = Path(__file__).parent / "data" / ".." / "config.json"\np.read_text()'
+    )
+    result = local_check.select_tests(repo, ["tests/config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_reader.py" in result["selected_tests"]
+
+
+def test_static_external_file_is_not_local_producer(repo):
+    (repo / "config.json").write_text("{}")
+    (repo / "tests/test_direct.py").write_text('DOC = "config.json"')
+    (repo / "tests/test_external.py").write_text(
+        'from pathlib import Path\np = Path(__file__).parents[1] / ".." / "config.json"\np.read_text()'
+    )
+    result = local_check.select_tests(repo, ["config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_external.py" not in result["selected_tests"]
+
+
+def test_changed_file_parent_segments_still_reject(repo):
+    with pytest.raises(ValueError, match="repository-relative"):
+        local_check.select_tests(repo, ["scripts/../scripts/alpha.py"], {})
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        'def reader(arg=importlib.import_module(NAME)):\n NAME="beta"',
+        'def reader(*, arg=importlib.import_module(NAME)):\n NAME="beta"',
+        '@importlib.import_module(NAME).decorate\ndef reader():\n NAME="beta"',
+        'def reader() -> importlib.import_module(NAME):\n NAME="beta"',
+        'def reader(arg: importlib.import_module(NAME)):\n NAME="beta"',
+        "reader = lambda NAME=importlib.import_module(NAME): NAME",
+        'class Reader(metaclass=importlib.import_module(NAME).Meta):\n NAME="beta"',
+        'class Reader(importlib.import_module(NAME).Base):\n NAME="beta"',
+        '@importlib.import_module(NAME).decorate\nclass Reader:\n NAME="beta"',
+    ],
+)
+def test_definition_headers_use_enclosing_scope(repo, definition):
+    (repo / "tests/test_header.py").write_text(
+        'import importlib\nNAME="alpha"\n' + definition
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert "tests/test_header.py" in result["selected_tests"]
+    assert result["status"] == "selected", result["unresolved"]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_loader_callback_escape_is_checked_in_every_parsed_tree(repo, embedded):
+    code = 'import importlib\nlist(map(importlib.import_module, ["alpha"]))'
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_callback.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        item["file"] == "tests/test_callback.py" for item in result["unresolved"]
+    )
+
+
+def test_loader_parent_traversal_still_requires_owner_mapping(repo):
+    (repo / "tests/test_loader.py").write_text(
+        'import runpy\nrunpy.run_path("scripts/../scripts/alpha.py")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("path escape" in item["reason"] for item in result["unresolved"])
+
+
+def test_method_default_class_names_require_owner_mapping(repo):
+    (repo / "tests/test_header.py").write_text(
+        'import importlib\nNAME="beta"\nclass Holder:\n NAME="alpha"\n def reader(arg=importlib.import_module(NAME)):\n  NAME="beta"'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "class body binding value" in item["reason"] for item in result["unresolved"]
+    )
+    policy = {
+        "rules": [
+            {
+                "changes": ["scripts/alpha.py"],
+                "dependency_mode": "mapped",
+                "tests": ["tests/test_alpha.py", "tests/test_header.py"],
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_header.py" in result["selected_tests"]
+
+
+def test_embedded_imported_callback_alias_remains_unknown(repo):
+    code = 'from importlib import import_module as load\nlist(map(load, ["alpha"]))'
+    (repo / "tests/test_callback.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+        + repr(code)
+        + "])"
+    )
+    assert (
+        local_check.select_tests(repo, ["scripts/alpha.py"], {})["status"]
+        == "unresolved"
+    )
+
+
+@pytest.mark.parametrize(
+    "pattern,subject",
+    [
+        ("str(NAME)", '"alpha"'),
+        ("[NAME]", '["alpha"]'),
+        ('{"key": NAME}', '{"key": "alpha"}'),
+        ("[*NAME]", '["alpha"]'),
+        ("{**NAME}", '{"key": "alpha"}'),
+        ('{"key": [str(NAME)]}', '{"key": ["alpha"]}'),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_pattern_capture_invalidates_previous_loader_target(
+    repo, pattern, subject, embedded
+):
+    code = (
+        'import importlib\nNAME="beta"\nmatch '
+        + subject
+        + ":\n case "
+        + pattern
+        + ":\n  importlib.import_module(NAME)\n"
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_capture.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "tests/test_capture.py" for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "module,call",
+    [
+        ("importlib", 'import_module("alpha")'),
+        ("importlib.util", 'spec_from_file_location("loaded", runtime_target)'),
+        ("runpy", 'run_module("alpha")'),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_supported_loader_star_import_is_not_silently_ignored(
+    repo, module, call, embedded
+):
+    code = "from " + module + " import *\n" + call
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_star_loader.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        item["file"] == "tests/test_star_loader.py" for item in result["unresolved"]
+    )
+
+
+def test_non_loader_star_import_does_not_block_known_local_consumer(repo):
+    (repo / "tests/test_normal.py").write_text("from math import *\nimport alpha")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert "tests/test_normal.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'from pathlib import Path\nPath("assets/config").read_text()',
+        'open("assets/config").read()',
+        'FILE = "assets/config"',
+    ],
+)
+def test_extensionless_exact_file_reference_keeps_reader(repo, body):
+    (repo / "assets").mkdir()
+    (repo / "assets/config").write_text("value")
+    (repo / "scripts/reader.py").write_text(body)
+    (repo / "tests/test_reader.py").write_text("import reader")
+    policy = {
+        "rules": [
+            {
+                "changes": ["assets/**"],
+                "tests": ["tests/test_beta.py"],
+                "dependency_mode": "supplement",
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["assets/config"], policy)
+    assert result["status"] == "selected"
+    assert "tests/test_reader.py" in result["selected_tests"]
+    assert "tests/test_beta.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        'CMD[1] = "pkg/alpha.py"',
+        "CMD.insert(1, runtime_target)",
+        "CMD += runtime_arguments",
+    ],
+)
+def test_mutated_known_python_command_is_not_silently_ignored(repo, mutation):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("X=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable, "pkg/beta.py"]\n'
+        + mutation
+        + '\nsubprocess.run(CMD, cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(item["file"] == "tests/test_command.py" for item in result["unresolved"])
+
+
+def test_unresolved_external_command_does_not_become_python_loader(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess\nCMD=["git", "status"]\nCMD[1]=runtime_option\nsubprocess.run(CMD)\nsubprocess.run(runtime_external_command)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_command_provenance_respects_local_shadowing(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"unrelated.py"]\n'
+        'def external():\n CMD=["git","status"]\n CMD[1]=runtime_option\n subprocess.run(CMD)\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_inherited_python_command_mutation_remains_unknown(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"pkg/beta.py"]\n'
+        'def execute():\n CMD[1]=runtime_target\n subprocess.run(CMD,cwd="scripts")\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_extensionless_basename_does_not_guess_another_directory(repo):
+    (repo / "assets").mkdir()
+    (repo / "assets/config").write_text("value")
+    (repo / "tests/test_message.py").write_text('MESSAGE="config"')
+    policy = {
+        "rules": [
+            {
+                "changes": ["assets/**"],
+                "tests": ["tests/test_beta.py"],
+                "dependency_mode": "supplement",
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["assets/config"], policy)
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+@pytest.mark.parametrize("option", ["-O", "-OO", "-X"])
+def test_unsupported_python_option_is_not_a_filename(repo, option):
+    (repo / "tests/test_command.py").write_text(
+        "import subprocess, sys\nsubprocess.run([sys.executable, "
+        + repr(option)
+        + ', "-m", "alpha"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "loader", ["runpy.run_path", "importlib.util.spec_from_file_location"]
+)
+def test_unknown_loader_prefix_is_not_proven_external(repo, loader):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    target = 'Path(os.environ["SOURCE_ROOT"]) / "pkg/alpha.py"'
+    arguments = target if loader == "runpy.run_path" else '"loaded", ' + target
+    (repo / "tests/test_prefix.py").write_text(
+        "import os, runpy, importlib.util\nfrom pathlib import Path\n"
+        + loader
+        + "("
+        + arguments
+        + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "alias",
+    [
+        "OTHER=CMD\nOTHER[1]=runtime_target",
+        "OTHER=CMD\nTHIRD=OTHER\nTHIRD.insert(1,runtime_target)",
+    ],
+)
+def test_mutable_command_alias_does_not_leave_original_resolved(repo, alias):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"pkg/beta.py"]\n'
+        + alias
+        + '\nsubprocess.run(CMD,cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_python_version_query_is_not_an_unresolved_script(repo):
+    (repo / "tests/test_version.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable,"--version"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+
+
+@pytest.mark.parametrize(
+    "method", ["run", "Popen", "call", "check_call", "check_output"]
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_subprocess_args_keyword_keeps_python_consumer(repo, method, embedded):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    arguments = (
+        '[sys.executable,"-c","import scripts.pkg.alpha"]'
+        if embedded
+        else '[sys.executable,"pkg/alpha.py"],cwd="scripts"'
+    )
+    (repo / "tests/test_keyword.py").write_text(
+        "import subprocess,sys\nsubprocess." + method + "(args=" + arguments + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_keyword.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize("alias", ["OTHER=CMD", "MIDDLE=CMD\nOTHER=MIDDLE"])
+def test_immutable_python_command_alias_keeps_target(repo, alias):
+    (repo / "scripts/pkg").mkdir()
+    (repo / "scripts/pkg/alpha.py").write_text("VALUE=1")
+    (repo / "tests/test_direct.py").write_text("import pkg.alpha")
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess,sys\nCMD=(sys.executable,"pkg/alpha.py")\n'
+        + alias
+        + '\nsubprocess.run(OTHER,cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/pkg/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_command.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        '[sys.executable,"other.py"],args=[sys.executable,"pkg/alpha.py"]',
+        'args=[sys.executable,"pkg/alpha.py"],**runtime_options',
+    ],
+)
+def test_ambiguous_python_subprocess_arguments_remain_unknown(repo, arguments):
+    (repo / "tests/test_command.py").write_text(
+        "import subprocess,sys\nsubprocess.run(" + arguments + ")"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_subprocess_result_object_and_generic_keyword_command_are_not_python_loaders(
+    repo,
+):
+    (repo / "tests/test_result.py").write_text(
+        'import subprocess,sys\nsubprocess.CompletedProcess(args=[sys.executable,"-c","import alpha"],returncode=0)\n'
+        "subprocess.run(args=runtime_external_command,**runtime_options)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize(
+    "helper,consumer",
+    [
+        (
+            "from importlib import import_module as load",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "from runpy import run_module as fetch",
+            'import helper\nhelper.fetch("alpha")',
+        ),
+        (
+            "from importlib.util import spec_from_file_location as load",
+            'from helper import *\nload("loaded",runtime_target)',
+        ),
+        (
+            "import importlib as library",
+            'import helper\nhelper.library.import_module("alpha")',
+        ),
+        (
+            "from importlib import import_module as fetch\nfetch=lambda name: None",
+            'from helper import fetch\nfetch("alpha")',
+        ),
+    ],
+)
+def test_standard_loader_reexport_requires_owner_mapping(repo, helper, consumer):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_reexport.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "re-export" in item["reason"] or "star import" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "consumer", ["from helper import load\nload(4)", "import helper\nhelper.load(4)"]
+)
+def test_non_loader_reexport_with_same_alias_does_not_block(repo, consumer):
+    (repo / "scripts/helper.py").write_text("from math import sqrt as load")
+    (repo / "tests/test_math.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_star_module_reexport_cannot_hide_a_supported_loader(repo):
+    (repo / "scripts/helper.py").write_text("import importlib as library")
+    (repo / "tests/test_reexport.py").write_text(
+        'from helper import *\nlibrary.import_module("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "helper,consumer",
+    [
+        (
+            "import importlib\nload=importlib.import_module",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib as lib\nfetch=lib.import_module",
+            'import helper\nhelper.fetch("alpha")',
+        ),
+        (
+            "import importlib as lib\nload=lib.import_module\nload=lambda name: None",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib as lib\nfirst=lib.import_module\nfirst=lambda name: None\nload=first",
+            'from helper import load\nload("alpha")',
+        ),
+        (
+            "import importlib\nlibrary=importlib\nlibrary=object()\nload=library.import_module",
+            'import helper\nhelper.load("alpha")',
+        ),
+    ],
+)
+def test_assigned_standard_loader_reexport_remains_unknown(repo, helper, consumer):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_reexport.py").write_text(consumer)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "helper",
+    [
+        "import math\nload=math.sqrt",
+        "from math import sqrt\nload=sqrt\nload=lambda value: value",
+    ],
+)
+def test_assigned_non_loader_reexport_does_not_block(repo, helper):
+    (repo / "scripts/helper.py").write_text(helper)
+    (repo / "tests/test_math.py").write_text("from helper import load\nload(4)")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected"
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+@pytest.mark.parametrize("namespace", [False, True])
+@pytest.mark.parametrize("execution", ["runpy", "cli"])
+def test_package_execution_tracks_main_file(repo, deleted, namespace, execution):
+    package = repo / "scripts/pkg"
+    package.mkdir()
+    if not namespace:
+        (package / "__init__.py").write_text("")
+    if not deleted:
+        (package / "__main__.py").write_text("VALUE = 1\n")
+    code = (
+        'import runpy\nrunpy.run_module("pkg", run_name="__main__")'
+        if execution == "runpy"
+        else 'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "pkg"])'
+    )
+    (repo / "tests/test_package.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_package.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "code", ["import pkg", 'import importlib\nimportlib.import_module("pkg")']
+)
+def test_package_import_does_not_execute_main(repo, code):
+    package = repo / "scripts/pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "__main__.py").write_text("VALUE = 1\n")
+    (repo / "tests/test_package.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert "tests/test_package.py" not in result["selected_tests"]
+
+
+def test_python_module_execution_with_changed_cwd_requires_mapping(repo):
+    (repo / "tests/test_package.py").write_text(
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m", "alpha"], cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("module cwd" in item["reason"] for item in result["unresolved"])
+
+
+def test_regular_module_execution_does_not_execute_package_main(repo):
+    (repo / "scripts/pkg.py").write_text("")
+    (repo / "tests/test_package.py").write_text('import runpy\nrunpy.run_module("pkg")')
+    result = local_check.select_tests(repo, ["scripts/pkg/__main__.py"], {})
+    assert "tests/test_package.py" not in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "comprehension",
+    [
+        "[importlib.import_module(NAME) for _ in (0,)]",
+        "{importlib.import_module(NAME) for _ in (0,)}",
+        "{_: importlib.import_module(NAME) for _ in (0,)}",
+        "(importlib.import_module(NAME) for _ in (0,))",
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_class_comprehension_cannot_borrow_class_loader_binding(
+    repo, comprehension, embedded
+):
+    code = (
+        'import importlib\nNAME="alpha"\nclass Holder:\n NAME="beta"\n values='
+        + comprehension
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_comprehension.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_comprehension.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_class_comprehension_shadowed_loader_alias_requires_mapping(repo, embedded):
+    code = (
+        'from importlib import import_module as load\nNAME="alpha"\n'
+        'class Holder:\n load=lambda name: None\n NAME="beta"\n values=[load(NAME) for _ in (0,)]'
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_comprehension.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("class comprehension" in item["reason"] for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "values=[str(_) for _ in (0,)]",
+        "def helper():\n return [str(_) for _ in (0,)]",
+        "class Holder:\n values=(1, 2)",
+        "class Holder:\n def helper(self):\n  return [str(_) for _ in (0,)]",
+    ],
+)
+def test_nonclass_comprehensions_and_class_data_remain_supported(repo, code):
+    (repo / "tests/test_comprehension.py").write_text("import alpha\n" + code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_comprehension.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ['Path("foo.py").with_name("dir/alpha.py")', 'Path(".").with_name("alpha.py")'],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_invalid_static_filename_remains_unresolved_instead_of_aborting(
+    repo, expression, embedded
+):
+    code = "from pathlib import Path\n" + expression
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_invalid_path.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_invalid_path.py" in result["selected_tests"]
+    )
+    if result["status"] == "unresolved":
+        assert any(
+            "invalid static path" in item["reason"] for item in result["unresolved"]
+        )
+
+
+def test_mapped_invalid_filename_consumer_can_be_explicitly_covered(repo):
+    (repo / "tests/test_invalid_path.py").write_text(
+        'from pathlib import Path\nPath("foo.py").with_name("dir/alpha.py")'
+    )
+    policy = {
+        "rules": [
+            {
+                "changes": ["scripts/alpha.py"],
+                "dependency_mode": "mapped",
+                "tests": ["tests/test_alpha.py", "tests/test_invalid_path.py"],
+            }
+        ]
+    }
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], policy)
+    assert result["status"] == "selected", result["unresolved"]
+
+
+def test_invalid_summary_filename_base_remains_unresolved(repo):
+    (repo / "tests/test_invalid_path.py").write_text(
+        'from pathlib import Path\nimport importlib.util\nBASE=Path(".")\n'
+        'def load(name):\n return importlib.util.spec_from_file_location("loaded", BASE.with_name(name + ".py"))\nload("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize("kind", ["star", "class", "mutable_escape"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_unproved_scope_or_mutable_binding_cannot_hide_alpha_consumer(
+    repo, kind, embedded
+):
+    (repo / "scripts/settings.py").write_text('NAME="alpha"\n')
+    code = {
+        "star": 'import importlib\nNAME="beta"\nfrom settings import *\nimportlib.import_module(NAME)',
+        "class": 'import importlib\nNAME="alpha"\nclass Holder:\n module=importlib.import_module(NAME)\n NAME="beta"',
+        "mutable_escape": 'import subprocess, sys\ndef rewrite(cmd):\n cmd[1]="scripts/" + "".join(("al", "pha")) + ".py"\nCMD=[sys.executable, "scripts/beta.py"]\nrewrite(CMD)\nsubprocess.run(CMD)',
+    }[kind]
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_unproved.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_unproved.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['[sys.executable, "scripts/alpha.py"]', '(sys.executable, "scripts/alpha.py")'],
+)
+def test_direct_literal_or_immutable_tuple_command_remains_supported(repo, command):
+    code = "import subprocess, sys\n"
+    code += (
+        "CMD=" + command + "\nsubprocess.run(CMD)"
+        if command.startswith("(")
+        else "subprocess.run(" + command + ")"
+    )
+    (repo / "tests/test_supported_command.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_supported_command.py" in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "class Holder:\n import alpha",
+        'import importlib\nNAME="alpha"\nclass Holder:\n NAME="beta"\n def reader(self):\n  return importlib.import_module(NAME)',
+    ],
+)
+def test_class_import_edges_and_method_execution_scope_remain_supported(repo, code):
+    (repo / "tests/test_supported_class.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_supported_class.py" in result["selected_tests"]
+
+
+def test_mutable_command_name_is_unknown_without_mutator_enumeration(repo):
+    (repo / "tests/test_command.py").write_text(
+        'import subprocess, sys\nCMD=[sys.executable,"scripts/beta.py"]\n'
+        'def rewrite():\n CMD[1]="scripts/" + "".join(("al","pha")) + ".py"\nrewrite()\nsubprocess.run(CMD)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("opaque Python" in item["reason"] for item in result["unresolved"])
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'import importlib\nNAME="alpha"\nclass Holder:\n alias=importlib.import_module\n module=alias(NAME)',
+        'from runpy import run_module as load\nclass Holder:\n module=load("pkg")\n from importlib import import_module as load',
+    ],
+)
+def test_class_loader_alias_cannot_disappear_after_value_rejection(repo, code):
+    (repo / "tests/test_alias.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "class body binding value" in item["reason"] for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize("namespace", ["globals()", "locals()", "vars()", "ns()"])
+@pytest.mark.parametrize("embedded", [False, True])
+def test_reflective_namespace_cannot_hide_binding_changes(repo, namespace, embedded):
+    code = (
+        'import importlib\nfrom builtins import globals as ns\nNAME="beta"\n'
+        + namespace
+        + '["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_reflective.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_reflective.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "setup,call",
+    [
+        ("", "vars(obj)"),
+        ("inspect=vars\n", "inspect(obj)"),
+        ("from builtins import vars as inspect\n", "inspect(obj)"),
+    ],
+)
+def test_object_vars_observation_does_not_claim_lexical_namespace_mutation(
+    repo, setup, call
+):
+    (repo / "tests/test_object.py").write_text(
+        "import alpha\nfrom types import SimpleNamespace\nobj=SimpleNamespace()\n"
+        + setup
+        + call
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_beta.py" in result["selected_tests"]
+    assert "tests/test_object.py" not in result["selected_tests"]
+
+
+def test_zero_argument_vars_alias_remains_unsupported(repo):
+    (repo / "tests/test_reflective.py").write_text(
+        'import importlib\nNAME="beta"\ninspect=vars\ninspect()["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "lexical namespace reflection" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "call", ["vars(*())", "vars(**{})", "inspect(*())", "inspect(**{})"]
+)
+def test_vars_expanded_arity_cannot_hide_lexical_namespace(repo, call):
+    (repo / "tests/test_reflective.py").write_text(
+        'import importlib\nNAME="beta"\ninspect=vars\nNS='
+        + call
+        + '\nNS["NAME"]="".join(("al","pha"))\nimportlib.import_module(NAME)'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "lexical namespace reflection" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "branches,call",
+    [
+        ("from importlib import import_module as load", 'load("alpha")'),
+        ("import importlib as engine", 'engine.import_module("alpha")'),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_conditional_import_callee_cannot_lose_possible_loader_origin(
+    repo, branches, call, embedded
+):
+    fallback = (
+        "from json import loads as load"
+        if " as load" in branches
+        else "import json as engine"
+    )
+    code = (
+        "import sys\nif sys.version_info.major == 3:\n "
+        + branches
+        + "\nelse:\n "
+        + fallback
+        + "\n"
+        + call
+    )
+    if embedded:
+        code = (
+            'import subprocess, sys\nsubprocess.run([sys.executable, "-c", '
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_conditional.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_conditional.py" in result["selected_tests"]
+    )
+
+
+def test_single_non_loader_import_callable_does_not_require_mapping(repo):
+    (repo / "tests/test_non_loader.py").write_text(
+        'from json import loads as load\nload("42")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert "tests/test_non_loader.py" not in result["selected_tests"]
+
+
+@pytest.mark.parametrize(
+    "producer,fallback,call",
+    [
+        (
+            "import subprocess as runner",
+            "import json as runner",
+            'runner.run([sys.executable,"-m","alpha"],cwd="scripts")',
+        ),
+        (
+            "from subprocess import run as launch",
+            "from json import loads as launch",
+            'launch([sys.executable,"-m","alpha"],cwd="scripts")',
+        ),
+    ],
+)
+@pytest.mark.parametrize("embedded", [False, True])
+def test_conditional_cli_import_keeps_possible_python_producer(
+    repo, producer, fallback, call, embedded
+):
+    code = (
+        "import sys\nif sys.version_info.major==3:\n "
+        + producer
+        + "\nelse:\n "
+        + fallback
+        + "\n"
+        + call
+    )
+    if embedded:
+        code = (
+            'import subprocess,sys\nsubprocess.run([sys.executable,"-c",'
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_conditional.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_conditional.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "producer",
+    [
+        "from importlib import import_module as load",
+        "from subprocess import run as load",
+    ],
+)
+def test_import_candidates_preserve_conditional_reexport_producer(repo, producer):
+    (repo / "scripts/helper.py").write_text(
+        producer + "\nif False:\n from math import sqrt as load"
+    )
+    (repo / "tests/test_reexport_candidate.py").write_text(
+        'from helper import load\nload("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("re-export" in item["reason"] for item in result["unresolved"])
+
+
+def test_non_producer_import_candidates_do_not_borrow_hidden_scope_loader(repo):
+    (repo / "scripts/helper.py").write_text(
+        "from math import sin as load\nfrom math import sqrt as load\ndef hidden():\n from importlib import import_module as load"
+    )
+    (repo / "tests/test_ordinary.py").write_text("from helper import load\nload(4)")
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+def test_inherited_import_candidates_remain_unknown_in_function_scope(repo):
+    (repo / "tests/test_conditional.py").write_text(
+        'import sys\nif sys.version_info.major==3:\n from importlib import import_module as load\nelse:\n from json import loads as load\ndef reader():\n return load("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any("imported producer" in item["reason"] for item in result["unresolved"])
+
+
+def test_conditional_sys_prefix_keeps_python_producer_uncertainty(repo):
+    (repo / "tests/test_conditional.py").write_text(
+        'import sys,subprocess\nif sys.version_info.major==3:\n import sys as runtime\nelse:\n import pathlib as runtime\nsubprocess.run([runtime.executable,"-m","alpha"],cwd="scripts")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "ambiguous Python CLI executable" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+def test_ambiguous_module_nonproducer_attribute_does_not_stop_unrelated_change(repo):
+    (repo / "tests/test_observation.py").write_text(
+        'import sys,alpha\nfrom math import *\nsys.path.insert(0,".")\nSYSTEM=sys.platform'
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+@pytest.mark.parametrize(
+    "setup,call",
+    [
+        ("engine=importlib\nif False:\n engine=json", 'engine.import_module("alpha")'),
+        ("load=importlib.import_module\nif False:\n load=json.loads", 'load("alpha")'),
+        (
+            "runner=subprocess\nif False:\n runner=json",
+            'runner.run([sys.executable,"-m","alpha"],cwd="scripts")',
+        ),
+    ],
+)
+@pytest.mark.parametrize("context", ["module", "function", "embedded"])
+def test_assignment_producer_origins_are_not_lost_when_callee_is_ambiguous(
+    repo, setup, call, context
+):
+    body = setup + "\n" + call
+    code = "import importlib,json,subprocess,sys\n" + body
+    if context == "function":
+        code = "import importlib,json,subprocess,sys\ndef reader():\n" + "\n".join(
+            " " + line for line in body.splitlines()
+        )
+    elif context == "embedded":
+        code = (
+            'import subprocess,sys\nsubprocess.run([sys.executable,"-c",'
+            + repr(code)
+            + "])"
+        )
+    (repo / "tests/test_assignment_candidate.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_assignment_candidate.py" in result["selected_tests"]
+    )
+
+
+def test_nonproducer_assignment_origins_do_not_stop_unrelated_change(repo):
+    (repo / "tests/test_observation.py").write_text(
+        'import json,math\nload=json.loads\nif False:\n load=math.sqrt\nload("42")'
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+def test_nonproducer_origin_cycles_and_other_module_names_stay_separate(repo):
+    (repo / "scripts/unrelated.py").write_text(
+        "from importlib import import_module as load"
+    )
+    (repo / "tests/test_observation.py").write_text(
+        "import math\nother=math.sqrt\nload=other\nif False:\n other=load\nload(4)"
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+def test_executable_scalar_observation_is_not_a_callable_producer(repo):
+    (repo / "tests/test_observation.py").write_text(
+        "import sys\nfrom pathlib import Path\nfixture_python=sys.executable\n"
+        'if False:\n fixture_python=getattr(sys,"_base_executable",None)\n'
+        "assert isinstance(fixture_python,str)\nPath(fixture_python).is_file()"
+    )
+    result = local_check.select_tests(repo, ["scripts/beta.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_beta.py"]
+
+
+@pytest.mark.parametrize("prefix", ["runtime.executable", "executable_alias"])
+def test_possible_executable_origin_is_not_certain_python_prefix(repo, prefix):
+    (repo / "tests/test_prefix.py").write_text(
+        "import sys,json,subprocess\nif False:\n import json as runtime\n"
+        "else:\n import sys as runtime\nexecutable_alias=runtime.executable\n"
+        "subprocess.run([" + prefix + ',"-m","alpha"])'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert "tests/test_prefix.py" not in result["selected_tests"]
+
+
+def test_reexported_executable_prefix_requires_owner_mapping(repo):
+    (repo / "scripts/helper.py").write_text("from sys import executable as PY\n")
+    (repo / "tests/test_cli.py").write_text(
+        "import subprocess\nfrom helper import PY\n"
+        'subprocess.run([PY,"-m","alpha"],cwd="scripts")\n'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+    assert any(
+        "ambiguous Python CLI executable" in item["reason"]
+        for item in result["unresolved"]
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'from builtins import __import__ as load\nload("alpha")',
+        'import builtins\nbuiltins.__import__("alpha")',
+    ],
+)
+def test_builtin_import_qualified_dispatch_keeps_consumer(repo, code):
+    (repo / "tests/test_qualified.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_qualified.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "middle", ["from helper_a import api", "import helper_a\napi=helper_a.api"]
+)
+def test_qualified_module_reexport_across_owners_keeps_consumer(repo, middle):
+    (repo / "scripts/helper_a.py").write_text("import importlib as api")
+    (repo / "scripts/helper_b.py").write_text(middle)
+    (repo / "tests/test_qualified.py").write_text(
+        'from helper_b import api\napi.import_module("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_qualified.py" in result["selected_tests"]
+    )
+
+
+def test_path_constructor_keeps_every_segment_in_file_dependency(repo):
+    target = repo / "scripts/v1.0/config.json"
+    target.parent.mkdir()
+    target.write_text("{}")
+    (repo / "tests/test_multi.py").write_text(
+        'from pathlib import Path\nPath("scripts/v1.0", "config.json").read_text()'
+    )
+    (repo / "tests/test_direct.py").write_text(
+        'from pathlib import Path\nPath("scripts/v1.0/config.json").read_text()'
+    )
+    result = local_check.select_tests(repo, ["scripts/v1.0/config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_direct.py", "tests/test_multi.py"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m"] + ["alpha"])',
+        'from subprocess import *\nrun(["python", "-m", "alpha"])',
+    ],
+)
+def test_opaque_cli_provenance_cannot_hide_a_consumer(repo, source):
+    (repo / "tests/test_cli.py").write_text(source)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_cli.py" in result["selected_tests"]
+    )
+
+
+def test_subprocess_callable_escape_cannot_hide_a_consumer(repo):
+    (repo / "tests/test_cli.py").write_text(
+        "import subprocess, sys\n"
+        "def invoke(runner):\n"
+        ' runner([sys.executable, "-m", "alpha"])\n'
+        "invoke(subprocess.run)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_deferred_subprocess_type_annotation_does_not_escape_callable(repo):
+    (repo / "tests/test_annotation.py").write_text(
+        "from __future__ import annotations\n"
+        "import subprocess\n"
+        "def close(process: subprocess.Popen | None):\n"
+        " return None\n"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import subprocess, sys\nPYTHON=(sys.executable,)\nsubprocess.run([*PYTHON, "-m", "alpha"])',
+        'import subprocess, sys\nsubprocess.run(["runner", "-m", "alpha"], executable=sys.executable)',
+        'import subprocess\nsubprocess.run("python -m alpha", shell=True)',
+    ],
+)
+def test_unproven_subprocess_executable_cannot_hide_a_consumer(repo, source):
+    (repo / "tests/test_cli.py").write_text(source)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"

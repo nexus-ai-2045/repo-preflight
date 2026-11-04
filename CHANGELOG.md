@@ -2,9 +2,22 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-11-02
+
 ### CI の環境を必要な分に絞る
 
 - CI の環境を 7 つから 4 つにした（ubuntu の Python 3.11・3.13、Windows の 3.13、macOS の 3.9）。Mac の 3.11・3.13 と Linux の 3.9 を外した。直近 16 回の CI 失敗のうち、これらの環境だけで落ちた回は 0 回で、いつも残す環境と一緒に落ちていた。job の合計時間はおよそ半分になる。必須チェック `test (3.11)`・`test (3.13)` の名前は変えていない。
+
+### repository が検査範囲と実行環境を所有する
+
+- 差分から実際の Python import・明示ファイル参照・支持する CLI 呼出しをたどり、必要な test と周辺の consumer を選ぶ。単語一致による偽の依存を除き、未知の対応は停止する。全件 test への自動 fallback は行わない。
+- owner の `mapped` scope と、必須 companion 検査だけを加える `supplement` を分離。ファイル単位の source root と、変更版・policy・selector の hash 束縛を支持する。Python 以外の汎用依存解析や任意の動的 Python 実行の完全解析は保証しない。
+- CI と手元は repository の選択 policy と実行環境を使う。固定版を参照する利用先の採用は別途必要で、release だけで自動更新しない。
+
+### PRIVATE 名義検査と媒体検査
+
+- PRIVATE 送信の期待名義を構造化した commit 欄へ限定し、公開時の名義検査と本文・媒体の検査を維持する。更新 push の対象は未送信 commit に限定する。
+- MP4 の JPEG カバーを型付き metadata として検査し、合成 MP4 の回帰試験を実機 ffprobe から分離する。
 
 ### 依存の警告を解消
 
