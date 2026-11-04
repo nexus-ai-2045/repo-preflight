@@ -208,6 +208,26 @@ def test_bundled_exception_list_matches_current_files_one_per_line():
                 "tests/unlisted_fixture.py"
             )
             continue
+        if reason.startswith("閉じたPR "):
+            match = re.match(
+                r"^閉じたPR #[1-9][0-9]* source=([0-9a-f]{40}):(tests/[A-Za-z0-9._/-]+) 合成拒否負例。止まる行=[1-9][0-9]*(?:,[1-9][0-9]*)*（",
+                reason,
+            )
+            assert match and match.group(2) == path
+            assert path.endswith(".py") and all(
+                part not in ("", ".", "..") for part in path.split("/")
+            )
+            assert not g._exception_skipper(str(ROOT), "HEAD", entries)(path)
+            source = match.group(1) + ":" + path
+            # 閉じた PR の版は通常の clone に無い。手元にある時だけ中身を照合する
+            found = subprocess.run(
+                ["git", "-C", str(ROOT), "cat-file", "blob", source],
+                capture_output=True,
+            )
+            if found.returncode == 0:
+                assert hashlib.sha256(found.stdout).hexdigest() == sha, path
+                assert g._exception_skipper(str(ROOT), match.group(1), entries)(path)
+            continue
         if not OTHER_REPO_REASON.match(reason):
             assert (ROOT / path).is_file(), path
             # 索引の中身（改行の変換前）で比べる。検査もコミットの中身で比べる
