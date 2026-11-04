@@ -2772,3 +2772,16 @@ def test_deferred_subprocess_type_annotation_does_not_escape_callable(repo):
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "selected", result["unresolved"]
     assert result["selected_tests"] == ["tests/test_alpha.py"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import subprocess, sys\nPYTHON=(sys.executable,)\nsubprocess.run([*PYTHON, "-m", "alpha"])',
+        'import subprocess, sys\nsubprocess.run(["runner", "-m", "alpha"], executable=sys.executable)',
+    ],
+)
+def test_unproven_subprocess_executable_cannot_hide_a_consumer(repo, source):
+    (repo / "tests/test_cli.py").write_text(source)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"

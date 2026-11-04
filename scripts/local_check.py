@@ -933,6 +933,8 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 return None if None in origins else any(origins)
             if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
                 first = node.elts[0]
+                if isinstance(first, ast.Starred):
+                    return None
                 executable = dotted(first, executable=True)
                 if executable is None or loader_reexport(
                     executable, names=("sys.executable",)
@@ -944,6 +946,15 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     and _reference_path(literal).name.startswith("python")
                 )
             return False
+
+        def subprocess_python_call(call, argument):
+            if any(
+                kw.arg == "executable"
+                and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+                for kw in call.keywords
+            ):
+                return None
+            return known_python_command(argument)
 
         deferred_annotations = any(
             isinstance(statement, ast.ImportFrom)
@@ -971,7 +982,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 continue
             command = value(argument)
             expression = resolved_expression(argument)
-            python = known_python_command(argument)
+            python = subprocess_python_call(node, argument)
             if python is None:
                 issue("ambiguous Python CLI executable")
                 continue
@@ -1540,7 +1551,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     argument = subprocess_argument(node)
                     if argument is None:
                         continue
-                    python = known_python_command(argument)
+                    python = subprocess_python_call(node, argument)
                     if python is None:
                         issue("ambiguous Python CLI executable")
                         continue
