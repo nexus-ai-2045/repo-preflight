@@ -80,7 +80,11 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 
 テストの対象と必要な環境は各repositoryが所有します。共通ゲートは利用側のpytestを一律に起動しません。差分の選択処理は `scripts/local_check.py` で再利用でき、対象・根拠・未解決と版hashを返します。コマンドと設定は[関連検査の運用](OPERATIONS.md)を参照してください。各repositoryのpolicyがroot・関連範囲・明示対応を定め、runnerが選択したtestと必要な検査を実行します。対応不明を全件実行や対象なしへ置き換えません。
 
-本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。
+本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。 star importの束縛、class本体（メソッドのdefault式を含む）で束縛値を必要とするbare nameの静的評価、変数名を経由する可変listのcommand値は静的に確定せず、対応不明としてowner mappingを求めます。確実なimport文の依存、メソッド実行内部の通常scope、直接のliteral argvと不変tupleのargvは維持します。globals/localsと無引数varsによる字句namespaceの露出は対応外として停止します。展開引数などで引数個数が不明なvarsも停止し、単一の通常のobj引数を取るvarsだけをobject観測として区別します。object属性の内容や、外部関数によるmodule namespace書換えを一般に捕捉する保証はありません。複数importの候補由来は保持し、loader/CLI producerの候補を含む不確定なcalleeは停止します。これはPython全体の実行順や外部関数の副作用を推測しないための境界です。
+
+`source_roots` / `test_roots` は repository 相対のディレクトリまたは個別ファイルを指定できます。ディレクトリは再帰列挙し、ファイルは一件だけを親ディレクトリ基準で解析します。重複は一度だけ解析し、`"."` と既存の path・symlink 境界検査を維持します。宣言外の新しいコード変更は、明示 rule がなければ未知として停止します。
+
+rule の `dependency_mode: "supplement"` は必須の `tests` / `checks` を追加し、依存解析 mode は決めません。他の一致 rule が無ければ `auto`、明示 `auto` が一件でもあれば `auto`、残りがすべて `mapped` の場合だけ owner の完全な対応表を使います。未知 mode と未解決の依存は停止し、全件実行へ切り替えません。 条件付き rule の `toml_only_keys` は、Git 比較元と現在の TOML 構造を照合して指定 field 以外が同一の時だけ有効です。未評価・解析不能・他 field の変更は mapped 扱いにせず、依存変更の自動解析を維持します。
 
 保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
 
