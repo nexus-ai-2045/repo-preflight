@@ -489,7 +489,8 @@ def _loader_summaries(trees, tables_by_file):
                         isinstance(node.func, ast.Name)
                         and aliases.get(node.func.id, node.func.id)
                         in ("Path", "pathlib.Path")
-                        and node.args
+                        and len(node.args) == 1
+                        and not node.keywords
                     ):
                         return base_value(node.args[0], seen)
                     if isinstance(node.func, ast.Attribute) and node.func.attr in (
@@ -854,7 +855,26 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         return None
                     return value(assigned, seen | {binding_key})
             if isinstance(node, ast.Call):
-                if dotted(node.func) in ("pathlib.Path", "Path", "str") and node.args:
+                constructor = dotted(node.func)
+                if constructor in ("pathlib.Path", "Path") and node.args:
+                    if (
+                        len(node.args) == 1
+                        and not node.keywords
+                        and not isinstance(node.args[0], ast.Starred)
+                    ):
+                        return value(node.args[0], seen)
+                    parts = [value(argument, seen) for argument in node.args]
+                    if node.keywords or not all(
+                        isinstance(part, str) for part in parts
+                    ):
+                        issue(
+                            "unresolved Path constructor arguments require owner mapping"
+                        )
+                        return None
+                    return PurePosixPath(
+                        *(_reference_path(part) for part in parts)
+                    ).as_posix()
+                if constructor == "str" and node.args:
                     return value(node.args[0], seen)
                 if isinstance(node.func, ast.Attribute) and node.func.attr in (
                     "resolve",
@@ -894,6 +914,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             return None
 
         def known_python_command(node, seen=frozenset()):
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+                left = known_python_command(node.left, seen)
+                if left is not False:
+                    return left
+                right = known_python_command(node.right, seen)
+                return None if right is not False else False
             if isinstance(node, ast.Name):
                 scope = node_scopes.get(node, tree)
                 key = (scope, node.id)
@@ -1121,6 +1147,7 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                         "importlib",
                         "importlib.util",
                         "runpy",
+                        "subprocess",
                     ):
                         issue("loader star import requires owner mapping")
                     module(prefix + "." + entry.name)

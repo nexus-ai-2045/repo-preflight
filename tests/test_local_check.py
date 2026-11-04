@@ -2718,3 +2718,34 @@ def test_qualified_module_reexport_across_owners_keeps_consumer(repo, middle):
         result["status"] == "unresolved"
         or "tests/test_qualified.py" in result["selected_tests"]
     )
+
+
+def test_path_constructor_keeps_every_segment_in_file_dependency(repo):
+    target = repo / "scripts/v1.0/config.json"
+    target.parent.mkdir()
+    target.write_text("{}")
+    (repo / "tests/test_multi.py").write_text(
+        'from pathlib import Path\nPath("scripts/v1.0", "config.json").read_text()'
+    )
+    (repo / "tests/test_direct.py").write_text(
+        'from pathlib import Path\nPath("scripts/v1.0/config.json").read_text()'
+    )
+    result = local_check.select_tests(repo, ["scripts/v1.0/config.json"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_direct.py", "tests/test_multi.py"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import subprocess, sys\nsubprocess.run([sys.executable, "-m"] + ["alpha"])',
+        'from subprocess import *\nrun(["python", "-m", "alpha"])',
+    ],
+)
+def test_opaque_cli_provenance_cannot_hide_a_consumer(repo, source):
+    (repo / "tests/test_cli.py").write_text(source)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_cli.py" in result["selected_tests"]
+    )
