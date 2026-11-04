@@ -2779,6 +2779,7 @@ def test_deferred_subprocess_type_annotation_does_not_escape_callable(repo):
     [
         'import subprocess, sys\nPYTHON=(sys.executable,)\nsubprocess.run([*PYTHON, "-m", "alpha"])',
         'import subprocess, sys\nsubprocess.run(["runner", "-m", "alpha"], executable=sys.executable)',
+        'import subprocess\nsubprocess.run("python -m alpha", shell=True)',
     ],
 )
 def test_unproven_subprocess_executable_cannot_hide_a_consumer(repo, source):

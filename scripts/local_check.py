@@ -949,6 +949,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
 
         def subprocess_python_call(call, argument):
             if any(
+                kw.arg == "shell"
+                and not (isinstance(kw.value, ast.Constant) and not kw.value.value)
+                for kw in call.keywords
+            ):
+                return None
+            if any(
                 kw.arg == "executable"
                 and not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
                 for kw in call.keywords
