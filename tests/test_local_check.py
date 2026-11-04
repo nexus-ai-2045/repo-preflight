@@ -2686,3 +2686,35 @@ def test_reexported_executable_prefix_requires_owner_mapping(repo):
         "ambiguous Python CLI executable" in item["reason"]
         for item in result["unresolved"]
     )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        'from builtins import __import__ as load\nload("alpha")',
+        'import builtins\nbuiltins.__import__("alpha")',
+    ],
+)
+def test_builtin_import_qualified_dispatch_keeps_consumer(repo, code):
+    (repo / "tests/test_qualified.py").write_text(code)
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_qualified.py" in result["selected_tests"]
+    )
+
+
+@pytest.mark.parametrize(
+    "middle", ["from helper_a import api", "import helper_a\napi=helper_a.api"]
+)
+def test_qualified_module_reexport_across_owners_keeps_consumer(repo, middle):
+    (repo / "scripts/helper_a.py").write_text("import importlib as api")
+    (repo / "scripts/helper_b.py").write_text(middle)
+    (repo / "tests/test_qualified.py").write_text(
+        'from helper_b import api\napi.import_module("alpha")'
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert (
+        result["status"] == "unresolved"
+        or "tests/test_qualified.py" in result["selected_tests"]
+    )

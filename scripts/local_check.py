@@ -53,6 +53,7 @@ STDLIB_LOADERS = (
     "runpy.run_path",
     "runpy.run_module",
     "__import__",
+    "builtins.__import__",
 )
 DEFAULT_SELECTION = {
     "source_roots": ["scripts"],
@@ -610,7 +611,6 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
     producers = (
         *STDLIB_LOADERS,
         *SUBPROCESS_CALLS,
-        "builtins.__import__",
     )
 
     def possible_producer(candidates, suffix, names):
@@ -702,7 +702,15 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
             candidates = (
                 import_candidates_by_file[owner].get(scope, {}).get(symbol, set())
             )
-            if possible_producer(candidates | {exported}, suffix, names):
+            candidates = candidates | {exported}
+            visited = seen | {key}
+            if possible_producer(candidates, suffix, names) or any(
+                loader_reexport(
+                    ".".join((candidate, *suffix)), seen=visited, names=names
+                )
+                for candidate in candidates
+                if candidate
+            ):
                 return True
             # Follow only stored Name/Attribute origins in their defining scope.
             # A possible producer requires mapping; nothing is imported or run.
@@ -715,19 +723,19 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                     owner,
                     expression.id,
                     (*attributes, *suffix),
-                    seen | {key},
+                    visited,
                     scope=definition_scopes.get(expression, trees[owner]),
                     names=names,
                 ):
                     return True
             return False
 
-        def loader_reexport(name, *, names=producers):
+        def loader_reexport(name, *, seen=frozenset(), names=producers):
             parts = name.split(".")
             for position in range(1, len(parts)):
                 for owner in modules.get(".".join(parts[:position]), set()):
                     if binding_producer(
-                        owner, parts[position], parts[position + 1 :], names=names
+                        owner, parts[position], parts[position + 1 :], seen, names=names
                     ):
                         return True
             return False
@@ -1151,6 +1159,8 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 filename(node.value)
             elif isinstance(node, ast.Call):
                 call = dotted(node.func)
+                if call == "builtins.__import__":
+                    call = "__import__"
                 if isinstance(node.func, ast.Attribute) and node.func.attr in (
                     "read_text",
                     "read_bytes",
