@@ -2749,3 +2749,26 @@ def test_opaque_cli_provenance_cannot_hide_a_consumer(repo, source):
         result["status"] == "unresolved"
         or "tests/test_cli.py" in result["selected_tests"]
     )
+
+
+def test_subprocess_callable_escape_cannot_hide_a_consumer(repo):
+    (repo / "tests/test_cli.py").write_text(
+        "import subprocess, sys\n"
+        "def invoke(runner):\n"
+        ' runner([sys.executable, "-m", "alpha"])\n'
+        "invoke(subprocess.run)"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "unresolved"
+
+
+def test_deferred_subprocess_type_annotation_does_not_escape_callable(repo):
+    (repo / "tests/test_annotation.py").write_text(
+        "from __future__ import annotations\n"
+        "import subprocess\n"
+        "def close(process: subprocess.Popen | None):\n"
+        " return None\n"
+    )
+    result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
+    assert result["status"] == "selected", result["unresolved"]
+    assert result["selected_tests"] == ["tests/test_alpha.py"]

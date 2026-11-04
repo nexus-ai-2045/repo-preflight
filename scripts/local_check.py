@@ -945,6 +945,12 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 )
             return False
 
+        deferred_annotations = any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in tree.body
+        )
         parents = {
             child: parent
             for parent in ast.walk(tree)
@@ -1065,11 +1071,28 @@ def _dependency_graph(repo: Path, roots: list[str], changed: list[str], suffixes
                 issue("lexical namespace reflection requires owner mapping: " + name)
             if loader_reexport(name):
                 issue("loader re-export requires owner mapping")
-            if name in STDLIB_LOADERS and not (
-                isinstance(parent, ast.Call) and parent.func is reference
-            ):
-                if not bound:
-                    issue("opaque loader reference escape: " + name)
+            if name in producers and not (called or bound):
+                # A deferred type reference is stored as text, not passed as a callable.
+                annotation = reference
+                container = parent
+                if deferred_annotations and reference not in embedded_nodes:
+                    while isinstance(container, ast.BinOp) and isinstance(
+                        container.op, ast.BitOr
+                    ):
+                        annotation = container
+                        container = parents.get(annotation)
+                    if (
+                        isinstance(container, ast.arg)
+                        and container.annotation is annotation
+                        or isinstance(
+                            container, (ast.FunctionDef, ast.AsyncFunctionDef)
+                        )
+                        and container.returns is annotation
+                        or isinstance(container, ast.AnnAssign)
+                        and container.annotation is annotation
+                    ):
+                        continue
+                issue("opaque loader reference escape: " + name)
             key = (consumer if reference not in embedded_nodes else "", name)
             if "." in name:
                 module_name, function_name = name.rsplit(".", 1)
