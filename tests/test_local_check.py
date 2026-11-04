@@ -586,9 +586,10 @@ def test_unresolved_plan_runs_the_full_suite(repo, monkeypatch, capsys):
     )
     plan = {
         "unresolved": [{"file": "tests/test_alpha.py", "reason": "opaque loader"}],
-        "selected_tests": ["tests/test_alpha.py"],
+        "selected_tests": ["integration/test_changed.py"],
         "checks": [],
         "status": "unresolved",
+        "policy_tests": ["tests/test_alpha.py", "tests/test_beta.py"],
     }
     monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
     calls = []
@@ -603,8 +604,58 @@ def test_unresolved_plan_runs_the_full_suite(repo, monkeypatch, capsys):
     assert (
         local_check.main(["--run-selected-tests", "--json", "--repo", str(repo)]) == 3
     )
-    assert calls == [[sys.executable, "-m", "pytest", "-q", "-n", "auto"]]
+    assert calls == [
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "auto",
+            "--",
+            "integration/test_changed.py",
+            "tests/test_alpha.py",
+            "tests/test_beta.py",
+        ]
+    ]
     assert json.loads(capsys.readouterr().out) == plan
+
+
+def test_unresolved_plan_lists_every_policy_test(repo):
+    plan = local_check.select_tests(
+        repo,
+        ["requirements.txt"],
+        {
+            "rules": [
+                {"changes": ["requirements.txt"], "tests": ["tests/test_missing.py"]}
+            ]
+        },
+    )
+    assert plan["status"] == "unresolved"
+    assert "tests/test_alpha.py" in plan["policy_tests"]
+
+
+def test_unresolved_plan_without_any_test_stops(repo, monkeypatch):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: {
+            "unresolved": [{"file": "x.py", "reason": "opaque loader"}],
+            "selected_tests": [],
+            "checks": [],
+            "status": "unresolved",
+            "policy_tests": [],
+        },
+    )
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("no tests to run"),
+    )
+    assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
 
 
 def test_unresolved_plan_only_stops(repo, monkeypatch):

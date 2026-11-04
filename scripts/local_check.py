@@ -1853,6 +1853,7 @@ def select_tests(repo: Path, files: list[str], config: dict) -> dict:
         "file_reasons": file_reasons,
         "checks": sorted(checks),
         "unresolved": unresolved,
+        **({"policy_tests": all_tests} if unresolved else {}),
     }
 
 
@@ -2260,12 +2261,26 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             # 対応が分からない時は選ばずに全部回す。回す試験が増える方向にだけ倒す
             if ns.run_selected_tests and plan["unresolved"]:
+                every_test = sorted(
+                    set(plan.get("policy_tests", [])) | set(plan["selected_tests"])
+                )
+                if not every_test:
+                    return 2
                 print(
                     "対応が分からない変更があるので、全部の試験を回します",
                     file=sys.stderr,
                 )
                 return subprocess.run(
-                    [sys.executable, "-m", "pytest", "-q", "-n", "auto"],
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        "-n",
+                        "auto",
+                        "--",
+                        *every_test,
+                    ],
                     cwd=repo,
                     stdout=sys.stderr if ns.json else None,
                 ).returncode
