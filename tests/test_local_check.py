@@ -580,6 +580,77 @@ def test_common_runner_requires_consumer_to_handle_check_ids(repo, monkeypatch):
     assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
 
 
+def test_unresolved_plan_runs_the_full_suite(repo, monkeypatch, capsys):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    plan = {
+        "unresolved": [{"file": "tests/test_alpha.py", "reason": "opaque loader"}],
+        "selected_tests": ["tests/test_alpha.py"],
+        "checks": [],
+        "status": "unresolved",
+    }
+    monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs["cwd"] == repo
+        assert kwargs["stdout"] is sys.stderr
+        return subprocess.CompletedProcess(command, 3)
+
+    monkeypatch.setattr(local_check.subprocess, "run", run)
+    assert (
+        local_check.main(["--run-selected-tests", "--json", "--repo", str(repo)]) == 3
+    )
+    assert calls == [[sys.executable, "-m", "pytest", "-q", "-n", "auto"]]
+    assert json.loads(capsys.readouterr().out) == plan
+
+
+def test_unresolved_plan_only_stops(repo, monkeypatch):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: {
+            "unresolved": [{"file": "x.py", "reason": "opaque loader"}],
+            "selected_tests": [],
+            "checks": [],
+            "status": "unresolved",
+        },
+    )
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("plan only must not run pytest"),
+    )
+    assert local_check.main(["--plan-tests", "--repo", str(repo)]) == 2
+
+
+def test_unresolved_plan_with_check_ids_still_stops(repo, monkeypatch):
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
+    )
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: {
+            "unresolved": [{"file": "x.py", "reason": "opaque loader"}],
+            "selected_tests": [],
+            "checks": ["sql-contract"],
+            "status": "unresolved",
+        },
+    )
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("check IDs must stop before pytest"),
+    )
+    assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
+
+
 def test_each_explicit_test_pattern_must_resolve(repo):
     plan = local_check.select_tests(
         repo,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""差分と依存周辺を選択して手元・CIで同じ試験を回す。未知の対応関係は停止する。
+"""差分と依存周辺を選択して手元・CIで同じ試験を回す。未知の対応関係は、計画では停止し、実行では全部の試験を回す。
 
 identity / consistency の必須ゲートは選択せず維持する。
 --plan-tests は副作用のない汎用選択、--run-selected-tests は選択済みpytestだけの入口。
@@ -2230,10 +2230,11 @@ def main(argv: list[str] | None = None) -> int:
         if ns.plan_tests or ns.run_selected_tests:
             plan = plan_tests(repo, ns.base_ref, ns.selection_config)
             serialized = json.dumps(plan, ensure_ascii=False, indent=2)
-            if (
+            private_plan = bool(
                 local_identity_guard.find_hits(serialized, identities)
                 or redact(serialized, repo) != serialized
-            ):
+            )
+            if private_plan:
                 # Never hand a consumer redacted paths as executable selection.
                 plan = {
                     "schema": "test-selection/v1",
@@ -2252,11 +2253,22 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 flush=True,
             )
-            if plan["unresolved"]:
+            if plan["unresolved"] and (private_plan or not ns.run_selected_tests):
                 return 2
             if ns.run_selected_tests and plan["checks"]:
                 print("停止: check IDs require the consumer runner", file=sys.stderr)
                 return 2
+            # 対応が分からない時は選ばずに全部回す。回す試験が増える方向にだけ倒す
+            if ns.run_selected_tests and plan["unresolved"]:
+                print(
+                    "対応が分からない変更があるので、全部の試験を回します",
+                    file=sys.stderr,
+                )
+                return subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", "-n", "auto"],
+                    cwd=repo,
+                    stdout=sys.stderr if ns.json else None,
+                ).returncode
             if ns.run_selected_tests and plan["selected_tests"]:
                 return subprocess.run(
                     [
