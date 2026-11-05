@@ -151,6 +151,16 @@
       "toml_only_keys": [
         "project.version"
       ]
+    },
+    {
+      "changes": [
+        "docs/pr-self-review.md",
+        "docs/pr-self-review-trusted-digests.txt"
+      ],
+      "tests": [
+        "tests/test_gate_protection.py"
+      ],
+      "dependency_mode": "mapped"
     }
   ]
 }
