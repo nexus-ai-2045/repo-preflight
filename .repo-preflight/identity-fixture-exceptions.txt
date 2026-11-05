@@ -47,3 +47,5 @@ dc84585a3fc9d809748bb288726c19e1a2a74ec77ea34424bff83e862d3c1641  web/public/ima
 # 他リポ note-publishing-suite の README 用の画面 GIF 2件：品質係が全コマを目視して OK（2026-10-25）。
 e59aa3e1d0bdefa0ef82f7265a89f2c0a2689b1ca881fdd84aa9dd546c0b00ec  assets/screenshots/provenance-and-preview.gif  # 他リポ note-publishing-suite の画面 GIF。品質係が全コマを目視して OK（2026-10-25）
 af74608cb12185886ad65b6448191817497b532499867f8a809cb08e96b571ea  assets/screenshots/writing-app-flow.gif  # 他リポ note-publishing-suite の画面 GIF。品質係が全コマを目視して OK（2026-10-25）
+f8aa015b7c8a0f61f209762e8135407a2846c79683e6556d3996e3150251dc81  tests/test_private_submission_scope.py  # 閉じたPR #20 source=fbd967f64df7cedb3f6d4c71c09402ffefd96638:tests/test_private_submission_scope.py 合成拒否負例。止まる行=122,124（不正な push URL の利用者欄を拒否する試験。利用者名は credential と other の作り物）。人承認済み（2026-11-05 本人がチャットで承認）
+7fdccb933be2d844923c1a70e00d192b52ddc4d105699684ab7532283aefbecc  tests/test_identity_normalization.py  # 閉じたPR #31 source=001a2175a17dd9cd4bf642d163aae1751633bebe:tests/test_identity_normalization.py 合成拒否負例。止まる行=34,437,713,1410,1432（PowerShell の引用と分けたホームのパスを見つける試験。利用者名は operator と fixture の作り物）。人承認済み（2026-11-05 本人がチャットで承認）
