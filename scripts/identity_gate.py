@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
 import importlib.util
+import io
+import tokenize
 
 # path文法の正本（identity_normalization.py）を同梱fileから読む。別の文法を持たない。
 _PATH_SPEC = importlib.util.spec_from_file_location(
@@ -90,6 +92,46 @@ def text_variants(text: str) -> list[str]:
     return list(_text_variants(text))
 
 
+def _join_literal_boundaries(text: str) -> str:
+    # bytes の外側の引用と、その中に書かれた式の引用は別の層。
+    # 一方の層を消して、値をソースの属性名につなげてはいけない。
+    protected = set()
+    offset = 0
+    # 追加行を集めた差分は、ファイル全体としては構文が閉じないことがある。
+    # 各行で確定できる bytes リテラルだけを取り扱う。
+    for line in text.splitlines(keepends=True):
+        if re.search(r"\b(?:br?|rb)[\"']", line, re.I):
+            try:
+                for token in tokenize.generate_tokens(io.StringIO(line).readline):
+                    prefix = re.match(r"(?i)(?:br?|rb)([\"'])", token.string)
+                    if token.type != tokenize.STRING or prefix is None:
+                        continue
+                    outer_open = token.start[1] + prefix.end() - 1
+                    outer_close = token.end[1] - 1
+                    if (
+                        line[outer_open + 1] in ("'", '"')
+                        and line[outer_open + 1] != line[outer_open]
+                    ):
+                        protected.add(offset + outer_open)
+                    if (
+                        line[outer_close - 1] in ("'", '"')
+                        and line[outer_close - 1] != line[outer_close]
+                    ):
+                        protected.add(offset + outer_close)
+            except (tokenize.TokenError, SyntaxError, ValueError):
+                # 未完の行でも、取得済みの境界は保持する。
+                pass
+        offset += len(line)
+    return _CONCAT_RE.sub(
+        lambda match: (
+            match.group()
+            if match.start() in protected or match.end() - 1 in protected
+            else ""
+        ),
+        text,
+    )
+
+
 @functools.lru_cache(maxsize=4)
 def _text_variants(text: str) -> tuple[str, ...]:
     out = [text]
@@ -125,7 +167,7 @@ def _text_variants(text: str) -> tuple[str, ...]:
             normal = unicodedata.normalize("NFKC", normal)
         normal = _DOT_FORM_RE.sub(".", _AT_FORM_RE.sub("@", normal))
         if '"' in normal or "'" in normal:
-            normal = _CONCAT_RE.sub("", normal)
+            normal = _join_literal_boundaries(normal)
         out.append(normal)
     return tuple(dict.fromkeys(out))
 
@@ -723,7 +765,8 @@ RESERVED_MAIL_DOMAIN_RE = re.compile(
 )
 # ssh の git 利用者（clone 手順のホスト名の前の git）。個人メールの形は別に見る。
 # 外すのは ssh の参照の形だけ：直後が「:」と経路の文字（scp の形）か、直前が ssh://。
-# ただの連絡先の git@会社のドメイン は名簿に無ければ止める。
+# GitHub の共有ログイン git@github.com は個人の連絡先ではないので、本文では形を問わず外す。
+# 作者・記録者・署名の名義の確かめには使わない。ただの連絡先の git@会社のドメイン は名簿に無ければ止める。
 SSH_GIT_LOCAL = "git"
 _SSH_SCP_AFTER = re.compile(r":[A-Za-z0-9~_./-]")
 
@@ -731,6 +774,8 @@ _SSH_SCP_AFTER = re.compile(r":[A-Za-z0-9~_./-]")
 def _ssh_git_reference(candidate: str, m: re.Match) -> bool:
     if m.group(0).split("@", 1)[0] != SSH_GIT_LOCAL:
         return False
+    if m.group(1).casefold().rstrip(".") == "github.com":
+        return True
     return _SSH_SCP_AFTER.match(candidate, m.end()) is not None or candidate[
         : m.start()
     ].casefold().endswith("ssh://")
