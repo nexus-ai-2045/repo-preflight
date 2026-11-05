@@ -2908,3 +2908,49 @@ def test_unproven_subprocess_executable_cannot_hide_a_consumer(repo, source):
     (repo / "tests/test_cli.py").write_text(source)
     result = local_check.select_tests(repo, ["scripts/alpha.py"], {})
     assert result["status"] == "unresolved"
+
+
+@pytest.mark.parametrize(
+    "changes,owner_mapped",
+    [
+        (["docs/pr-self-review.md"], True),
+        (["docs/pr-self-review-trusted-digests.txt"], True),
+        (["docs/pr-self-review.md", "docs/pr-self-review-trusted-digests.txt"], True),
+        (["docs/other-contract.md"], False),
+        (["docs/pr-self-review-extra.md"], False),
+        (["docs/pr-self-review-trusted-digests-copy.txt"], False),
+        (["docs/pr-self-review.md", "docs/other-contract.md"], False),
+        (["docs/pr-self-review.md", "scripts/alpha.py"], False),
+    ],
+)
+def test_self_review_owner_mapping_preserves_other_dependency_uncertainty(
+    repo, changes, owner_mapped
+):
+    policy = json.loads((local_check.ROOT / ".test-selection.json").read_text())
+    contract_tests = {
+        "tests/test_gate_protection.py",
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py",
+    }
+    for name in contract_tests:
+        (repo / name).write_text("CONTRACT = True\n")
+    # この不確かなconsumerは一般変更で停止理由になる。承認した2pathの
+    # owner scopeにだけ伝播させず、別sourceや似た名前の文書では保持する。
+    opaque = "tests/test_opaque_loader.py"
+    (repo / opaque).write_text(
+        "import importlib\nimportlib.import_module(runtime_target)\n"
+    )
+    for name in changes:
+        if name.startswith("docs/"):
+            path = repo / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text("# Synthetic contract\n")
+    plan = local_check.select_tests(repo, changes, policy)
+    assert plan["checks"] == []
+    if owner_mapped:
+        assert plan["status"] == "selected", plan["unresolved"]
+        assert plan["unresolved"] == []
+        assert set(plan["selected_tests"]) == contract_tests
+    else:
+        assert plan["status"] == "unresolved"
+        assert any(item["file"] == opaque for item in plan["unresolved"])
