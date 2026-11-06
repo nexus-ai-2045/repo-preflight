@@ -67,7 +67,9 @@ def test_release_checks_existing_tag_before_remote_writes(tmp_path):
     if os.name == "nt" or not shutil.which("bash"):
         pytest.skip("releaseのUbuntu用shellを実行する検査")
     # hook起動時の外側repo/indexへfixtureのGit操作を向けない。
-    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
     env.update(
         {
             "GIT_CONFIG_GLOBAL": os.devnull,
