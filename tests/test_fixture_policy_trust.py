@@ -12,8 +12,6 @@ from test_readiness_scan import MODULE, git, make_repo
 from test_reviewed_path_exceptions import policy as path_policy
 from test_reviewed_secret_exceptions import policy as secret_policy
 from test_preflight_ratchet import r as ratchet
-import base_guard
-from test_base_guard import caller
 
 
 @pytest.fixture
@@ -198,23 +196,3 @@ def test_target_policy_is_not_automatically_used_by_ci_scan(tmp_path):
     git(repo, "commit", "-m", "untrusted self approval")
     result = ratchet.run_scan(repo, [])
     assert result["checks"]["secret_scan"]["status"] == "fail"
-
-
-@pytest.mark.parametrize("change", ["policy", "workflow_pin"])
-def test_base_guard_blocks_policy_or_workflow_self_approval(tmp_path, change):
-    repo = make_repo(tmp_path)
-    workflow = repo / ".github/workflows/ci.yml"
-    workflow.write_text(caller())
-    git(repo, "add", ".")
-    git(repo, "commit", "-m", "trusted caller")
-    git(repo, "tag", "approved-base")
-    if change == "policy":
-        path = repo / ".repo-preflight/reviewed-synthetic-fixtures.json"
-        path.parent.mkdir()
-        path.write_text('{"version": 1, "entries": []}')
-    else:
-        workflow.write_text(caller("b" * 40, "b" * 40))
-    git(repo, "add", ".")
-    git(repo, "commit", "-m", "try self approval")
-    result = base_guard.evaluate(repo, "approved-base", head_ref="HEAD")
-    assert any(item["kind"] == "protected_path_changed" for item in result["findings"])

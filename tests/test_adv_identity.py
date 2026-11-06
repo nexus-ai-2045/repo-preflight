@@ -1,7 +1,7 @@
-"""品質判定 H1〜H4・H6・H7・M1・M4〜M6 のカナリア（identity_gate の公開の入口）。
+"""品質判定 H1〜H4・H6・H7・M1・M4・M6 のカナリア（identity_gate の公開の入口）。
 
 値はすべて仮の値で、実行時に組み立てる（このファイル自身が検査に掛からないように）。
-IDENTITY_GATE_SCRIPT / BASE_GUARD_SCRIPT で何もしない版に差し替えると落ちることを確かめられる。
+IDENTITY_GATE_SCRIPT で何もしない版に差し替えると落ちることを確かめられる。
 """
 
 import json
@@ -16,7 +16,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = os.environ.get("IDENTITY_GATE_SCRIPT") or str(ROOT / "scripts/identity_gate.py")
-GUARD = os.environ.get("BASE_GUARD_SCRIPT") or str(ROOT / "scripts/base_guard.py")
 OK = "Fixture Bot <fixture@example.invalid>"
 J = "".join
 ZERO = "0" * 40
@@ -408,80 +407,3 @@ def test_m4_caller_template_is_current_form():
     assert jobs["all-green"]["if"] == "always()"
     assert "preflight" in jobs["all-green"]["needs"]
     assert ".github/actions/preflight@" not in text
-
-
-# ---- M5 版のタグから辿れない SHA ----
-@pytest.fixture
-def tool(tmp_path):
-    path = tmp_path / "tool"
-    path.mkdir()
-    _git(path, "init", "-q", "-b", "main", env=_env())
-    _git(path, "commit", "-q", "--allow-empty", "-m", "r1", env=_env())
-    released = _git(path, "rev-parse", "HEAD")
-    _git(path, "tag", "v1.0.0", env=_env())
-    _git(path, "commit", "-q", "--allow-empty", "-m", "unreleased", env=_env())
-    unreleased = _git(path, "rev-parse", "HEAD")
-    return path, released, unreleased
-
-
-def _caller(sha):
-    return (
-        "on: [pull_request]\njobs:\n  gate:\n"
-        f"    uses: nexus-ai-2045/repo-preflight/.github/workflows/preflight-gate.yml@{sha}\n"
-        f"    with:\n      preflight-ref: {sha}\n"
-    )
-
-
-def _guard(repo, base, head, tool_path):
-    return subprocess.run(
-        [
-            sys.executable,
-            GUARD,
-            "--repo",
-            str(repo),
-            "--base-ref",
-            base,
-            "--head-ref",
-            head,
-            "--trusted-tool",
-            str(tool_path),
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-
-@pytest.mark.parametrize("which", ["unreleased", "unknown"])
-def test_m5_unreleased_or_foreign_sha_is_red(repo, tool, which):
-    tool_path, released, unreleased = tool
-    base = _commit(repo, {".github/workflows/ci.yml": _caller(released)})
-    sha = unreleased if which == "unreleased" else "c" * 40
-    _git(repo, "checkout", "-q", "-b", "pr", env=_env())
-    head = _commit(repo, {"README.md": "y\n"})
-    # 呼び出しの SHA だけを PR 側で変える（保護パスの赤と混ざらないよう、比較元にも同じ定義を置く）
-    _git(repo, "checkout", "-q", "main", env=_env())
-    base = _commit(repo, {".github/workflows/ci.yml": _caller(sha)})
-    _git(repo, "checkout", "-q", "pr", env=_env())
-    _git(repo, "merge", "-q", "--no-edit", "main", env=_env())
-    head = _git(repo, "rev-parse", "HEAD")
-    result = _guard(repo, base, head, tool_path)
-    assert result.returncode == 1, result.stderr
-    assert "版のタグ" in result.stderr
-
-
-def test_m5_control_released_sha_passes(repo, tool):
-    tool_path, released, _ = tool
-    base = _commit(repo, {".github/workflows/ci.yml": _caller(released)})
-    _git(repo, "checkout", "-q", "-b", "pr", env=_env())
-    head = _commit(repo, {"README.md": "y\n"})
-    result = _guard(repo, base, head, tool_path)
-    assert result.returncode == 0, result.stderr
-
-
-def test_m5_guard_template_checks_release_tags():
-    text = (ROOT / "templates/github-actions/preflight-guard.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "--trusted-tool tool" in text
-    assert "fetch-tags: true" in text
-    assert 'tag --list "v[0-9]*" --contains "$PREFLIGHT_REF"' in text

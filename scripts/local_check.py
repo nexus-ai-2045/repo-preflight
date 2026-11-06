@@ -2362,7 +2362,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     if failed:
         print("失敗した項目: " + "、".join(failed))
-    print("CI の結果は別に確認してください（PR 本文・base_guard・全 ref の走査を含む）")
+    print("CI の結果は別に確認してください（PR 本文・全 ref の走査を含む）")
     print(f"全文のログ: {rel}")
     return 0 if not failed else 1
 
