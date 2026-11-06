@@ -48,7 +48,6 @@ SCRIPT_OWNERS = (
     "publish_gate.py",
     "preflight_ratchet.py",
     "publish_guard_hook.py",
-    "base_guard.py",
 )
 
 
@@ -352,7 +351,11 @@ def test_runtime_adapters_match_base_ref_intents(truth):
 
 
 def test_changelog_does_not_claim_unknown_cli_flags(truth):
-    bad = unknown_flag_claims(_read("CHANGELOG.md"), truth["known_flags"])
+    # 過去のリリース記録には、廃止したbase-guardの引数を残す。
+    historical_flags = {"--self-repository"}
+    bad = unknown_flag_claims(
+        _read("CHANGELOG.md"), truth["known_flags"] | historical_flags
+    )
     assert not bad, bad
 
 

@@ -26,4 +26,4 @@ public v3は実行中の検査器のGit commitに同梱された `.repo-prefligh
 
 ## 検証
 
-公開先の旧形式、データと台帳hashの同時変更、自己追加した登録、別path、検出数変更、同梱台帳欠落を拒否する。台帳の未コミット変更では承認内容を変えられない。既存ratchetの実scanで、targetに置いた旧形式台帳がsecretを免除しないことを確認する。保護されたbaseを使う既存base-guardは、台帳とworkflow pinの変更を拒否する。正規の固定ダミー、CRLF、privateの既存用途も対照として確認する。
+公開先の旧形式、データと台帳hashの同時変更、自己追加した登録、別path、検出数変更、同梱台帳欠落を拒否する。台帳の未コミット変更では承認内容を変えられない。既存ratchetの実scanで、targetに置いた旧形式台帳がsecretを免除しないことを確認する。base-guardによる台帳とworkflow pinの変更検査は廃止しました。検査器に固定された台帳との一致確認と、対象repositoryの台帳を自動採用しない境界を維持します。正規の固定ダミー、CRLF、privateの既存用途も対照として確認する。

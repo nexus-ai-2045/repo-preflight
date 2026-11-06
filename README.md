@@ -86,7 +86,7 @@ GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・mer
 
 rule の `dependency_mode: "supplement"` は必須の `tests` / `checks` を追加し、依存解析 mode は決めません。他の一致 rule が無ければ `auto`、明示 `auto` が一件でもあれば `auto`、残りがすべて `mapped` の場合だけ owner の完全な対応表を使います。未知 mode と未解決の依存は停止し、全件実行へ切り替えません。 条件付き rule の `toml_only_keys` は、Git 比較元と現在の TOML 構造を照合して指定 field 以外が同一の時だけ有効です。未評価・解析不能・他 field の変更は mapped 扱いにせず、依存変更の自動解析を維持します。
 
-保護されたCI変更には、[設計判断と差分判断の連鎖](docs/human-decision-chain.md)を検証できます。同じPRで同じ保護差分を再検査するときは登録済みの署名を再利用し、対象の逸脱・取消・期限切れは停止します。承認元の登録と既存固定版からの移行は別の人間判断です。
+`base-guard` の配布と共通CIからの呼出しは廃止しました。利用先では独立ワークフローの削除、固定参照の更新、必須チェック設定からの除去を同じ変更単位で確認します。以前の署名判断の形式は[履歴資料](docs/human-decision-chain.md)に残しています。
 
 ## 個人のパスで止まった時の書き方
 

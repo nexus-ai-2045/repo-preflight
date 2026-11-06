@@ -61,7 +61,6 @@
       "tests": [
         "tests/test_local_check.py",
         "tests/test_consistency_gate.py",
-        "tests/test_base_guard.py",
         "tests/test_gate_protection.py",
         "tests/test_identity_fixture_exceptions.py"
       ],
@@ -74,7 +73,6 @@
       "tests": [
         "tests/test_local_check.py",
         "tests/test_consistency_gate.py",
-        "tests/test_base_guard.py",
         "tests/test_gate_protection.py"
       ],
       "dependency_mode": "supplement"
