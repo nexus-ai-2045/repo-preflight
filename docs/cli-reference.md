@@ -129,7 +129,7 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 操作intentでは、名義検査に加えて正規化した個人識別子・履歴object・ファイル名も `private_identity_scan` で検査します。`PUBLIC_IDENTITY_DENYLIST` には、検査対象の外で管理する非公開UTF-8リストの絶対パスを指定してください。検出器は同梱の正本を使い、別の採用済み検出器を指定する場合だけ `PUBLIC_IDENTITY_GUARD_SCRIPT` を渡します。入力不足・内容変更・検査不能は停止し、報告には値を含めず入力のhashと検査状態を記録します。
 
-同梱の検出器を使うとき、作業treeの本文検査で合格した内容はSHA-256だけを `${XDG_CACHE_HOME:-~/.cache}/repo-preflight/identity-scan/`（ディレクトリ0700・ファイル0600）に控え、次回から同じ内容の本文検査を省きます（ファイル名の検査は毎回行い、報告の `worktree_files_cache_reused` に省いた数が出ます）。検査器・方針・正規化器・reviewed例外・remote・Pythonのどれかが変わる、控えが壊れている、repo内にある、のいずれかなら全体を読み直します。控えのフォルダの権限が0700より緩いときは自動で直さず、控えを読みも書きもしません（直すときは手で `chmod 700` してください）。控えを使わないときは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` を渡します。控えには署名が無く、同じユーザーの権限で動くコードは書き換えられるため、CIでキャッシュのフォルダを復元・共有する設定や、信頼できないPRを検査するジョブでは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` にしてください。
+同梱の検出器を使うとき、作業treeの本文検査で合格した内容はSHA-256だけを `${XDG_CACHE_HOME:-~/.cache}/repo-preflight/identity-scan/`（ディレクトリ0700・ファイル0600）に控え、次回から同じ内容の本文検査を省きます（ファイル名の検査は毎回行い、報告の `worktree_files_cache_reused` に省いた数が出ます）。検査器（`scripts/readiness_scan.py` と、それが読み込む `scripts/readiness_scan_*.py` の全体。[ADR-0022](adr/0022-readiness-scan-facade-and-parts.md)）・方針・正規化器・reviewed例外・remote・Pythonのどれかが変わる、控えが壊れている、repo内にある、のいずれかなら全体を読み直します。控えのフォルダの権限が0700より緩いときは自動で直さず、控えを読みも書きもしません（直すときは手で `chmod 700` してください）。控えを使わないときは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` を渡します。控えには署名が無く、同じユーザーの権限で動くコードは書き換えられるため、CIでキャッシュのフォルダを復元・共有する設定や、信頼できないPRを検査するジョブでは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` にしてください。
 
 このリストと名義用の `PREFLIGHT_PRIVATE_PATTERNS_FILE` のJSONは、責務と形式が異なります。名義・共同作者行を確認する既存gateと、正本の正規化検査を両方通してください。非公開のリストやJSONを公開リポジトリへコピーしないでください。
 
