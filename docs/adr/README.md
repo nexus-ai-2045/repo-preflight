@@ -45,3 +45,5 @@ repo-preflightで長く維持する設計判断を、ADR（Architecture Decision
 - [ADR-0019: coreを維持しPillow媒体機能を安全な実行環境へ限定する](0019-pillow-media-runtime-floor.md) — Proposed。旧decoderの入力前拒否とPython 3.9 coreの分離。
 
 - [ADR-0021: 公開ダミー例外の承認元を検査器へ固定する](0021-public-fixture-policy-trust.md)
+
+- [ADR-0022: readiness_scan を窓口と部品に分け、照合値を部品全体で取る](0022-readiness-scan-facade-and-parts.md) — Proposed。窓口のパスと引数を保ち、部品の読み込みから照合値を導く。
