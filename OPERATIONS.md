@@ -43,8 +43,9 @@ release準備では `--release` を省略しません。`readme_release_design` 
 ## リリース
 
 1. 版上げの PR で `pyproject.toml` の version、`CHANGELOG.md` 先頭の `## X.Y.Z - YYYY-MM-DD`（日付は JST）、リリースノート `docs/releases/vX.Y.Z.md`（1行目が `# タイトル`）をそろえて merge する。
-2. Actions の `release` workflow を main で手動起動し、`version` に `X.Y.Z` を渡す。版の不一致や既存 tag があれば何も作らずに止まる。
-3. 不要なリモートブランチは `delete-branches` に空白区切りで渡すと、リリース前に消す。開いた PR があるブランチは消さずに止まる。
+2. リリース対象の main commit と版について人間レビューを受け、その commit を指す `vX.Y.Z` タグを承認済みの別手順で用意する。`v*` は保護対象であり、この workflow はタグを作成・更新せず、保護設定も変更しない。タグ作成が拒否される場合は、権限や保護設定の判断を管理者へ戻し、workflow の再実行で代替しない。
+3. Actions の `release` workflow を main で手動起動し、`version` に `X.Y.Z` を渡す。版の不一致・タグの不足・タグと実行commitの不一致があれば、ブランチ削除やRelease作成の前に止まる。軽量タグと注釈付きタグは、どちらも参照先commitを照合する。`--verify-tag` により、Release作成時のタグ自動作成も禁止する。既存Releaseは上書きしない。
+4. 不要なリモートブランチは `delete-branches` に空白区切りで渡すと、リリース前に消す。開いた PR があるブランチは消さずに止まる。
 
 ## 更新
 
