@@ -40,12 +40,30 @@
 2. Projects の送信入口で、`readiness_scan*.py` 全体を実行の前後で比べ、部品全体の照合値を受領記録に足す。部品が 0 個の版では、結果は今と同じである。
 3. 1 と 2 が両方入ってから、部品を 1 つずつ移す。1 つにつき 1 つの変更依頼にする。
 4. 最初の部品として `scripts/readiness_scan_report.py` に、出力の約束の定数（`SCHEMA`・`GUARANTEES`・`NON_GUARANTEES`）、報告の整形（`enrich_report`・`format_human_report`・`sanitized_evidence_label`・`sanitized_ref_report` の本体など）、終了コード（`report_exit_code`・`dialogue_exit_code`）、`unexpected_exception_issue`、`scan()` の集計を純粋関数にした `gating`・`aggregate_status` を移した。差し替えられる名前と秘密情報の規則は窓口に残し、引数で渡す。
+5. 2 つ目の部品として `scripts/readiness_scan_leak_rules.py` に、秘密情報の規則（`SECRET_PATTERNS`・`SECRET_RULE_IDS`・`secret_matches`・`text_has`）とレビュー済み例外（`ReviewedSecretExceptions`）を移した。個人パスの規則と、試験が差し替える `trusted_public_fixture_policy`・`load_github_settings_module` は窓口に残し、窓口が読み込み時に `install_ports` で、呼ぶたびに窓口の名前を引く関数として渡す。
 
 ## 残す課題
 
 - 部品のファイル名を窓口以外が書いていないかの検査は、`scripts/`・`tests/`・`templates/`・`.github/`・`runtime/` の下の全部のフォルダの Python・シェル・YAML・JSON・TOML を見て、名前の文字列が含まれるかで判定する。文字列をつないで組み立てた参照は見つけられない。
 - 照合値の書式（名前順に `ファイル名 + NUL + SHA-256 + 改行`）は、`Projects` の送信入口も同じ書式で計算して突き合わせる。書式を変える時は、送信入口の変更と対にする。食い違うと、送信入口は全部の公開 push を止める側に倒れる。
 - 照合値が覆うのは、窓口と `readiness_scan_*.py` の部品だけである。窓口が別に読み込む兄弟ファイル（`identity_normalization.py`・`media_metadata.py`・`caff_archive.py`・`readme_release_gate.py`・`dialogue_gate.py` など）は覆わない。`scanner_bundle_sha256` を検査器全体の照合値と読まない。対象を広げるかは、後の段で決める。
+
+## 部品へ移したコードの設計の理由
+
+部品へ移す時、コードの中にあった説明のコメントは消した（コードに説明コメントを書かない方針）。理由はここに残す。
+
+- 出力の約束（`readiness_scan_report.py`）: `GUARANTEES` などの範囲の境界は、対話と非対話のどちらでも同じ文言を出す。
+- 判定の集計（`gating`）: 公開モードの CI は非公開の型設定を持たない。許可名義の一覧が渡され、非公開の型を必須にしていない時だけ、名義の判定を `public_attribution` に任せる。一覧も無い、または必須の時は `fail` のままにして、止める側に倒す。
+- 選択肢の組み直し: 検査と違う方針や提供元から、生の名前を戻さない。
+- 秘密情報の規則（`readiness_scan_leak_rules.py`）の `sk-`: 英単語の語尾（`task-` `desk-` `risk-` `musk-` など）にそのまま現れ、続く kebab-case も本体の文字種に収まる。そのため前側の区切りを求め、直前が英数字・`_`・`-` なら一致させない。エスケープされた空白（`\n` `\r` `\t`）の直後は、文字の上では英字が前にあっても区切りとして扱う。ほかの規則の接頭辞は語の途中に現れにくいので、この制限を持たせない。
+- 開発道具のセッション行・セッション URL の規則: 全履歴の件数を比べるので、型は広げない。新しく足すものは `identity_gate.SESSION_TRACE_RES` がより広く見る。
+- レビュー済みの例外（`ReviewedSecretExceptions`）:
+  - 生の認証値や、問い合わせ・断片の付いた remote は、名義の根拠に使わない。
+  - Python の辞書の比較は `true == 1` や `3 == 3.0` を等しいとみなすので、型を含む JSON で比べる。
+  - 理由の欄にも認証情報を保存せず、値や理由は報告に出さない。
+  - 秘密情報だけの旧形式も照合する。パスの項目を消して公開の制約を外すことはしない。
+  - Windows の autocrlf で作業ツリーだけ CRLF になっても、LF で登録した照合値と照合する。正規化した後も、リポジトリ・パス・生の中身の照合値・検出値の照合値・件数・期限の全部の束縛を保つ。
+- ref の秘匿: 正確な ref だけを置き換える。`ann` で `annual` を隠さず、Git の範囲の `..` は境界として扱う。schema・status・説明文は ref の値ではないので、ref 専用の欄だけを秘匿する。
 
 ## 検証
 
