@@ -116,12 +116,18 @@ def scan_statuses() -> frozenset[str]:
         for token in re.split(r"[/\s]+", guarantee_match.group(1))
         if token.strip() and re.fullmatch(r"[a-z_]+", token.strip())
     }
-    src = SCAN_SCRIPT.read_text(encoding="utf-8")
+    src = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in [
+            SCAN_SCRIPT,
+            *sorted(SCAN_SCRIPT.parent.glob("readiness_scan_*.py")),
+        ]
+    )
     ternary = re.search(
-        r'"status":\s*\(\s*'
+        r'(?:"status":\s*\(\s*|return\s+)'
         r'"(?P<a>[a-z_]+)"\s+if\s+tool_error\s+else\s+'
         r'"(?P<b>[a-z_]+)"\s+if\s+blocking\s+or\s+unknown\s+else\s+'
-        r'"(?P<c>[a-z_]+)"\s*\)',
+        r'"(?P<c>[a-z_]+)"',
         src,
     )
     assert ternary, "scan status composition expression missing"

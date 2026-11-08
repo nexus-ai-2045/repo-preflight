@@ -39,10 +39,14 @@
 1. この ADR と、照合値の仕組みと契約試験を入れる。部品はまだ 0 個。
 2. Projects の送信入口で、`readiness_scan*.py` 全体を実行の前後で比べ、部品全体の照合値を受領記録に足す。部品が 0 個の版では、結果は今と同じである。
 3. 1 と 2 が両方入ってから、部品を 1 つずつ移す。1 つにつき 1 つの変更依頼にする。
+4. 最初の部品として `scripts/readiness_scan_report.py` に、出力の約束の定数（`SCHEMA`・`GUARANTEES`・`NON_GUARANTEES`）、報告の整形（`enrich_report`・`format_human_report`・`sanitized_evidence_label`・`sanitized_ref_report` の本体など）、終了コード（`report_exit_code`・`dialogue_exit_code`）、`unexpected_exception_issue`、`scan()` の集計を純粋関数にした `gating`・`aggregate_status` を移した。差し替えられる名前と秘密情報の規則は窓口に残し、引数で渡す。
 
 ## 残す課題
 
-- 部品のファイル名を窓口以外が書いていないかの検査は、`scripts/` と `tests/` の直下だけを見て、名前の文字列が含まれるかで判定する。文字列をつないで組み立てた参照や、下のフォルダからの参照は見つけられない。最初の部品を入れる変更依頼で、すり抜けの例を試験に足して強める。
+- 部品のファイル名を窓口以外が書いていないかの検査は、`scripts/`・`tests/`・`templates/`・`.github/`・`runtime/` の下の全部のフォルダの Python・シェル・YAML・JSON・TOML を見て、名前の文字列が含まれるかで判定する。文字列をつないで組み立てた参照は見つけられない。
+- 照合値の書式（名前順に `ファイル名 + NUL + SHA-256 + 改行`）は、`Projects` の送信入口も同じ書式で計算して突き合わせる。書式を変える時は、送信入口の変更と対にする。食い違うと、送信入口は全部の公開 push を止める側に倒れる。
+- 照合値が覆うのは、窓口と `readiness_scan_*.py` の部品だけである。窓口が別に読み込む兄弟ファイル（`identity_normalization.py`・`media_metadata.py`・`caff_archive.py`・`readme_release_gate.py`・`dialogue_gate.py` など）は覆わない。`scanner_bundle_sha256` を検査器全体の照合値と読まない。対象を広げるかは、後の段で決める。
+- `git_data_privacy_gate.py` が報告へ記録する照合値は、窓口 `readiness_scan.py` 単体の SHA-256 までで、`readiness_scan_*.py` の部品を含まない。部品が変わっても記録は変わらない。`scanner_bundle_sha256` を `readiness_scan_bundle_sha256` として足すと、`.repo-preflight/identity-fixture-exceptions.txt` が固定する `tests/test_git_data_privacy_gate.py` の SHA-256 の更新が要るため、本人承認のある後の段で行う。
 
 ## 検証
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### readiness_scan の出力の約束と集計を部品に移す
+
+- `scripts/readiness_scan.py` から、出力の約束の定数・報告の整形・終了コード・検査結果の集計を部品 `scripts/readiness_scan_report.py` に移した（ADR-0022）。集計は、どの検査を判定に入れるかを決める `gating` と、tool_error・fail/unknown・pass の優先順で全体の status を決める `aggregate_status` の 2 つの純粋関数にした。窓口は移した名前を同じ名前で出し続け、呼ぶパス・引数・終了コード・出力の JSON は変わらない。部品が 1 つ増えるので、名義検査の合格控えは 1 回だけ全部外れる。
+
 ### readiness_scan を部品に分けるための照合値の仕組み
 
 - `scripts/readiness_scan.py` に、同じフォルダの部品（`scripts/readiness_scan_*.py`）を読み込む `_part` と、窓口と部品の全体から照合値を取る `scanner_bundle_sha256()` を足した（ADR-0022）。この版では部品はまだ 0 個で、呼ぶパス・引数・終了コード・出力の JSON は変わらない。
