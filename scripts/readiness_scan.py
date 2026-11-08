@@ -18,7 +18,6 @@ import struct
 import subprocess
 import tempfile
 import sys
-import traceback
 import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, TextIO
