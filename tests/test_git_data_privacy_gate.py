@@ -163,7 +163,7 @@ def test_clean_pass_and_hashes(store):
         "public_secret": 0,
         "public_path": 0,
     }
-    assert len(report["hashes"]) == 7
+    assert len(report["hashes"]) == 6
     assert report["scope"]["not_covered"] == [
         "image_pixels",
         "encrypted_content",

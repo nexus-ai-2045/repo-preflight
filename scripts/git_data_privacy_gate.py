@@ -250,9 +250,6 @@ def scan_store(
             if _read(repo, "cat-file", "-t", expected_head, limit=16) != b"commit\n":
                 raise GateError("expected_head_not_commit")
             scanner_module = _load("readiness_scan")
-            report["hashes"][
-                "readiness_scan_bundle_sha256"
-            ] = scanner_module.scanner_bundle_sha256()
             identity = _load("identity_gate")
             normalizer = _load("identity_normalization")
             with _policy_environment(denylist, identity_policy):

@@ -46,6 +46,7 @@
 - 部品のファイル名を窓口以外が書いていないかの検査は、`scripts/`・`tests/`・`templates/`・`.github/`・`runtime/` の下の全部のフォルダの Python・シェル・YAML・JSON・TOML を見て、名前の文字列が含まれるかで判定する。文字列をつないで組み立てた参照は見つけられない。
 - 照合値の書式（名前順に `ファイル名 + NUL + SHA-256 + 改行`）は、`Projects` の送信入口も同じ書式で計算して突き合わせる。書式を変える時は、送信入口の変更と対にする。食い違うと、送信入口は全部の公開 push を止める側に倒れる。
 - 照合値が覆うのは、窓口と `readiness_scan_*.py` の部品だけである。窓口が別に読み込む兄弟ファイル（`identity_normalization.py`・`media_metadata.py`・`caff_archive.py`・`readme_release_gate.py`・`dialogue_gate.py` など）は覆わない。`scanner_bundle_sha256` を検査器全体の照合値と読まない。対象を広げるかは、後の段で決める。
+- `git_data_privacy_gate.py` が報告へ記録する照合値は、窓口 `readiness_scan.py` 単体の SHA-256 までで、`readiness_scan_*.py` の部品を含まない。部品が変わっても記録は変わらない。`scanner_bundle_sha256` を `readiness_scan_bundle_sha256` として足すと、`.repo-preflight/identity-fixture-exceptions.txt` が固定する `tests/test_git_data_privacy_gate.py` の SHA-256 の更新が要るため、本人承認のある後の段で行う。
 
 ## 検証
 
