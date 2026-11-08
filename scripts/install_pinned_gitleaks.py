@@ -14,12 +14,32 @@ import platform
 import stat
 import sys
 import tarfile
+import time
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
 
 PINS = Path(__file__).resolve().parent.parent / "references" / "gitleaks-pins.json"
 URL = "https://github.com/gitleaks/gitleaks/releases/download/v{v}/gitleaks_{v}_{key}.{ext}"
+
+
+def fetch(url: str, attempts: int = 5) -> bytes:
+    """一時的な通信失敗（504 など）だけ待って取り直す。ハッシュの確認は呼び出し側で必ず行う。"""
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code < 500 and error.code != 429:
+                raise
+            last: Exception = error
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            last = error
+        if attempt == attempts:
+            raise SystemExit(f"失敗: gitleaks の取得を {attempts} 回試しましたが届きません（{last}）")
+        time.sleep(2**attempt)
+    raise AssertionError("unreachable")
 
 
 def platform_key() -> str:
@@ -74,8 +94,7 @@ def main() -> int:
     binary_pin = pins["binary_sha256"][key]
     url = URL.format(v=version, key=key, ext="zip" if windows else "tar.gz")
 
-    with urllib.request.urlopen(url, timeout=120) as response:
-        archive = response.read()
+    archive = fetch(url)
     if sha256(archive) != archive_pin:
         raise SystemExit("失敗: gitleaks の配布物のハッシュが固定値と一致しません")
     binary = extract(archive, windows)
