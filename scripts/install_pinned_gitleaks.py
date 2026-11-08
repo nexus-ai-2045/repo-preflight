@@ -37,7 +37,9 @@ def fetch(url: str, attempts: int = 5) -> bytes:
         except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
             last = error
         if attempt == attempts:
-            raise SystemExit(f"失敗: gitleaks の取得を {attempts} 回試しましたが届きません（{last}）")
+            raise SystemExit(
+                f"失敗: gitleaks の取得を {attempts} 回試しましたが届きません（{last}）"
+            )
         time.sleep(2**attempt)
     raise AssertionError("unreachable")
 
