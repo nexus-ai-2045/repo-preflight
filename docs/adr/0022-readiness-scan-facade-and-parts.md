@@ -39,6 +39,7 @@
 1. この ADR と、照合値の仕組みと契約試験を入れる。部品はまだ 0 個。
 2. Projects の送信入口で、`readiness_scan*.py` 全体を実行の前後で比べ、部品全体の照合値を受領記録に足す。部品が 0 個の版では、結果は今と同じである。
 3. 1 と 2 が両方入ってから、部品を 1 つずつ移す。1 つにつき 1 つの変更依頼にする。
+4. 最初の部品として `scripts/readiness_scan_report.py` に、出力の約束の定数（`SCHEMA`・`GUARANTEES`・`NON_GUARANTEES`）、報告の整形（`enrich_report`・`format_human_report`・`sanitized_evidence_label`・`sanitized_ref_report` の本体など）、終了コード（`report_exit_code`・`dialogue_exit_code`）、`unexpected_exception_issue`、`scan()` の集計を純粋関数にした `gating`・`aggregate_status` を移した。差し替えられる名前と秘密情報の規則は窓口に残し、引数で渡す。
 
 ## 残す課題
 
