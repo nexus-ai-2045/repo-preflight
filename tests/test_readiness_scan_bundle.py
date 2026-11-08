@@ -232,17 +232,36 @@ def test_parts_have_no_seams():
     assert {name: hits for name, hits in found.items() if hits} == {}
 
 
+READER_ROOTS = ("scripts", "tests", "templates", ".github", "runtime")
+READER_SUFFIXES = {".py", ".sh", ".yml", ".yaml", ".json", ".toml"}
+
+
+def candidate_readers():
+    for root in READER_ROOTS:
+        for path in sorted((ROOT / root).rglob("*")):
+            if path.is_file() and path.suffix in READER_SUFFIXES:
+                yield path
+
+
 def test_parts_are_reached_only_through_the_facade():
     names = [path.stem for path in part_files()]
+    excluded = {FACADE.resolve(), Path(__file__).resolve()}
+    excluded.update(path.resolve() for path in part_files())
     readers = [
-        path
-        for path in sorted(SCRIPTS.glob("*.py")) + sorted((ROOT / "tests").glob("*.py"))
-        if path != FACADE
-        and path not in part_files()
-        and path.resolve() != Path(__file__).resolve()
-        and any(name in path.read_text(encoding="utf-8") for name in names)
+        path.relative_to(ROOT).as_posix()
+        for path in candidate_readers()
+        if path.resolve() not in excluded
+        and any(
+            name in path.read_text(encoding="utf-8", errors="replace") for name in names
+        )
     ]
     assert readers == []
+
+
+def test_reader_search_covers_nested_folders():
+    found = {path.relative_to(ROOT).as_posix() for path in candidate_readers()}
+    assert any(path.startswith(".github/workflows/") for path in found)
+    assert any(path.count("/") >= 2 for path in found)
 
 
 REPORT = MODULE._report
