@@ -24,6 +24,65 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
 
+_BUNDLE_PART_PREFIX = "readiness_scan_"
+_BUNDLE_PART_NAME = re.compile(r"readiness_scan_[a-z0-9_]+")
+_BUNDLE_FACADE = Path(__file__).resolve()
+_BUNDLE_FACADE_SHA256 = hashlib.sha256(_BUNDLE_FACADE.read_bytes()).hexdigest()
+_BUNDLE_PARTS: dict[str, tuple[types.ModuleType, str]] = {}
+
+
+def _part(name: str) -> types.ModuleType:
+    if not _BUNDLE_PART_NAME.fullmatch(name):
+        raise ImportError("scanner_part_name_rejected:" + name)
+    path = Path(__file__).resolve().with_name(name + ".py")
+    spec = importlib.util.spec_from_file_location("_" + name, path)
+    if spec is None:
+        raise ImportError("scanner_part_unavailable:" + name)
+    source = path.read_bytes()
+    digest = hashlib.sha256(source).hexdigest()
+    loaded = _BUNDLE_PARTS.get(path.name)
+    if loaded is not None and loaded[1] == digest:
+        return loaded[0]
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        exec(compile(source, str(path), "exec"), module.__dict__)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous
+        raise
+    _BUNDLE_PARTS[path.name] = (module, digest)
+    return module
+
+
+def _scanner_bundle_digests() -> dict[str, str]:
+    unloaded = sorted(
+        candidate.name
+        for candidate in _BUNDLE_FACADE.parent.glob(_BUNDLE_PART_PREFIX + "*.py")
+        if candidate.name not in _BUNDLE_PARTS
+    )
+    if unloaded:
+        raise RuntimeError("scanner_part_not_loaded:" + ",".join(unloaded))
+    digests = {name: digest for name, (_, digest) in _BUNDLE_PARTS.items()}
+    digests[_BUNDLE_FACADE.name] = _BUNDLE_FACADE_SHA256
+    return digests
+
+
+def scanner_bundle_names() -> tuple[str, ...]:
+    return tuple(sorted(_scanner_bundle_digests()))
+
+
+def scanner_bundle_sha256() -> str:
+    lines = "".join(
+        name + "\0" + digest + "\n"
+        for name, digest in sorted(_scanner_bundle_digests().items())
+    )
+    return hashlib.sha256(lines.encode("utf-8")).hexdigest()
+
+
 SCHEMA = "repo-preflight.scan/v3"
 
 # CLIが担当する範囲の境界。対話・非対話のどちらでも同じ文言を出す。
@@ -1291,7 +1350,7 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _scanner_source_sha256() -> str:
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return scanner_bundle_sha256()
 
 
 def _optional_distribution_version(name: str) -> str:
