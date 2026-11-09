@@ -83,6 +83,8 @@ def test_triggers_are_schedule_manual_and_scoped_main_push():
     assert set(triggers) == {"schedule", "workflow_dispatch", "push"}
     assert triggers["push"]["branches"] == ["main"]
     assert set(triggers["push"]) == {"branches", "paths"}
+    # 部品の具体名を呼出側に固定せず、現在・将来の分割部品を同じ規則で扱う。
+    assert "scripts/readiness_scan_*.py" in triggers["push"]["paths"]
     crons = [entry["cron"] for entry in triggers["schedule"]]
     assert len(crons) == 1
     minute, hour = crons[0].split()[:2]
@@ -99,7 +101,6 @@ def test_triggers_are_schedule_manual_and_scoped_main_push():
         "scripts/identity_normalization.py",
         "scripts/preflight_ratchet.py",
         "scripts/readiness_scan.py",
-        "scripts/readiness_scan_report.py",
         "scripts/readiness_scan_future_part.py",
         "scripts/caff_archive.py",
         "scripts/dialogue_gate.py",
