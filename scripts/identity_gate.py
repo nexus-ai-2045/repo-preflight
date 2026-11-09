@@ -55,9 +55,10 @@ SESSION_TRACE_RES = (
     ),
     # Claude の作業 URL。レビュー3C 高2: claude.ai と claude.com の project・chat・share・code を見る。
     # ファイル名に写した形（/ を _ に置き換えた名前。高1）も同じ型で止める。
+    # session_だけではIDがなく、検査ルール自身も一致する。汎用code分岐も専用分岐へ委ねる。
     re.compile(
-        r"claude[.](?:ai|com)[/_](?:code[/_](?:session_|projects?[/_])"
-        r"|(?:projects?|chat|share|code)/[A-Za-z0-9_-])",
+        r"claude[.](?:ai|com)[/_](?:code[/_](?:session_[A-Za-z0-9_-]|projects?[/_])"
+        r"|(?:projects?|chat|share)/[A-Za-z0-9_-]|code/(?!session_)[A-Za-z0-9_-])",
         re.I,
     ),
     re.compile(
