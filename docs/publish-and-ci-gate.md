@@ -80,7 +80,7 @@ jobs:
 
 ### 全 ref の定期検査（repo-preflight 本体）
 
-PR・push の CI は、そのイベントの commit から辿れる履歴だけを見ます。PR の無い枝・タグ・閉じた PR の head は、本体では `.github/workflows/all-refs-scan.yml` が毎日（03:17 UTC）と手動実行で見ます。
+通常のPR・pushのCIは、そのイベントのcommitから辿れる履歴だけを見ます。PRの無い枝・タグ・閉じたPRのheadは、本体では `.github/workflows/all-refs-scan.yml` が毎日（03:17 UTC）と手動実行で見ます。監査器・規則・許可一覧・基準値を変更したmainへのpushでも、同じ全ref検査を実行します。分割したscanner部品も対象とし、通常の文書・テストだけの変更では追加起動しません。対象pathの正本は同workflowの `push.paths` です。検査本体と読み取り専用の権限は共通です。
 
 - ref（枝・タグ・`refs/pull/*/head`）ごとに、その ref の履歴とデフォルト枝の commit だけを入れた別の作業場を作り、`identity_gate.py --public`・`preflight_ratchet.py`・固定版 gitleaks を呼びます。新しい検査はありません。
 - 道具・許可名義・名義検査の例外一覧は、デフォルト枝の版だけを読みます。枝側で例外一覧を広げても通りません。枝で足した試験データが枝側の例外一覧に頼っているときは、その例外が人のレビューを経てデフォルト枝に入るまで赤のままです。

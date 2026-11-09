@@ -2,7 +2,7 @@ name: all-refs-scan
 
 # PR・push の CI（preflight-gate.yml）は、そのイベントの commit から辿れる履歴だけを見る。
 # その穴埋めとして、PR の無い枝・タグ・PR の head（refs/pull/*/head）も含めたリモートの ref を、
-# 日に1回と手動で検査する。取得するのは refs/heads・refs/tags・refs/pull/*/head だけで、
+# 日に1回・手動・監査器や規則を変えたmainへのpushで検査する。取得するのは refs/heads・refs/tags・refs/pull/*/head だけで、
 # refs/notes やそれ以外の名前空間（任意の refs/*、refs/pull/*/merge など）は取得せず、検査の対象外。
 # 新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
 # - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
@@ -26,6 +26,28 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+  # 監査器の修復は、その版で過去の公開refも確かめる。通常のdocs/test変更では起動しない。
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/all-refs-scan.yml"
+      - "scripts/identity_gate.py"
+      - "scripts/identity_normalization.py"
+      - "scripts/preflight_ratchet.py"
+      - "scripts/readiness_scan.py"
+      - "scripts/readiness_scan_*.py"
+      - "scripts/caff_archive.py"
+      - "scripts/dialogue_gate.py"
+      - "scripts/consistency_gate.py"
+      - "scripts/readme_release_gate.py"
+      - "scripts/install_pinned_gitleaks.py"
+      - "references/public-commit-identities.json"
+      - "references/gitleaks-pins.json"
+      - ".repo-preflight/identity-fixture-exceptions.txt"
+      - ".repo-preflight/reviewed-synthetic-fixtures.json"
+      - ".repo-preflight/ratchet-baseline.json"
+      - ".gitleaks.toml"
 
 permissions:
   contents: read

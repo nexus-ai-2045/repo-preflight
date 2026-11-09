@@ -1,6 +1,7 @@
 """全 ref 検査（.github/workflows/all-refs-scan.yml）の形と、実際の Git 履歴での赤・緑。"""
 
 import hashlib
+from fnmatch import fnmatchcase
 import os
 from pathlib import Path
 import re
@@ -75,17 +76,68 @@ def shell_lines(script):
     return lines
 
 
-def test_triggers_are_schedule_and_manual_only():
+def test_triggers_are_schedule_manual_and_scoped_main_push():
     wf = load_workflow()
     # PyYAML は on: を真偽値 True として読む
     triggers = wf.get("on", wf.get(True))
-    assert set(triggers) == {"schedule", "workflow_dispatch"}
+    assert set(triggers) == {"schedule", "workflow_dispatch", "push"}
+    assert triggers["push"]["branches"] == ["main"]
+    assert set(triggers["push"]) == {"branches", "paths"}
     crons = [entry["cron"] for entry in triggers["schedule"]]
     assert len(crons) == 1
     minute, hour = crons[0].split()[:2]
     # 毎時0分の混雑を避けた半端な分、日に1回
     assert minute.isdigit() and int(minute) % 2 == 1 and int(minute) not in (0, 30)
     assert hour.isdigit()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/all-refs-scan.yml",
+        "scripts/identity_gate.py",
+        "scripts/identity_normalization.py",
+        "scripts/preflight_ratchet.py",
+        "scripts/readiness_scan.py",
+        "scripts/readiness_scan_report.py",
+        "scripts/readiness_scan_future_part.py",
+        "scripts/caff_archive.py",
+        "scripts/dialogue_gate.py",
+        "scripts/consistency_gate.py",
+        "scripts/readme_release_gate.py",
+        "scripts/install_pinned_gitleaks.py",
+        "references/public-commit-identities.json",
+        "references/gitleaks-pins.json",
+        ".repo-preflight/identity-fixture-exceptions.txt",
+        ".repo-preflight/reviewed-synthetic-fixtures.json",
+        ".repo-preflight/ratchet-baseline.json",
+        ".gitleaks.toml",
+    ],
+)
+def test_audit_tool_and_policy_changes_trigger_main_scan(path):
+    wf = load_workflow()
+    paths = wf.get("on", wf.get(True))["push"]["paths"]
+    assert any(fnmatchcase(path, pattern) for pattern in paths)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "README.md",
+        "docs/cli-reference.md",
+        "tests/test_session_url_prefix.py",
+        ".github/workflows/ci.yml",
+        "scripts/install_runtime_skills.py",
+        "scripts/preferences.py",
+        "scripts/github_settings_gate.py",
+        "scripts/readiness_scanner_notes.py",
+        "pyproject.toml",
+    ],
+)
+def test_unrelated_changes_do_not_trigger_full_ref_scan(path):
+    wf = load_workflow()
+    paths = wf.get("on", wf.get(True))["push"]["paths"]
+    assert not any(fnmatchcase(path, pattern) for pattern in paths)
 
 
 def test_token_is_read_only():
