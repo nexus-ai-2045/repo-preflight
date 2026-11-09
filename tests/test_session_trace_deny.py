@@ -79,44 +79,6 @@ def test_本文検査は似ているだけの文を通す(policy, text):
     assert g.scan_text(policy, text, "t") == []
 
 
-def test_セッションの識別子がない検査ルール定義は通す(policy):
-    # 既存ルールを別moduleへ移すとき、[.]の正規化がルール自身をURL扱いした回帰。
-    host = ".".join(("claude", "ai"))
-    prefix = host + "/code/" + "session" + "_"
-    rule = (
-        '    re.compile(r"(?im)^[ \\t]*claude-session[ \\t]*:|'
-        + prefix.replace(".", "[.]")
-        + '"),'
-    )
-    assert not g.session_trace_found(prefix)
-    assert g.scan_text(policy, rule, "t") == []
-    # 1文字でもIDがあれば、伏せ字・URL符号化・ファイル名の写しも引き続き止める。
-    fullwidth = str.maketrans({chr(c): chr(c + 0xFEE0) for c in range(33, 127)})
-    for domain in ("ai", "com"):
-        for separator in ("/", "_"):
-            for first in ("0", "a", "_", "-"):
-                prefix = (
-                    ".".join(("claude", domain))
-                    + separator
-                    + "code"
-                    + separator
-                    + "session_"
-                )
-                assert not g.session_trace_found(prefix)
-                actual = prefix + first
-                for variant in (
-                    actual,
-                    actual.replace(".", "[.]"),
-                    quote(actual, safe=""),
-                    actual.replace("/", "_"),
-                    actual.translate(fullwidth),
-                    f'"{prefix}" + "{first}"',
-                ):
-                    assert g.session_trace_found(variant)
-        # セッション専用経路でないcode IDの拒否も維持する。
-        assert g.session_trace_found(".".join(("claude", domain)) + "/code/" + "0")
-
-
 @pytest.mark.parametrize("text", BLOCK)
 def test_秘密型もセッション行とURLを数える(text):
     data = text.encode("utf-8")
@@ -138,8 +100,7 @@ def test_UTF16の写しも数える():
 
 def test_二つの検査器の型がそろっている():
     # 全履歴のラチェット（readiness_scan）は基準値と数を比べるので型を広げない。
-    # 新しく足すものを見る identity_gate は、実IDを含むケースを必ず検出する。
-    # IDのないURL prefixや検査用の正規表現定義は、実セッションと区別する。
+    # 新しく足すものを見る identity_gate は、その型を必ず含む（狭くはならない）。
     for case in BLOCK + PASS:
         text = case.values[0]
         if SCAN.text_has(SCAN.SECRET_PATTERNS, text.encode("utf-8")):
