@@ -6,8 +6,10 @@ import sys
 import pytest
 
 from test_media_identity import MEDIA, ENGINE, scan, DENIED
-from pypdf import PdfWriter
-from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+if sys.version_info >= (3, 10):
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 pytestmark = pytest.mark.skipif(
     sys.version_info < (3, 10), reason="PDF inspection requires Python3.10+"

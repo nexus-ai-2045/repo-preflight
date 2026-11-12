@@ -2,16 +2,19 @@
 
 import io
 import struct
+import sys
 
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import (
-    ArrayObject,
-    DecodedStreamObject,
-    DictionaryObject,
-    NameObject,
-    NumberObject,
-)
+
+if sys.version_info >= (3, 10):
+    from pypdf import PdfWriter
+    from pypdf.generic import (
+        ArrayObject,
+        DecodedStreamObject,
+        DictionaryObject,
+        NameObject,
+        NumberObject,
+    )
 
 from test_media_identity import DENIED, MEDIA, requires_pdf, scan
 

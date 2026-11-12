@@ -6,7 +6,9 @@ import subprocess
 import sys
 
 import pytest
-from pypdf import PdfWriter
+
+if sys.version_info >= (3, 10):
+    from pypdf import PdfWriter
 from test_readiness_scan import MODULE, SCRIPT, make_repo, git
 from test_media_identity import make_av, requires_decoder, FFMPEG, FFPROBE
 
@@ -78,11 +80,11 @@ def test_real_readiness_pdf_metadata_and_adapter_evidence(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     "name,body,reason",
     [
-        ("wrong.pdf", b"public ordinary text", "format_mismatch"),
-        ("wrong.mp3", pdf(), "format_mismatch"),
+        ("wrong.pdf", lambda: b"public ordinary text", "format_mismatch"),
+        pytest.param("wrong.mp3", pdf, "format_mismatch", marks=requires_pdf),
         (
             "unknown.mp4",
-            b"\x00\x00\x00\x10ftypisom\x00\x00\x00\x00",
+            lambda: b"\x00\x00\x00\x10ftypisom\x00\x00\x00\x00",
             "unverified" if FFMPEG and FFPROBE else "dependency_unavailable",
         ),
     ],
@@ -91,7 +93,7 @@ def test_declared_format_and_unknown_mp4_stop_real_entry(
     tmp_path, monkeypatch, name, body, reason
 ):
     repo = setup_scan(tmp_path, monkeypatch)
-    (repo / name).write_bytes(body)
+    (repo / name).write_bytes(body())
     result = private_result(repo)
     assert result["status"] == "tool_error"
     assert result["reason"] == "private_identity_media_" + reason
@@ -151,6 +153,7 @@ def test_mp3_actual_entry_decodes_and_missing_decoder_stops(tmp_path, monkeypatc
     assert result["reason"] == "private_identity_media_dependency_unavailable"
 
 
+@requires_pdf
 def test_external_provider_never_certifies_media(tmp_path, monkeypatch):
     repo = setup_scan(tmp_path, monkeypatch)
     from identity_provider_fixture import configure_private_provider
