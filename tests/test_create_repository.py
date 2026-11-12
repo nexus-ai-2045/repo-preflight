@@ -104,7 +104,7 @@ def test_delegation_uses_scoped_environment(entry, bootstrap, monkeypatch, capsy
     assert dict(os.environ) == before
 
 
-@pytest.mark.parametrize("runtime", [".codex", ".claude", ".agents"])
+@pytest.mark.parametrize("runtime", [".codex", ".claude", ".agents", ".grok"])
 def test_adopted_runtime_bootstrap_is_discovered(entry, tmp_path, capsys, runtime):
     source = tmp_path / runtime / "skills/new-repo-bootstrap/scripts/bootstrap_repo.py"
     source.parent.mkdir(parents=True)

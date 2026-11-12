@@ -44,7 +44,7 @@ def bootstrap_source(explicit, home, env):
         if not source.is_file():
             raise ValueError("configured_bootstrap_unavailable")
         return source
-    for runtime in (".codex", ".claude", ".agents"):
+    for runtime in (".codex", ".claude", ".agents", ".grok"):
         source = home / runtime / "skills/new-repo-bootstrap/scripts/bootstrap_repo.py"
         if source.is_file():
             return source
