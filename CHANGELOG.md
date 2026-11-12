@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### pypdf を 7.0.0 に上げる
+
+- optional の `media`・`test` 依存の pypdf を 6.21.4 から 7.0.0 に上げた。PDF 検査が束縛する pypdf の内部実装の source hash（`_reader`・`generic._data_structures`・`generic._utils`）も新しい版に合わせた。pdfminer の hash は変わらない。
+- pypdf 7 で削除されたモジュール定数 `pypdf.filters.ZLIB_MAX_OUTPUT_LENGTH` の代わりに、`pypdf.overwrite_configuration(zlib_maximum_output_length=...)` で Flate 展開の上限を同じ値に設定する。
+- pypdf 7.0.0 は Python 3.10 以上を要するので、両方の依存に `python_version >= '3.10'` を付けた。Python 3.9 の PDF 検査はこれまでどおり dependency unavailable で止まる。3.9 では pypdf で合成 PDF を作るテストを飛ばす。3.9 で止まることの確認は、pypdf を読み込まずに走る試験に分けて残した。
+
 ### readiness_scan の出力の約束と集計を部品に移す
 
 - `scripts/readiness_scan.py` から、出力の約束の定数・報告の整形・終了コード・検査結果の集計を部品 `scripts/readiness_scan_report.py` に移した（ADR-0022）。集計は、どの検査を判定に入れるかを決める `gating` と、tool_error・fail/unknown・pass の優先順で全体の status を決める `aggregate_status` の 2 つの純粋関数にした。窓口は移した名前を同じ名前で出し続け、呼ぶパス・引数・終了コード・出力の JSON は変わらない。部品が 1 つ増えるので、名義検査の合格控えは 1 回だけ全部外れる。

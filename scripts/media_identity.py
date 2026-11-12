@@ -334,9 +334,9 @@ def _font(data, subtype, output, lengths=None):
 
 
 PDF_IMPLEMENTATIONS = {
-    "pypdf._reader": "55bbb1b10a5721a7bad12954a598f6f8beaaacd138d2f771cd97e8b99a1d0514",
-    "pypdf.generic._data_structures": "a2c0ee0c3bac0d584659177263e2e26e4222e5315d7e72838e9f0eb001d7c79f",
-    "pypdf.generic._utils": "33c8bde72a42e65d9eef5d74f157aaf74bdb6d4b65427beefbe256fc0b32c793",
+    "pypdf._reader": "d6892bf319d924b1a93636e6664dc65145738d391bdf5fac0296867120e918ac",
+    "pypdf.generic._data_structures": "ac437378207bffe2c32232d8e42dbf6baf36f0ff1f720bfb359fa27e43132dfc",
+    "pypdf.generic._utils": "16e4c5573d8498f8a0601236d12c3cbd90bdc4bab6a1835f44ce8febf0dd4061",
     "pdfminer.psparser": "169247c80a69cee45f7d132e60944e8488944d2633524bfd2a97f915eefc08bf",
 }
 
@@ -348,7 +348,7 @@ def _pdf_dependencies(output):
     import pypdf
     import pdfminer
 
-    if pypdf.__version__ != "6.21.4" or pdfminer.__version__ != "20260107":
+    if pypdf.__version__ != "7.0.0" or pdfminer.__version__ != "20260107":
         raise MediaError("dependency_unavailable")
     for name, expected in PDF_IMPLEMENTATIONS.items():
         module = importlib.import_module(name)
@@ -877,7 +877,7 @@ def _pdf_contents(source, output):
     )
 
     output.versions["pypdf"] = pypdf.__version__
-    pypdf.filters.ZLIB_MAX_OUTPUT_LENGTH = DATA_LIMIT
+    pypdf.overwrite_configuration(zlib_maximum_output_length=DATA_LIMIT)
     diagnostics = []
 
     class Diagnostic(logging.Handler):
