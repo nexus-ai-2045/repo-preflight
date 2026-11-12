@@ -9,6 +9,18 @@ description: >
 
 # repo-preflight (Claude Code adapter)
 
+
+## アプリ開発開始時の検査
+
+コメント禁止とバグ再発防止の検査は、解決した `repo-preflight` の正本から導入する。新規リポジトリ作成のスキルもこの同じ入口を呼ぶ。
+
+```bash
+python <THIS_SKILL_DIR>/run_preflight.py --install-development-lint --repo <app-repo> --json
+```
+
+導入後はアプリの `tools/lint_rules/README.md` を確認し、`python3 tools/development_lint.py` を実行する。既存ファイルの競合は差分を統合してから再実行する。
+
+
 ## 正本
 
 このファイルは runtime adapter。手順の正本は clone 側 root の `SKILL.md`。

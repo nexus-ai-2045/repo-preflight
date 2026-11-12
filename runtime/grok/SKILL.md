@@ -8,6 +8,16 @@ description: >
 
 # repo-preflight (Grok adapter)
 
+## アプリ開発開始時の検査
+
+コメント禁止とバグ再発防止の検査は、解決した `repo-preflight` の正本から導入する。新規リポジトリ作成のスキルもこの同じ入口を呼ぶ。
+
+```bash
+python <THIS_SKILL_DIR>/run_preflight.py --install-development-lint --repo <app-repo> --json
+```
+
+導入後はアプリの `tools/lint_rules/README.md` を確認し、`python3 tools/development_lint.py` を実行する。既存ファイルの競合は差分を統合してから再実行する。
+
 ## Source of truth
 
 This file is a runtime adapter. Canonical steps live in the clone root `SKILL.md`.

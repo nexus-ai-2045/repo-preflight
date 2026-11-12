@@ -18,6 +18,8 @@ dependencies = []
 media = ["hachoir==3.4.0", "pdfminer.six==20260107; python_version >= '3.10'", "pypdf==6.21.4", "mutagen>=1.48.1,<1.49; python_version >= '3.10'", "mutagen==1.47.0; python_version < '3.10'", "fonttools==4.67.0; python_version >= '3.11'", "Pillow>=13,<14; python_version >= '3.11'"]
 images = ["Pillow>=13,<14; python_version >= '3.11'", "simplejpeg>=1.9,<2", "psd-tools>=1.26,<2; python_version >= '3.11'"]
 test = [
+    "tree-sitter-language-pack==0.13.0; python_version >= '3.10'",
+    "tree-sitter==0.25.2; python_version >= '3.10'",
     "pdfminer.six==20260107; python_version >= '3.10'",
     "pypdf==6.21.4",
     "mutagen>=1.48.1,<1.49; python_version >= '3.10'",

@@ -13,6 +13,16 @@
 - コミットの作者・コミッター・共同作者行を、指定した名義設定や公開許可一覧と照合します。
 - `--intent`で、操作前の確認事項をJSONとして返します。
 
+## 開発開始時のコメント禁止と再発防止
+
+アプリの静的検査と導入処理の正本はこのリポジトリです。`new-repo-bootstrap` は初期設定時にこの導入処理を呼び、`development-pipeline` は実装前の検査とバグ修正時の再発防止を担当します。
+
+```bash
+python scripts/install_development_lint.py --repo <app-repo> --json
+```
+
+導入後は対象リポジトリで依存を解決し、`python3 tools/development_lint.py` をローカルと継続検査で実行します。詳細な範囲、例外、既存ファイルの保持、追加ルールの検証は [導入手順](docs/development-lint.md)を確認してください。
+
 ## 0.11.0の変更
 
 非公開リポジトリへの今回の送信に限り、`--media-inspection metadata`で動画・画像のメタデータを検査できます。原本のSHA-256とGit objectへ結果を結び付けますが、映像・画像の内容に個人情報がないことは保証しません。既定のstrict検査と公開・releaseの全体検査は維持します。GIF拡張本文の秘密情報検査とPowerShell引用符の解析も修正しました。[リリースノート](docs/releases/v0.11.0.md)で範囲と制約を確認してください。

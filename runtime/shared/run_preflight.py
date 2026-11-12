@@ -73,7 +73,11 @@ def discover_root(start: Path | None = None) -> Path:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = discover_root()
-    scan = root / "scripts" / "readiness_scan.py"
+    entry = "readiness_scan.py"
+    if args and args[0] == "--install-development-lint":
+        entry = "install_development_lint.py"
+        args = args[1:]
+    scan = root / "scripts" / entry
     # readiness_scan.main を同じプロセスで実行し、sys.argv を差し替える
     old_argv = sys.argv[:]
     old_path = sys.path[:]
