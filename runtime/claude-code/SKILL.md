@@ -10,6 +10,16 @@ description: >
 # repo-preflight (Claude Code adapter)
 
 
+## 新規リポジトリの作成
+
+新規作成はこの入口で受け付ける。実行処理は既存の `new-repo-bootstrap` へ委譲し、開発規約の検査を同じ `repo-preflight` 正本から導入する。
+
+```bash
+python <THIS_SKILL_DIR>/run_preflight.py --create-repo --name <name> --visibility private --description "目的の説明" --json
+```
+
+既定は読取りのみ。対象と操作への有効な承認があれば、同じ引数に `--confirm` を付けて実行する。正本の作成手順と各段階の結果を確認する。
+
 ## アプリ開発開始時の検査
 
 コメント禁止とバグ再発防止の検査は、解決した `repo-preflight` の正本から導入する。新規リポジトリ作成のスキルもこの同じ入口を呼ぶ。

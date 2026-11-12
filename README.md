@@ -13,6 +13,20 @@
 - コミットの作者・コミッター・共同作者行を、指定した名義設定や公開許可一覧と照合します。
 - `--intent`で、操作前の確認事項をJSONとして返します。
 
+## 新規リポジトリ作成の入口
+
+新規作成の受付は `repo-preflight` に統一する。作成処理は既存の `new-repo-bootstrap` へ委譲し、コメント禁止と再発防止の検査はこのリポジトリの正本から導入する。
+
+```bash
+python <skill-dir>/run_preflight.py --create-repo --name <name> --visibility private --description "目的の説明" --json
+```
+
+既定は作成前の検査だけを行う。対象名・公開範囲・実行する操作への有効な承認を確認してから、同じ引数へ `--confirm` を加える。作成処理は、ローカルの準備、規約検査の導入と実行、初期コミット、共有前検査、`GitHub` 上の作成、設定と公開時の保護、初期送信、結果の読み戻しの順に進む。途中で失敗した場合は、既存の再開手順と検査結果を使う。
+
+`new-repo-bootstrap` が実行環境で見つからない場合は停止する。別の場所に採用済みの実行元がある場合は `--bootstrap-script <path>` で指定する。明示した実行元が不正なら別の候補へ切り替えない。
+
+既存リポジトリへのlint導入は `--install-development-lint --repo <app-repo>` を使う。詳細は [開発規約の導入](docs/development-lint.md)を参照する。
+
 ## 開発開始時のコメント禁止と再発防止
 
 アプリの静的検査と導入処理の正本はこのリポジトリです。`new-repo-bootstrap` は初期設定時にこの導入処理を呼び、`development-pipeline` は実装前の検査とバグ修正時の再発防止を担当します。

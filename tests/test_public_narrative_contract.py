@@ -37,6 +37,8 @@ OS_ALIASES = {
 SCRIPT_OWNERS = (
     "readiness_scan.py",
     "run_preflight.py",
+    "create_repository.py",
+    "install_development_lint.py",
     "consistency_gate.py",
     "readme_release_gate.py",
     "install_runtime_skills.py",
@@ -86,8 +88,15 @@ def readiness_scan_flags(*, include_help: bool = False) -> frozenset[str]:
 
 def script_cli_flags(script_name: str) -> frozenset[str]:
     """1 script の add_argument 長オプション（または readiness_scan の parser）。"""
-    if script_name in {"readiness_scan.py", "run_preflight.py"}:
+    if script_name == "readiness_scan.py":
         return readiness_scan_flags(include_help=True)
+    if script_name == "run_preflight.py":
+        launcher = _load(ROOT / "runtime/shared/run_preflight.py", "launcher_narrative")
+        flags = set(readiness_scan_flags(include_help=True))
+        for flag, entry in launcher.ENTRY_POINTS.items():
+            flags.add(flag)
+            flags.update(script_cli_flags(entry))
+        return frozenset(flags)
     path = SCRIPTS_DIR / script_name
     if not path.is_file():
         return frozenset()
@@ -95,6 +104,9 @@ def script_cli_flags(script_name: str) -> frozenset[str]:
     flags = set(re.findall(r'add_argument\(\s*"(--[a-z][a-z0-9-]*)"', src))
     flags.update(re.findall(r"add_argument\(\s*'(--[a-z][a-z0-9-]*)'", src))
     flags.discard("--help")
+    if script_name == "create_repository.py":
+        creation = _load(path, "creation_narrative")
+        flags.update(creation.DELEGATED_OPTIONS)
     return frozenset(flags)
 
 
@@ -273,7 +285,7 @@ def truth():
     return {
         "flags": readiness_flags,
         # 主 CLI 叙述の既定 allowlist（script 近傍が無いとき）
-        "known_flags": readiness_flags,
+        "known_flags": script_cli_flags("run_preflight.py"),
         "required": frozenset(SCAN.REQUIRED),
         "scan_statuses": scan_statuses(),
         "dialogue_statuses": dialogue_statuses(),
@@ -389,3 +401,13 @@ def test_guarantees_doc_names_both_status_vocabularies(truth):
     text = _read("docs/guarantees-and-limits.md")
     assert_contains_all(text, truth["scan_statuses"], label="guarantees scan")
     assert_contains_all(text, truth["dialogue_statuses"], label="guarantees dialogue")
+
+
+def test_creation_flags_belong_to_launcher_and_not_readiness_scan():
+    known = script_cli_flags("run_preflight.py")
+    assert not unknown_flag_claims(
+        "python run_preflight.py --create-repo --name sample --confirm", known
+    )
+    assert "--create-repo" in unknown_flag_claims(
+        "python readiness_scan.py --create-repo", known
+    )

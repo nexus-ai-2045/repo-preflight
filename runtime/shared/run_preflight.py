@@ -15,6 +15,11 @@ import runpy
 import sys
 from pathlib import Path
 
+ENTRY_POINTS = {
+    "--create-repo": "create_repository.py",
+    "--install-development-lint": "install_development_lint.py",
+}
+
 
 def looks_like_root(path: Path) -> bool:
     scan = path / "scripts" / "readiness_scan.py"
@@ -74,8 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     root = discover_root()
     entry = "readiness_scan.py"
-    if args and args[0] == "--install-development-lint":
-        entry = "install_development_lint.py"
+    if args and args[0] in ENTRY_POINTS:
+        entry = ENTRY_POINTS[args[0]]
         args = args[1:]
     scan = root / "scripts" / entry
     # readiness_scan.main を同じプロセスで実行し、sys.argv を差し替える
