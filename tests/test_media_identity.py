@@ -101,7 +101,9 @@ def pdf(
     if attachment:
         writer.add_attachment("fixture.txt", b"public attachment")
     if active:
-        writer.add_js("app.alert('synthetic')")
+        from pypdf.actions import JavaScript
+
+        writer.add_open_action(JavaScript("app.alert('synthetic')"))
     if unknown_stream:
         stream = DecodedStreamObject()
         stream.set_data(b"unknown binary payload")

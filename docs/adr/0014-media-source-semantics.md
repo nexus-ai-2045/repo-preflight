@@ -29,7 +29,7 @@ mdatの正確なdecoder packet範囲だけを映像符号列として扱う。co
 
 ## 入力・隔離・上限
 
-optional `media`依存はpypdf 6.21.4、pdfminer.six 20260107、Mutagen 1.48、fontTools 4.67.0、Hachoir3.4.0、Pillow。FFmpeg/ffprobe executableは利用者が用意する。依存が無ければ固定診断codeで停止し、ネットワークへのfallbackやhome/systemへの自動導入はしない。
+optional `media`依存はpypdf 7.0.0、pdfminer.six 20260107、Mutagen 1.48、fontTools 4.67.0、Hachoir3.4.0、Pillow。FFmpeg/ffprobe executableは利用者が用意する。依存が無ければ固定診断codeで停止し、ネットワークへのfallbackやhome/systemへの自動導入はしない。
 
 短命の隔離Python processと専用temporary directoryを使う。raw credentials・Python検索pathを子へ渡さず、shellやPDFのJavaScript/actionを実行しない。Type1のfont programは、既存fontToolsの形式decoder内で命令・stack・allocation等を制限して解釈し、host file/network I/Oを許可しない。FFmpegのprotocolをfile/pipe、demuxerを対象形式へ限定し、外部data referenceを有効化しない。元bytesと処理後temporary inputのhash一致も確認し、抽出内容・raw decoder stderrを結果や公開logへ出さない。
 
@@ -45,7 +45,7 @@ adapter・callback normalizer・policyだけでなくdecoder版/利用可否もc
 
 ## PDFの原本領域と全xref context
 
-PDFはPython 3.10以上、pypdf 6.21.4とpdfminer.six 20260107（MIT）をoptional依存とする。core Python 3.9は維持し、3.9のPDF検査はdependency unavailableで停止する。内部stream読取り・primitive decoder・tokenizerのsource hashも束縛し、版や実装が違えば停止する。
+PDFはPython 3.10以上、pypdf 7.0.0とpdfminer.six 20260107（MIT）をoptional依存とする。core Python 3.9は維持し、3.9のPDF検査はdependency unavailableで停止する。内部stream読取り・primitive decoder・tokenizerのsource hashも束縛し、版や実装が違えば停止する。
 
 ASCII85DecodeとFlateDecodeの順のfilter chainは、Python標準のASCII85復号とzlibを使い、各段の全消費と展開上限を確認してから既存pypdfへ渡す。PDFの空白以外を捨てず、ASCII85の終端欠落・終端後のデータ・不正なgroup・Flate終端後のデータは拒否する。元PDFを変換・再保存せず、展開された本文・metadataのidentity検査を維持する。他の未証明filter chainへ一般化しない。
 
