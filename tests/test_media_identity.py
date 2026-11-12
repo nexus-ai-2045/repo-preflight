@@ -12,19 +12,25 @@ import sys
 import zlib
 
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import (
-    DecodedStreamObject,
-    EncodedStreamObject,
-    ArrayObject,
-    DictionaryObject,
-    NameObject,
-    TextStringObject,
-)
+
+if sys.version_info >= (3, 10):
+    from pypdf import PdfWriter
+    from pypdf.generic import (
+        DecodedStreamObject,
+        EncodedStreamObject,
+        ArrayObject,
+        DictionaryObject,
+        NameObject,
+        TextStringObject,
+    )
 
 requires_pdf = pytest.mark.skipif(
     sys.version_info < (3, 11),
     reason="PDF image inspection requires Python 3.11+ and Pillow 13; core remains available",
+)
+
+requires_pypdf = pytest.mark.skipif(
+    sys.version_info < (3, 10), reason="pypdf 7 requires Python 3.10+"
 )
 
 requires_font = pytest.mark.skipif(
@@ -166,6 +172,7 @@ def test_pdf_ascii85_chain_rejects_unconsumed_and_malformed_bytes(transform):
         scan(ascii85_pdf(transform=transform), "pdf")
 
 
+@requires_pypdf
 def test_pdf_ascii85_expansion_is_bounded_before_decode(monkeypatch):
     monkeypatch.setattr(MEDIA, "DATA_LIMIT", 7)
     stream = EncodedStreamObject()
@@ -174,6 +181,7 @@ def test_pdf_ascii85_expansion_is_bounded_before_decode(monkeypatch):
         MEDIA._pdf_validate_stream_encoding(stream, ["/ASCII85Decode", "/FlateDecode"])
 
 
+@requires_pypdf
 def test_pdf_ascii85_zero_groups_do_not_allocate_an_unbounded_list(monkeypatch):
     import tracemalloc
 
@@ -210,13 +218,20 @@ def test_pdf_unreadable_or_unknown_regions_do_not_pass(option):
 
 @requires_pdf
 @pytest.mark.parametrize(
-    "data", [b"not a PDF", b"%PDF-1.7\ninvalid\n%%EOF", pdf() + b"trailing"]
+    "data",
+    [
+        lambda: b"not a PDF",
+        lambda: b"%PDF-1.7\ninvalid\n%%EOF",
+        lambda: pdf() + b"trailing",
+    ],
 )
 def test_pdf_malformed_and_trailing_bytes_fail_closed(data):
+    data = data()
     with pytest.raises(ValueError, match="private_identity_media_"):
         scan(data, "pdf")
 
 
+@requires_pypdf
 def test_media_absent_dependency_and_limits_do_not_pass(monkeypatch):
     monkeypatch.setattr(MEDIA, "_run", lambda *a, **kw: (86, b"", b""))
     with pytest.raises(ValueError, match="dependency_unavailable"):
@@ -530,6 +545,7 @@ def test_decoder_process_does_not_receive_caller_credentials(monkeypatch):
     assert code == 0 and out.strip() == b"absent" and not error
 
 
+@requires_pypdf
 def test_unknown_child_error_cannot_disclose_extracted_private_text(monkeypatch):
     raw = json.dumps({"error": DENIED}).encode()
     monkeypatch.setattr(MEDIA, "_run", lambda *a, **kw: (87, raw, b""))
@@ -689,12 +705,16 @@ def test_pdf_metadata_token_resource_bound():
         MEDIA._pdf_metadata(b"(" + b"a" * 300000 + b")", MEDIA._Extracted())
 
 
-def test_pdf_dependency_drift_and_python39_fail_closed(monkeypatch):
+@requires_pypdf
+def test_pdf_dependency_drift_fails_closed(monkeypatch):
     import pypdf
 
     monkeypatch.setattr(pypdf, "__version__", "unreviewed-version")
     with pytest.raises(MEDIA.MediaError, match="dependency_unavailable"):
         MEDIA._pdf_dependencies(MEDIA._Extracted())
+
+
+def test_pdf_python39_fails_closed_before_importing_pypdf(monkeypatch):
     monkeypatch.setattr(MEDIA.sys, "version_info", (3, 9))
     with pytest.raises(MEDIA.MediaError, match="dependency_unavailable"):
         MEDIA._pdf_dependencies(MEDIA._Extracted())

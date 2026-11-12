@@ -2,10 +2,18 @@
 
 import io
 import json
+import sys
 
 import pytest
-from pypdf import PdfWriter
-from pypdf.generic import ArrayObject, DecodedStreamObject, DictionaryObject, NameObject
+
+if sys.version_info >= (3, 10):
+    from pypdf import PdfWriter
+    from pypdf.generic import (
+        ArrayObject,
+        DecodedStreamObject,
+        DictionaryObject,
+        NameObject,
+    )
 
 from test_media_identity import DENIED, ENGINE, MEDIA, requires_pdf, scan
 
