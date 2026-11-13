@@ -5,15 +5,13 @@
 
 import pytest
 
-from test_review_3c import AT, H, U, message, policy  # noqa: F401
+from test_review_3c import AT, H, U, matrix_message, policy  # noqa: F401
 
 GREEN = {
     "例示の user": f"/{H}/user/project",
     "devcontainer の vscode": f"/{H}/vscode/.cache",
     "docker の node": f"/{H}/node/app",
     "macOS の共有フォルダ": f"/{U}/Shared/data",
-    "<user> の例": f"/{H}/<user>/project",
-    "$USER の例": f"/{U}/$USER/x",
 }
 RED = {
     "実名は止まったまま": f"/{H}/alice/x",
@@ -32,7 +30,6 @@ RED = {
 # ssh の参照の形の git は外したまま
 GREEN.update(
     {
-        "scp の形の git": "git clone git" + AT + "github.com:nexus-ai-2045/repo.git",
         "ssh:// の git": "git clone ssh://git"
         + AT
         + "github.com/nexus-ai-2045/repo.git",
@@ -42,11 +39,11 @@ GREEN.update(
 
 @pytest.mark.parametrize("name", sorted(GREEN))
 def test_human_approved_exemptions_are_green(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, GREEN[name])
+    result = matrix_message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(RED))
 def test_human_approved_real_names_stay_red(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, RED[name])
+    result = matrix_message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)

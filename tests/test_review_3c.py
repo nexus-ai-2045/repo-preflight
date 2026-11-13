@@ -4,17 +4,23 @@
 IDENTITY_GATE_SCRIPT で直す前の版や何もしない版に差し替えると、カナリアが落ちることを確かめられる。
 """
 
+import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import redirect_stderr, redirect_stdout
+from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
+from unittest.mock import patch
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-GATE = os.environ.get("IDENTITY_GATE_SCRIPT") or str(ROOT / "scripts/identity_gate.py")
+GATE = str(ROOT / "scripts/identity_gate.py")
 OK = "Fixture Bot <fixture@example.invalid>"
 J = "".join
 U = J(["Us", "ers"])
@@ -40,7 +46,14 @@ def policy(tmp_path_factory):
 
 def gate(policy, *args, cwd=None, input=None):
     return subprocess.run(
-        [sys.executable, GATE, "--public", "--allowed-identities", str(policy), *args],
+        [
+            sys.executable,
+            os.environ.get("IDENTITY_GATE_SCRIPT") or GATE,
+            "--public",
+            "--allowed-identities",
+            str(policy),
+            *args,
+        ],
         capture_output=True,
         text=True,
         cwd=cwd,
@@ -53,6 +66,46 @@ def message(policy, tmp_path, text):
     path = tmp_path / "msg.txt"
     path.write_text("試験\n\n" + text + "\n", encoding="utf-8")
     return gate(policy, "--repo", str(tmp_path), "--message-file", str(path))
+
+
+class CapturedResult(NamedTuple):
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+@lru_cache(maxsize=1)
+def _default_main():
+    spec = importlib.util.spec_from_file_location("_review_3c_identity_gate", GATE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module.main
+
+
+def matrix_message(policy, tmp_path, text):
+    if os.environ.get("IDENTITY_GATE_SCRIPT"):
+        return message(policy, tmp_path, text)
+    path = tmp_path / "msg.txt"
+    path.write_text("試験\n\n" + text + "\n", encoding="utf-8")
+    argv = [
+        "--public",
+        "--allowed-identities",
+        str(policy),
+        "--repo",
+        str(tmp_path),
+        "--message-file",
+        str(path),
+    ]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with patch.dict(os.environ, _env(), clear=True):
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            returncode = _default_main()(argv)
+    return CapturedResult(returncode, stdout.getvalue(), stderr.getvalue())
 
 
 # ---- 止めるべきもの（カナリア） ----
@@ -120,13 +173,13 @@ GREEN = {
 
 @pytest.mark.parametrize("name", sorted(RED))
 def test_review_3c_canary_is_red(policy, tmp_path, name):
-    result = message(policy, tmp_path, RED[name])
+    result = matrix_message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(GREEN))
 def test_review_3c_control_is_green(policy, tmp_path, name):
-    result = message(policy, tmp_path, GREEN[name])
+    result = matrix_message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)
 
 
