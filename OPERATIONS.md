@@ -31,6 +31,10 @@ release準備では `--release` を省略しません。`readme_release_design` 
 
 浅い clone では履歴個人pathが無く `pass` になり得ます。完全履歴では `personal_path_scan` で `blocked` になり得ますが、それは別件です。整合性の `tool_error`（`change_sensitive_scope_unavailable`）にはしない、というのがこの Smoke の契約です。
 
+自己リポの7本のCLI試験（6 intentと引数なし）は、現在HEADの全追跡tree・実行権限を保つ一時Gitリポジトリで実行します。履歴は同じtreeの2 commit、`origin/main` はHEADと同じで、空diffと初回commit以外の整合性検査を実Git・実scannerで確かめます。Linux / Mac / Windows の既存互換ジョブを維持し、同じ開発履歴の重複走査だけを減らします。productionの全履歴検査は変更しません。
+
+実checkoutの全履歴release試験は、この自己試験が差分・依存から選択された時にLinux / Python 3.11の既存pytest stepで1回実行します。無関係な変更では選択範囲を広げません。浅いcheckoutや使用不能な`origin/main`はCIで失敗します。手元で同じ検査を実行する場合は環境変数`REPO_PREFLIGHT_DEEP_SELF_TEST=1`を設定し、`python -m pytest tests/test_self_intents.py -k test_real_checkout_release -q`を実行します。未指定時はこの1件だけskipします。
+
 ## 手元の検査の範囲
 
 - 手元もCIも `scripts/local_check.py` の差分・逆依存・文字参照による同じ選択入口を使う。手元は `python scripts/local_check.py`、計画だけなら `--plan-tests --json`。比較元は `--base-ref` で指定する。`full` / `quick` は既存呼出し用の互換名で、試験対象はどちらも差分から選ぶ。`full` は従来の追加ローカルgateも維持する。

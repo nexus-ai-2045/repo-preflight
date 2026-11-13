@@ -33,4 +33,5 @@ python .repo-operating-contracts\check.py
 | --- | --- |
 | CIでは対応不明を全件テストの成功で埋めない。 | `local_check.py --ci` の実行判定と `test_ci_unknown_blocks_successful_fallback`。 |
 | テストの代役関数も実関数の呼出し契約に従う。 | 公開名義境界テストの `create_autospec`。 |
-| 実行ファイルの検査fixtureは対象OSで探索できる形式にする。 | `test_explicit_pin_is_revalidated_without_path_fallback` の実行ファイルコピーとLinux・macOS・WindowsのCI。 |
+| OSごとの実行形式・ファイル名・リンク形式をfixtureで区別する。 | 固定pinの実行ファイルコピー、診断の全OS文字列検査とPOSIX実ファイル検査、runtimeテストの `_remove_checkout`、native CI。 |
+| CLIのOS互換検査で同じ実履歴を繰り返し走査しない。 | `test_self_intents.py` の同一tree・2コミット・空差分の実Git検査と、選択された代表Linux環境の全履歴検査。 |

@@ -3197,21 +3197,26 @@ def test_private_provider_detects_token_after_former_two_megabyte_offset(
     assert check["oversize_objects_unscanned"] == 0
 
 
-def test_private_provider_scans_blob_at_history_budget_limit(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "suffix", [b"", _FIXTURE_PRIVATE_TOKEN], ids=["clean", "tail_hit"]
+)
+def test_private_provider_scans_blob_at_history_budget_limit(
+    tmp_path, monkeypatch, suffix
+):
     configure_private_provider(tmp_path, monkeypatch)
+    # The production budget is asserted separately; exercise its boundary with less data.
+    budget = 16_384
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", budget)
     repo = make_repo(tmp_path)
-    commit_blob(
-        repo,
-        "budget.txt",
-        b"x" * _HISTORY_BATCH_BUDGET_BYTES,
-        "fixture at history budget",
-    )
+    payload = b"x" * (budget - len(suffix)) + suffix
+    commit_blob(repo, "budget.txt", payload, "fixture at history budget")
+    commit_blob(repo, "budget.txt", b"safe\n", "replace fixture")
     report = MODULE.scan(repo, require_private_identity=True)
     check = report["checks"]["private_identity_scan"]
-    assert len((repo / "budget.txt").read_bytes()) == 16_000_000
-    assert report["status"] == "pass"
-    assert check["status"] == "pass"
-    assert check["finding_count"] == 0
+    assert len(payload) == budget
+    assert report["status"] == ("blocked" if suffix else "pass")
+    assert check["status"] == ("fail" if suffix else "pass")
+    assert check["finding_count"] == (1 if suffix else 0)
     assert check["oversize_objects_unscanned"] == 0
 
 
@@ -3219,10 +3224,14 @@ def test_private_provider_blob_above_history_budget_stays_unknown(
     tmp_path, monkeypatch
 ):
     configure_private_provider(tmp_path, monkeypatch)
+    budget = 16_384
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", budget)
     repo = make_repo(tmp_path)
-    payload = b"x" * (16_000_001 - len(_FIXTURE_PRIVATE_TOKEN)) + _FIXTURE_PRIVATE_TOKEN
-    assert len(payload) == 16_000_001
-    assert payload.find(_FIXTURE_PRIVATE_TOKEN) > _FORMER_HISTORY_OBJECT_CAP_BYTES
+    payload = b"x" * (budget + 1 - len(_FIXTURE_PRIVATE_TOKEN)) + _FIXTURE_PRIVATE_TOKEN
+    assert len(payload) == budget + 1
+    assert payload.find(_FIXTURE_PRIVATE_TOKEN) == budget + 1 - len(
+        _FIXTURE_PRIVATE_TOKEN
+    )
     commit_blob(repo, "over.txt", payload, "historical over budget fixture")
     commit_blob(repo, "over.txt", b"safe\n", "replace over budget fixture")
     assert _FIXTURE_PRIVATE_TOKEN not in (repo / "over.txt").read_bytes()
