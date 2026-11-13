@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 
 import pytest
@@ -12,15 +14,18 @@ import identity_gate
 
 
 def test_explicit_pin_is_revalidated_without_path_fallback(tmp_path, monkeypatch):
-    discovered = tmp_path / "gitleaks"
-    explicit = tmp_path / "configured" / "gitleaks"
+    filename = "gitleaks.exe" if os.name == "nt" else "gitleaks"
+    discovered = tmp_path / filename
+    explicit = tmp_path / "configured" / filename
     explicit.parent.mkdir()
+    executable = Path(sys.executable).resolve()
+    original = executable.read_bytes()
     for binary in (discovered, explicit):
-        binary.write_bytes(b"fixture")
+        shutil.copyfile(executable, binary)
         binary.chmod(0o755)
     pins = tmp_path / "pins.json"
     pins.write_text(
-        json.dumps({"binary_sha256": {"test": hashlib.sha256(b"fixture").hexdigest()}})
+        json.dumps({"binary_sha256": {"test": hashlib.sha256(original).hexdigest()}})
     )
     monkeypatch.setattr(identity_gate, "GITLEAKS_PINS", pins)
     monkeypatch.setenv("PATH", str(tmp_path))
@@ -28,7 +33,7 @@ def test_explicit_pin_is_revalidated_without_path_fallback(tmp_path, monkeypatch
     assert identity_gate.pinned_gitleaks() == str(discovered.resolve())
     monkeypatch.setenv("REPO_PREFLIGHT_GITLEAKS", str(explicit))
     assert identity_gate.pinned_gitleaks() == str(explicit.resolve())
-    explicit.write_bytes(b"changed")
+    explicit.write_bytes(original + b"\nchanged")
     with pytest.raises(RuntimeError, match="^gitleaks_unpinned$"):
         identity_gate.pinned_gitleaks()
     explicit.unlink()
