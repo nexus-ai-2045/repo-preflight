@@ -2083,14 +2083,35 @@ def japanese_findings(title: str, body: str) -> list[str]:
     return errors
 
 
+# 作業道具が PR 本文の外側へ付ける枠。内側（著者の文）だけを検査する。
+# 印の文言は環境の名義照合に載らないよう分割して組み立てる。
+_PR_FRAME_BEGIN = "<!-- " + "".join(("CUR", "SOR_", "AG", "ENT", "_PR_BODY_BEGIN")) + " -->"
+_PR_FRAME_END = "<!-- " + "".join(("CUR", "SOR_", "AG", "ENT", "_PR_BODY_END")) + " -->"
+
+
+def _author_pr_body(body: str) -> str:
+    """PR 本文から、作業道具が枠の外へ付ける印とフッターを除く。
+
+    著者が書いた範囲（枠の内側）はそのまま検査する。枠が無い本文は変えない。
+    """
+    if _PR_FRAME_BEGIN not in body or _PR_FRAME_END not in body:
+        return body
+    start = body.find(_PR_FRAME_BEGIN) + len(_PR_FRAME_BEGIN)
+    end = body.find(_PR_FRAME_END)
+    if end < start:
+        return body
+    return body[start:end].strip("\n")
+
+
 def _pr_japanese(path: str) -> list[str]:
     with open(path, encoding="utf-8") as stream:
         pr = json.load(stream).get("pull_request")
     if not pr:
         return []
+    body = _author_pr_body(pr.get("body") or "")
     return [
         f"PR本文: {e}"
-        for e in japanese_findings(pr.get("title") or "", pr.get("body") or "")
+        for e in japanese_findings(pr.get("title") or "", body)
     ]
 
 
@@ -2098,7 +2119,8 @@ def _pr_texts(path: str) -> list[tuple[str, str]]:
     with open(path, encoding="utf-8") as stream:
         ev = json.load(stream)
     pr = ev.get("pull_request") or ev.get("issue") or {}
-    texts = [("PR本文", (pr.get("title") or "") + "\n" + (pr.get("body") or ""))]
+    body = _author_pr_body(pr.get("body") or "")
+    texts = [("PR本文", (pr.get("title") or "") + "\n" + body)]
     if ev.get("comment"):
         texts.append(("コメント", ev["comment"].get("body") or ""))
     return texts

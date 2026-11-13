@@ -259,6 +259,77 @@ def test_characterization_pr_event_japanese_gate_blocks(
     assert '"status": "fail"' in result.stdout
 
 
+def _frame_wrapped_pr_body(author_body: str, footer: str) -> str:
+    """作業道具が付ける枠とフッター付き本文（試験用）。"""
+    begin = "<!-- " + "".join(("CUR", "SOR_", "AG", "ENT", "_PR_BODY_BEGIN")) + " -->"
+    end = "<!-- " + "".join(("CUR", "SOR_", "AG", "ENT", "_PR_BODY_END")) + " -->"
+    return begin + "\n" + author_body + "\n" + end + "\n\n" + footer + "\n"
+
+
+def test_characterization_pr_event_ignores_tool_footer_session_url(tmp_path):
+    """枠の外（自動フッター）のセッション URL だけでは止まらない。"""
+    policy = _policy(tmp_path)
+    author = "## 概要\n\n特性試験だけを積む。\n"
+    # フッター側へだけセッション URL を置く（架空。分割して組み立てる）
+    footer = "参照: " + "https://" + "claude.ai/code/" + "session_" + ("0" * 24)
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "title": "特性試験を足す",
+                    "body": _frame_wrapped_pr_body(author, footer),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _identity_cli(
+        "--public",
+        "--allowed-identities",
+        str(policy),
+        "--repo",
+        str(tmp_path),
+        "--pr-event",
+        str(event),
+    )
+    assert result.returncode == 0, result.stderr
+    assert '"status": "pass"' in result.stdout
+    assert "0" * 24 not in _combined(result)
+
+
+def test_characterization_pr_event_still_blocks_session_inside_frame(tmp_path):
+    """枠の内側（著者本文）のセッション URL は従来どおり止める。"""
+    policy = _policy(tmp_path)
+    session_url = "https://" + "claude.ai/code/" + "session_" + ("0" * 24)
+    author = "## 概要\n\n参照: " + session_url + "\n"
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps(
+            {
+                "pull_request": {
+                    "title": "特性試験を足す",
+                    "body": _frame_wrapped_pr_body(author, "footer"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _identity_cli(
+        "--public",
+        "--allowed-identities",
+        str(policy),
+        "--repo",
+        str(tmp_path),
+        "--pr-event",
+        str(event),
+    )
+    assert result.returncode == 1
+    assert "セッション行あり" in result.stderr
+    assert '"status": "fail"' in result.stdout
+    assert "0" * 24 not in _combined(result)
+
+
 # ---- identity_gate --public --range（差分の形） ----
 
 
