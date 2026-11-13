@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""差分と依存周辺を選択して手元・CIで同じ試験を回す。未知の対応関係は、計画では停止し、実行では全部の試験を回す。
+"""差分と依存周辺を選択して手元・CIで同じ試験を回す。未知の対応関係は、計画とCIでは停止し、互換実行では全部の試験を回す。
 
 identity / consistency の必須ゲートは選択せず維持する。
 --plan-tests は副作用のない汎用選択、--run-selected-tests は選択済みpytestだけの入口。
-全件試験への暗黙のfallbackはない。full / quick は既存呼出し用の互換名。
+未解決の全件実行は --run-selected-tests だけが行う。full / quick は既存呼出し用の互換名。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import NamedTuple
 
 _IDENTITY_PATH = Path(__file__).resolve().with_name("local_identity_guard.py")
 _IDENTITY_KEY = (
@@ -2097,6 +2098,130 @@ def identity_worktree(repo: Path) -> int:
         ).returncode
 
 
+class _Blocked(NamedTuple):
+    reason: str
+    selected_count: int
+    unresolved_count: int
+    check_count: int
+
+
+class _Run(NamedTuple):
+    tests: tuple[str, ...]
+    workers: str | None
+    fallback: bool
+
+
+def _execution_decision(
+    plan,
+    *,
+    ci=False,
+    private=False,
+    workers=None,
+    allow_fallback=True,
+    pytest_only=True,
+) -> _Blocked | _Run:
+    """Pure boundary: blocked selections never carry executable test paths."""
+    counts = (
+        len(set(plan["selected_tests"])),
+        len(plan["unresolved"]),
+        len(plan["checks"]),
+    )
+    if private:
+        return _Blocked("private_selection", *counts)
+    if pytest_only and plan["checks"]:
+        return _Blocked("consumer_checks_required", *counts)
+    unresolved = bool(plan["unresolved"]) or plan.get("status") == "unresolved"
+    if unresolved and (ci or not allow_fallback):
+        return _Blocked("unresolved_selection", *counts)
+    tests = set(plan["selected_tests"])
+    if unresolved:
+        tests.update(plan.get("policy_tests", []))
+        if not tests:
+            return _Blocked("unresolved_selection", *counts)
+    changed = set(plan.get("changed_files", []))
+    return _Run(
+        tuple(sorted(tests & changed) + sorted(tests - changed)),
+        workers or ("auto" if ci or unresolved else None),
+        unresolved,
+    )
+
+
+def _pytest_command(decision: _Run):
+    if not isinstance(decision, _Run):
+        raise TypeError("pytest requires a runnable selection")
+    if not decision.tests:
+        return []
+    parallel = ["-n", decision.workers] if decision.workers else []
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        *parallel,
+        "--",
+        *decision.tests,
+    ]
+
+
+def _ci_report(plan, decision):
+    """Only fixed vocabulary, counts and validated hashes may leave CI planning."""
+    blocked = isinstance(decision, _Blocked)
+    report = {
+        "schema": "test-selection-ci/v1",
+        "selection_status": (
+            "unresolved" if blocked else ("selected" if decision.tests else "no_tests")
+        ),
+        "decision": "blocked" if blocked else ("run" if decision.tests else "skip"),
+        "selected_count": len(set(plan["selected_tests"])),
+        "unresolved_count": len(plan["unresolved"]),
+        "check_count": len(plan["checks"]),
+        "fallback": False,
+    }
+    if blocked:
+        report["reason"] = decision.reason
+    for key, width in (
+        ("head_oid", 40),
+        ("base_oid", 40),
+        ("policy_sha256", 64),
+        ("selector_source_sha256", 64),
+    ):
+        value = plan.get(key)
+        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{%d}" % width, value):
+            report[key] = value
+    return report
+
+
+def _write_ci_summary(report):
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if target:
+        with Path(target).open("a", encoding="utf-8") as summary:
+            summary.write("### Test selection\n\n| Field | Value |\n| --- | --- |\n")
+            for key, value in report.items():
+                rendered = str(value).lower() if isinstance(value, bool) else str(value)
+                summary.write(f"| {key} | {rendered} |\n")
+            summary.write("\n")
+
+
+def _emit_ci_report(report, *, json_output):
+    written = True
+    try:
+        _write_ci_summary(report)
+    except OSError:
+        report = {**report, "decision": "blocked", "reason": "summary_write_failed"}
+        written = False
+    print(json.dumps(report) if json_output else str(report), flush=True)
+    return written
+
+
+def _pytest_workers(value):
+    if value == "auto" or (
+        re.fullmatch(r"[1-9][0-9]{0,2}", value) and int(value) <= 256
+    ):
+        return value
+    raise argparse.ArgumentTypeError("expected auto or a worker count from 1 to 256")
+
+
 def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]:
     py = sys.executable
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
@@ -2170,17 +2295,14 @@ def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]
         steps.append(
             ("black（変えたファイル）", [py, "-m", "black", "--check", *py_files])
         )
-    if plan["unresolved"]:
-        raise ValueError(
-            "unresolved test selection: "
-            + ", ".join(item["file"] for item in plan["unresolved"])
-        )
-    tests = plan["selected_tests"]
-    if tests:
+    decision = _execution_decision(plan, allow_fallback=False, pytest_only=False)
+    if isinstance(decision, _Blocked):
+        raise ValueError("unresolved test selection")
+    if decision.tests:
         steps.append(
             (
-                f"pytest（関係 {len(tests)} ファイル）",
-                [py, "-m", "pytest", "-q", "--", *tests],
+                f"pytest（関係 {len(decision.tests)} ファイル）",
+                _pytest_command(decision),
             )
         )
     if mode == "quick" and any(
@@ -2208,9 +2330,17 @@ def main(argv: list[str] | None = None) -> int:
         "--base-ref", default="origin/main", help="比較元（既定 origin/main）"
     )
     ap.add_argument("--repo", type=Path, default=ROOT)
+    ap.add_argument(
+        "--ci", action="store_true", help="CI: 未解決なら停止し、既定で自動並列実行"
+    )
     ap.add_argument("--plan-tests", action="store_true", help="選択planだけを出す")
     ap.add_argument(
         "--run-selected-tests", action="store_true", help="選択したpytestだけを実行"
+    )
+    ap.add_argument(
+        "--pytest-workers",
+        type=_pytest_workers,
+        help="pytest-xdist worker count (auto or 1-256)",
     )
     ap.add_argument("--selection-config", type=Path, help="対象repo内の選択policy")
     ap.add_argument("--json", action="store_true", help="planをJSONで出す")
@@ -2221,6 +2351,14 @@ def main(argv: list[str] | None = None) -> int:
         help="内部用: 未ステージ・未追跡を含む作業ツリーの全部を identity_gate で見る",
     )
     ns = ap.parse_args(argv)
+    if ns.ci:
+        if ns.plan_tests or ns.dry_run or ns.identity_worktree:
+            ap.error(
+                "--ci conflicts with --plan-tests, --dry-run and --identity-worktree"
+            )
+        ns.run_selected_tests = True
+    if ns.pytest_workers and not ns.run_selected_tests:
+        ap.error("--pytest-workers requires --run-selected-tests")
     repo = ns.repo.resolve()
     identities = local_identity_guard.collect_identities(
         repo=repo, public_names={"nexus-ai-2045", "nexus_ai"}
@@ -2235,73 +2373,81 @@ def main(argv: list[str] | None = None) -> int:
                 local_identity_guard.find_hits(serialized, identities)
                 or redact(serialized, repo) != serialized
             )
-            if private_plan:
-                # Never hand a consumer redacted paths as executable selection.
-                plan = {
-                    "schema": "test-selection/v1",
-                    "status": "unresolved",
-                    "selected_tests": [],
-                    "checks": [],
-                    "unresolved": [
-                        {"reason": "private identity in plan; owner review required"}
-                    ],
-                }
-            print(
-                (
-                    json.dumps(plan, ensure_ascii=False, indent=2)
-                    if ns.json
-                    else str(plan)
-                ),
-                flush=True,
+            decision = _execution_decision(
+                plan,
+                ci=ns.ci,
+                private=private_plan,
+                workers=ns.pytest_workers,
+                allow_fallback=ns.run_selected_tests,
             )
-            if plan["unresolved"] and (private_plan or not ns.run_selected_tests):
-                return 2
-            if ns.run_selected_tests and plan["checks"]:
-                print("停止: check IDs require the consumer runner", file=sys.stderr)
-                return 2
-            # 対応が分からない時は選ばずに全部回す。回す試験が増える方向にだけ倒す
-            if ns.run_selected_tests and plan["unresolved"]:
-                every_test = sorted(
-                    set(plan.get("policy_tests", [])) | set(plan["selected_tests"])
-                )
-                if not every_test:
+            if ns.ci:
+                report = _ci_report(plan, decision)
+                if not _emit_ci_report(report, json_output=ns.json):
                     return 2
+            else:
+                if private_plan:
+                    # Redacted paths must never become executable selection inputs.
+                    plan = {
+                        "schema": "test-selection/v1",
+                        "status": "unresolved",
+                        "selected_tests": [],
+                        "checks": [],
+                        "unresolved": [
+                            {
+                                "reason": "private identity in plan; owner review required"
+                            }
+                        ],
+                    }
                 print(
-                    "対応が分からない変更があるので、全部の試験を回します",
-                    file=sys.stderr,
+                    (
+                        json.dumps(plan, ensure_ascii=False, indent=2)
+                        if ns.json
+                        else str(plan)
+                    ),
+                    flush=True,
                 )
-                return subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        "-n",
-                        "auto",
-                        "--",
-                        *every_test,
-                    ],
-                    cwd=repo,
-                    stdout=sys.stderr if ns.json else None,
-                ).returncode
-            if ns.run_selected_tests and plan["selected_tests"]:
-                return subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        "--",
-                        *plan["selected_tests"],
-                    ],
-                    cwd=repo,
-                    stdout=sys.stderr if ns.json else None,
-                ).returncode
+            if isinstance(decision, _Blocked):
+                if (
+                    not ns.ci
+                    and decision.reason == "consumer_checks_required"
+                    and ns.run_selected_tests
+                ):
+                    print(
+                        "停止: check IDs require the consumer runner", file=sys.stderr
+                    )
+                # A plan-only consumer owns check IDs; they do not block reading its plan.
+                if ns.run_selected_tests or private_plan or plan["unresolved"]:
+                    return 2
+                return 0
+            if ns.run_selected_tests:
+                command = _pytest_command(decision)
+                if decision.fallback:
+                    print(
+                        "対応が分からない変更があるので、全部の試験を回します",
+                        file=sys.stderr,
+                    )
+                if command:
+                    return subprocess.run(
+                        command,
+                        cwd=repo,
+                        stdout=sys.stderr if ns.json or ns.ci else None,
+                    ).returncode
             return 0
         if ns.selection_config:
             ap.error("--selection-config requires --plan-tests or --run-selected-tests")
         steps = build_steps(repo, ns.mode, ns.base_ref)
     except (ValueError, OSError) as exc:
+        if ns.ci:
+            _emit_ci_report(
+                {
+                    "schema": "test-selection-ci/v1",
+                    "decision": "blocked",
+                    "reason": "selection_failed",
+                    "fallback": False,
+                },
+                json_output=ns.json,
+            )
+            return 2
         safe_error = local_identity_guard.redact(redact(str(exc), repo), identities)
         print(
             json.dumps({"status": "unresolved", "error": safe_error})
@@ -2310,6 +2456,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     except subprocess.CalledProcessError:
+        if ns.ci:
+            _emit_ci_report(
+                {
+                    "schema": "test-selection-ci/v1",
+                    "decision": "blocked",
+                    "reason": "comparison_failed",
+                    "fallback": False,
+                },
+                json_output=ns.json,
+            )
+            return 2
         message = (
             "比較元が読めないので停止します（git fetch と比較元を確認してください）"
         )

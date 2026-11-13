@@ -3197,21 +3197,26 @@ def test_private_provider_detects_token_after_former_two_megabyte_offset(
     assert check["oversize_objects_unscanned"] == 0
 
 
-def test_private_provider_scans_blob_at_history_budget_limit(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "suffix", [b"", _FIXTURE_PRIVATE_TOKEN], ids=["clean", "tail_hit"]
+)
+def test_private_provider_scans_blob_at_history_budget_limit(
+    tmp_path, monkeypatch, suffix
+):
     configure_private_provider(tmp_path, monkeypatch)
+    # The production budget is asserted separately; exercise its boundary with less data.
+    budget = 16_384
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", budget)
     repo = make_repo(tmp_path)
-    commit_blob(
-        repo,
-        "budget.txt",
-        b"x" * _HISTORY_BATCH_BUDGET_BYTES,
-        "fixture at history budget",
-    )
+    payload = b"x" * (budget - len(suffix)) + suffix
+    commit_blob(repo, "budget.txt", payload, "fixture at history budget")
+    commit_blob(repo, "budget.txt", b"safe\n", "replace fixture")
     report = MODULE.scan(repo, require_private_identity=True)
     check = report["checks"]["private_identity_scan"]
-    assert len((repo / "budget.txt").read_bytes()) == 16_000_000
-    assert report["status"] == "pass"
-    assert check["status"] == "pass"
-    assert check["finding_count"] == 0
+    assert len(payload) == budget
+    assert report["status"] == ("blocked" if suffix else "pass")
+    assert check["status"] == ("fail" if suffix else "pass")
+    assert check["finding_count"] == (1 if suffix else 0)
     assert check["oversize_objects_unscanned"] == 0
 
 
@@ -3219,10 +3224,14 @@ def test_private_provider_blob_above_history_budget_stays_unknown(
     tmp_path, monkeypatch
 ):
     configure_private_provider(tmp_path, monkeypatch)
+    budget = 16_384
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", budget)
     repo = make_repo(tmp_path)
-    payload = b"x" * (16_000_001 - len(_FIXTURE_PRIVATE_TOKEN)) + _FIXTURE_PRIVATE_TOKEN
-    assert len(payload) == 16_000_001
-    assert payload.find(_FIXTURE_PRIVATE_TOKEN) > _FORMER_HISTORY_OBJECT_CAP_BYTES
+    payload = b"x" * (budget + 1 - len(_FIXTURE_PRIVATE_TOKEN)) + _FIXTURE_PRIVATE_TOKEN
+    assert len(payload) == budget + 1
+    assert payload.find(_FIXTURE_PRIVATE_TOKEN) == budget + 1 - len(
+        _FIXTURE_PRIVATE_TOKEN
+    )
     commit_blob(repo, "over.txt", payload, "historical over budget fixture")
     commit_blob(repo, "over.txt", b"safe\n", "replace over budget fixture")
     assert _FIXTURE_PRIVATE_TOKEN not in (repo / "over.txt").read_bytes()
@@ -4131,3 +4140,30 @@ def test_cached_caff_body_keeps_large_history_verification(
         assert second["worktree_files_cache_reused"] > 0
     else:
         assert second["worktree_files_cache_reused"] == 0
+
+
+def test_public_attribution_uses_one_isolated_batch_process(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    for message in (b"second", b"third"):
+        _raw_identity_fixture_commit(repo, message)
+    original = subprocess.Popen
+    launches = []
+
+    def observe(cmd, *args, **kwargs):
+        launches.append((cmd, kwargs["env"]))
+        return original(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", observe)
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "absent"))
+    result = MODULE.public_attribution_result(
+        repo, None, {"Test Author <test-author@example.invalid>"}
+    )
+    assert result["status"] == "pass"
+    assert len(launches) == 2
+    assert "rev-list" in launches[0][0]
+    assert launches[1][0][-2:] == ["cat-file", "--batch"]
+    for cmd, env in launches:
+        assert "core.fsmonitor=" in cmd
+        assert "GIT_OBJECT_DIRECTORY" not in env
+        assert env["GIT_OPTIONAL_LOCKS"] == "0"
+        assert env["GIT_NO_REPLACE_OBJECTS"] == env["GIT_NO_LAZY_FETCH"] == "1"

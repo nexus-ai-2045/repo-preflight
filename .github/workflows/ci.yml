@@ -54,8 +54,10 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          REPO_PREFLIGHT_DEEP_SELF_TEST: ${{ matrix.python-version == '3.11' && '1' || '0' }}
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -84,8 +86,9 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -113,7 +116,8 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .

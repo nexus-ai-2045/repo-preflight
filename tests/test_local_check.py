@@ -14,11 +14,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import local_check  # noqa: E402
 
 # 呼び出し元の GIT_DIR などを引き継ぐと一時リポの外を書き換えるので外す
-_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+_ENV = {
+    k: v
+    for k, v in os.environ.items()
+    if not k.startswith("GIT_") and k != "GITHUB_STEP_SUMMARY"
+}
 
 
 @pytest.fixture(autouse=True)
 def _isolated_git_env(monkeypatch):
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     for key in [k for k in os.environ if k.startswith("GIT_")]:
         monkeypatch.delenv(key)
 
@@ -580,45 +585,65 @@ def test_common_runner_requires_consumer_to_handle_check_ids(repo, monkeypatch):
     assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
 
 
-def test_unresolved_plan_runs_the_full_suite(repo, monkeypatch, capsys):
+@pytest.mark.parametrize("unresolved", [False, True])
+@pytest.mark.parametrize("workers", [None, "auto", "2"])
+def test_runner_prioritizes_changed_tests_and_preserves_scope(
+    repo, monkeypatch, capsys, unresolved, workers
+):
     monkeypatch.setattr(
         local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
     )
+    changed = "tests/test_z_changed.py"
+    dependency = "tests/test_dependency.py"
+    policy_only = "tests/test_a_policy_only.py"
     plan = {
-        "unresolved": [{"file": "tests/test_alpha.py", "reason": "opaque loader"}],
-        "selected_tests": ["integration/test_changed.py"],
+        "unresolved": [{"reason": "opaque loader"}] if unresolved else [],
+        "selected_tests": [dependency, changed],
+        "changed_files": [changed, "scripts/source.py"],
         "checks": [],
-        "status": "unresolved",
-        "policy_tests": ["tests/test_alpha.py", "tests/test_beta.py"],
+        "status": "unresolved" if unresolved else "selected",
     }
+    if unresolved:
+        plan["policy_tests"] = [changed, policy_only]
     monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
-    calls = []
+    commands = []
 
     def run(command, **kwargs):
-        calls.append(command)
+        commands.append(command)
         assert kwargs["cwd"] == repo
         assert kwargs["stdout"] is sys.stderr
         return subprocess.CompletedProcess(command, 3)
 
     monkeypatch.setattr(local_check.subprocess, "run", run)
-    assert (
-        local_check.main(["--run-selected-tests", "--json", "--repo", str(repo)]) == 3
-    )
-    assert calls == [
+    args = ["--run-selected-tests", "--json", "--repo", str(repo)]
+    if workers:
+        args.extend(["--pytest-workers", workers])
+    assert local_check.main(args) == 3
+    effective_workers = workers or ("auto" if unresolved else None)
+    parallel = ["-n", effective_workers] if effective_workers else []
+    remaining = [policy_only, dependency] if unresolved else [dependency]
+    assert commands == [
         [
             sys.executable,
             "-m",
             "pytest",
             "-q",
-            "-n",
-            "auto",
+            "-x",
+            *parallel,
             "--",
-            "integration/test_changed.py",
-            "tests/test_alpha.py",
-            "tests/test_beta.py",
+            changed,
+            *remaining,
         ]
     ]
     assert json.loads(capsys.readouterr().out) == plan
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "257"])
+@pytest.mark.parametrize("entry", ["--run-selected-tests", "--ci"])
+def test_cli_rejects_invalid_worker_count(value, entry):
+    with pytest.raises(SystemExit) as caught:
+        local_check.main([entry, "--pytest-workers", value])
+    assert caught.value.code == 2
 
 
 def test_unresolved_plan_lists_every_policy_test(repo):
@@ -744,6 +769,7 @@ def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, cap
     plan = {
         "unresolved": [],
         "selected_tests": ["tests/test_alpha.py"],
+        "changed_files": [],
         "checks": [],
         "status": "selected",
     }
@@ -755,6 +781,7 @@ def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, cap
             "-m",
             "pytest",
             "-q",
+            "-x",
             "--",
             "tests/test_alpha.py",
         ]
@@ -2954,3 +2981,291 @@ def test_self_review_owner_mapping_preserves_other_dependency_uncertainty(
     else:
         assert plan["status"] == "unresolved"
         assert any(item["file"] == opaque for item in plan["unresolved"])
+
+
+def test_core_selection_policy_keeps_known_cli_consumers_and_unknown_sources(
+    monkeypatch,
+):
+    root = local_check.ROOT
+    config = json.loads((root / ".test-selection.json").read_text(encoding="utf-8"))
+
+    def source(stem):
+        return f"scripts/{stem}.py"
+
+    def test_file(stem):
+        return f"tests/test_{stem}.py"
+
+    sources = [
+        source(stem)
+        for stem in (
+            "ai_command_guard",
+            "benchmark_git_hooks",
+            "identity_gate",
+            "identity_normalization",
+            "media_identity",
+            "mp4_identity",
+            "readiness_scan",
+            "type1_identity",
+        )
+    ]
+    unknown = source("unmapped_selection_probe")
+    # All single-file scenarios share the same repository inventory and ASTs.
+    graph = local_check._dependency_graph(root, ["scripts", "tests"], [unknown])
+    reverse, _ = graph
+    monkeypatch.setattr(local_check, "_dependency_graph", lambda *args: graph)
+    opaque = {
+        test_file(stem)
+        for stem in (
+            "adv_ai_guard",
+            "jpeg_identity",
+            "media_identity",
+            "mp4_identity",
+            "png_identity",
+            "type1_identity",
+            "pdf_icc",
+            "readiness_media",
+        )
+    }
+    for fixture_path in [
+        source("readiness_scan"),
+        source("benchmark_git_hooks"),
+        *opaque,
+        test_file("benchmark_git_hooks"),
+    ]:
+        assert test_file("local_check") not in reverse.get(
+            fixture_path, set()
+        ), fixture_path
+
+    for change in sources:
+        plan = local_check.select_tests(root, [change], config)
+        assert plan["unresolved"] == [], (change, plan["unresolved"])
+        selected = set(plan["selected_tests"])
+        known = {
+            path
+            for path in local_check._dependents(reverse, change)
+            if path.startswith("tests/test_")
+        }
+        assert known <= selected
+        if change == source("benchmark_git_hooks"):
+            assert test_file("benchmark_git_hooks") in selected
+        else:
+            assert opaque <= selected
+    plan = local_check.select_tests(root, [sources[0], unknown], config)
+    assert unknown in {item["file"] for item in plan["unresolved"]}
+
+
+@pytest.fixture
+def ci_plan(monkeypatch):
+    plan = {
+        "schema": "test-selection/v1",
+        "status": "selected",
+        "selected_tests": ["tests/test_beta.py", "tests/test_alpha.py"],
+        "changed_files": ["tests/test_beta.py"],
+        "unresolved": [],
+        "checks": [],
+        "head_oid": "a" * 40,
+        "base_oid": "b" * 40,
+        "policy_sha256": "c" * 64,
+        "selector_source_sha256": "d" * 64,
+    }
+    monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
+    monkeypatch.setattr(
+        local_check.local_identity_guard, "collect_identities", lambda **k: []
+    )
+    return plan
+
+
+def test_ci_unknown_blocks_successful_fallback(repo, ci_plan, monkeypatch, capsys):
+    ci_plan.update(
+        status="unresolved",
+        unresolved=[{"file": "opaque.py", "reason": "unknown"}],
+        policy_tests=["tests/test_all.py"],
+    )
+    calls = []
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: calls.append(a) or subprocess.CompletedProcess(a, 0),
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), "--json"]) == 2
+    assert calls == []
+    data = json.loads(capsys.readouterr().out)
+    assert data["decision"] == "blocked"
+    assert data["reason"] == "unresolved_selection"
+    assert data["fallback"] is False
+
+
+@pytest.mark.parametrize(
+    "extra,workers",
+    [
+        ([], "auto"),
+        (["--pytest-workers", "2"], "2"),
+        (["--run-selected-tests"], "auto"),
+    ],
+)
+def test_ci_preserves_selection_order_and_workers(
+    repo, ci_plan, monkeypatch, extra, workers
+):
+    ci_plan["selected_tests"] = [f"tests/test_{n:03}.py" for n in range(76)] * 2
+    ci_plan["changed_files"] = ["tests/test_050.py"]
+    calls = []
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda command, **k: calls.append(command)
+        or subprocess.CompletedProcess(command, 0),
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), *extra]) == 0
+    (command,) = calls
+    assert command[:8] == [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        "-n",
+        workers,
+        "--",
+    ]
+    tests = command[8:]
+    assert len(tests) == len(set(tests)) == 76
+    assert set(tests) == set(ci_plan["selected_tests"])
+    assert tests[0] == "tests/test_050.py"
+
+
+@pytest.mark.parametrize("flag", ["--plan-tests", "--dry-run", "--identity-worktree"])
+def test_ci_rejects_read_only_and_other_entrypoints(flag, monkeypatch):
+    monkeypatch.setattr(
+        local_check,
+        "plan_tests",
+        lambda *a: pytest.fail("argument conflict must stop before planning"),
+    )
+    with pytest.raises(SystemExit) as exc:
+        local_check.main(["--ci", flag])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("kind", ["checks", "private", "empty"])
+def test_ci_check_private_and_empty_never_run(repo, ci_plan, monkeypatch, capsys, kind):
+    if kind == "checks":
+        ci_plan["checks"] = ["consumer-check"]
+    elif kind == "private":
+        monkeypatch.setattr(
+            local_check.local_identity_guard, "find_hits", lambda *a: ["hit"]
+        )
+    else:
+        ci_plan.update(status="no_tests", selected_tests=[])
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("pytest must not start"),
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), "--json"]) == (
+        0 if kind == "empty" else 2
+    )
+    data = json.loads(capsys.readouterr().out)
+    assert data["decision"] == ("skip" if kind == "empty" else "blocked")
+
+
+def test_ci_summary_uses_safe_counts_and_hashes(
+    repo, ci_plan, monkeypatch, tmp_path, capsys
+):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    ci_plan.update(
+        unresolved=[{"file": "sensitive-file.py", "reason": "sensitive-pattern*"}],
+        changed_files=["sensitive-file.py"],
+        status="unresolved",
+        base_oid="unsafe-refname",
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), "--json"]) == 2
+    output = capsys.readouterr().out
+    data = json.loads(output)
+    assert data["selected_count"] == 2
+    assert data["unresolved_count"] == 1
+    assert data["head_oid"] == "a" * 40
+    for secret in [
+        "sensitive-file",
+        "sensitive-pattern",
+        "unsafe-refname",
+        str(summary),
+    ]:
+        assert secret not in output + summary.read_text()
+    assert "blocked" in summary.read_text()
+    assert "false" in summary.read_text()
+
+
+def test_ci_summary_io_error_blocks_before_pytest(
+    repo, ci_plan, monkeypatch, tmp_path, capsys
+):
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path))
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail("summary failure must stop before pytest"),
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), "--json"]) == 2
+    output = capsys.readouterr().out
+    assert "summary_write_failed" in output
+    assert str(tmp_path) not in output
+
+
+def test_blocked_decision_has_no_executable_payload(ci_plan):
+    ci_plan["unresolved"] = [{"file": "unknown.py"}]
+    decision = local_check._execution_decision(ci_plan, ci=True)
+    assert isinstance(decision, local_check._Blocked)
+    assert not hasattr(decision, "tests")
+    with pytest.raises(TypeError):
+        local_check._pytest_command(decision)
+
+
+def test_ci_stdout_excludes_pytest_output_without_json(repo, ci_plan, monkeypatch):
+    def run(command, **kwargs):
+        assert kwargs["stdout"] is sys.stderr
+        return subprocess.CompletedProcess(command, 3)
+
+    monkeypatch.setattr(local_check.subprocess, "run", run)
+    assert local_check.main(["--ci", "--repo", str(repo)]) == 3
+
+
+def test_legacy_does_not_write_ci_summary(repo, ci_plan, monkeypatch, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    ci_plan.update(status="no_tests", selected_tests=[])
+    assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 0
+    assert not summary.exists()
+
+
+@pytest.mark.parametrize(
+    "failure,reason",
+    [
+        (ValueError("sensitive-selection-setting"), "selection_failed"),
+        (
+            subprocess.CalledProcessError(128, ["git", "sensitive-ref"]),
+            "comparison_failed",
+        ),
+    ],
+)
+def test_ci_planning_errors_reach_safe_summary(
+    repo, ci_plan, monkeypatch, tmp_path, capsys, failure, reason
+):
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    def fail_plan(*args):
+        raise failure
+
+    monkeypatch.setattr(local_check, "plan_tests", fail_plan)
+    monkeypatch.setattr(
+        local_check.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("planning failure must stop before pytest"),
+    )
+    assert local_check.main(["--ci", "--repo", str(repo), "--json"]) == 2
+    output = capsys.readouterr().out
+    assert json.loads(output)["reason"] == reason
+    assert summary.exists()
+    combined = output + summary.read_text()
+    assert reason in combined
+    assert "sensitive-" not in combined
+    assert str(summary) not in combined

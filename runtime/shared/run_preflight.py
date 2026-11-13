@@ -15,6 +15,8 @@ import runpy
 import sys
 from pathlib import Path
 
+ENTRY_POINTS = {"--git-hooks": "manage_git_hooks.py"}
+
 
 def looks_like_root(path: Path) -> bool:
     scan = path / "scripts" / "readiness_scan.py"
@@ -22,14 +24,19 @@ def looks_like_root(path: Path) -> bool:
     return scan.is_file() and skill.is_file()
 
 
-def discover_root(start: Path | None = None) -> Path:
+def discover_root(start: Path | None = None, *, allow_cwd: bool = True) -> Path:
     env = os.environ.get("REPO_PREFLIGHT_ROOT", "").strip().strip('"')
     if env:
-        candidate = Path(env).expanduser().resolve()
+        candidate = Path(env).expanduser()
+        if not allow_cwd and not candidate.is_absolute():
+            raise SystemExit(
+                "error: REPO_PREFLIGHT_ROOT must be absolute for hook management"
+            )
+        candidate = candidate.resolve()
         if looks_like_root(candidate):
             return candidate
         raise SystemExit(
-            f"error: REPO_PREFLIGHT_ROOT is set but is not a repo-preflight root: {candidate}"
+            "error: REPO_PREFLIGHT_ROOT is set but is not a repo-preflight root"
         )
 
     here = (start or Path(__file__).resolve()).parent
@@ -44,6 +51,10 @@ def discover_root(start: Path | None = None) -> Path:
         marker = checkout / "ROOT_PATH.txt"
         if marker.is_file():
             target = Path(marker.read_text(encoding="utf-8").strip().strip('"'))
+            if not allow_cwd and not target.is_absolute():
+                raise SystemExit(
+                    "error: checkout root must be absolute for hook management"
+                )
             if looks_like_root(target):
                 return target.resolve()
 
@@ -55,10 +66,11 @@ def discover_root(start: Path | None = None) -> Path:
     if shared_parent.name == "runtime" and looks_like_root(shared_parent.parent):
         return shared_parent.parent.resolve()
 
-    cwd = Path.cwd().resolve()
-    for parent in (cwd, *cwd.parents):
-        if looks_like_root(parent):
-            return parent
+    if allow_cwd:
+        cwd = Path.cwd().resolve()
+        for parent in (cwd, *cwd.parents):
+            if looks_like_root(parent):
+                return parent
 
     raise SystemExit(
         "error: repo-preflight root not found.\n"
@@ -72,8 +84,14 @@ def discover_root(start: Path | None = None) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    root = discover_root()
+    root = discover_root(allow_cwd=not (args and args[0] in ENTRY_POINTS))
     scan = root / "scripts" / "readiness_scan.py"
+    if args and args[0] in ENTRY_POINTS:
+        scan = root / "scripts" / ENTRY_POINTS[args[0]]
+        args = args[1:]
+    if not scan.is_file():
+        print("error: repo-preflight entrypoint unavailable", file=sys.stderr)
+        return 2
     # readiness_scan.main を同じプロセスで実行し、sys.argv を差し替える
     old_argv = sys.argv[:]
     old_path = sys.path[:]

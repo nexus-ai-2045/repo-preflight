@@ -203,7 +203,7 @@ jobs:
                   kind = "種類を伏せた指摘"
               print(f"赤: {where}: {kind} {count} 件", file=sys.stderr)
           PY
-          # LFS のポインタの形をした blob を、その ref の履歴全体（git rev-list --objects）から数える。
+          # LFS のポインタの形をした blob を、全先端をまとめた履歴（git rev-list --objects）から数える。
           # 足してから消したポインタも数える。ポインタの大きさ（1024 バイト）以下の blob だけ中身を読む。
           # git の出力は捨てるか、この中で受けるだけ。出すのは件数だけ（名前・ハッシュは出さない）。
           cat > "$work/lfs_pointers.py" <<'PY'
@@ -224,34 +224,47 @@ jobs:
               ).stdout
 
 
-          oids = git(["rev-list", "--objects", "--no-object-names", "HEAD"]).split()
-          small = []
-          if oids:
+          tips = sys.stdin.buffer.read()
+          if not tips.strip():
+              raise SystemExit(1)
+          oids = git(["rev-list", "--objects", "--no-object-names", "--stdin"], tips).split()
+          if not oids:
+              raise SystemExit(1)
+          count = 0
+          for start in range(0, len(oids), 1024):
+              batch = oids[start:start + 1024]
               listing = git(
                   ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-                  b"\n".join(oids) + b"\n",
-              )
-              for line in listing.splitlines():
-                  fields = line.split()
-                  if len(fields) != 3:
+                  b"\n".join(batch) + b"\n",
+              ).splitlines()
+              small = []
+              if len(batch) != len(listing):
+                  raise SystemExit(1)
+              for oid, line in zip(batch, listing):
+                  name, kind, size = line.split()
+                  if name != oid or kind not in (b"blob", b"tree", b"commit", b"tag") or not size.isdigit():
                       raise SystemExit(1)
-                  if fields[1] == b"blob" and int(fields[2]) <= MAX_POINTER:
-                      small.append(fields[0])
-          count = 0
-          if small:
-              out = git(["cat-file", "--batch"], b"\n".join(small) + b"\n")
+                  if kind == b"blob" and int(size) <= MAX_POINTER:
+                      small.append((oid, size))
+              if not small:
+                  continue
+              out = git(["cat-file", "--batch"], b"\n".join(oid for oid, _ in small) + b"\n")
               pos = 0
-              while pos < len(out):
-                  end = out.index(b"\n", pos)
-                  header = out[pos:end].split()
-                  if len(header) != 3:
+              for oid, size in small:
+                  header = oid + b" blob " + size + b"\n"
+                  if not out.startswith(header, pos):
                       raise SystemExit(1)
-                  size = int(header[2])
-                  body = out[end + 1 : end + 1 + size]
-                  pos = end + 1 + size + 1
+                  pos += len(header)
+                  body = out[pos:pos + int(size)]
+                  pos += int(size)
+                  if out[pos:pos + 1] != b"\n":
+                      raise SystemExit(1)
+                  pos += 1
                   text = body.decode("utf-8", "replace").lstrip(SPACES)
                   if text.startswith(PREFIXES) and "\noid sha256:" in text:
                       count += 1
+              if pos != len(out):
+                  raise SystemExit(1)
           print(count)
           PY
           # 取得の手順が refs/all-refs/ に入れた枝・タグ・PR の head。タグは指す commit に直す。commit に直せない ref は赤。
@@ -276,6 +289,18 @@ jobs:
           if [ "$unresolved" -gt 0 ]; then
             echo "赤: commit を指していない ref ${unresolved} 件" >&2
             failed=1
+          fi
+          # 共通祖先の blob も一度だけ数える。ref ごとの比較元・checkout は下のループが持つ。
+          if [ "$total" -gt 0 ]; then
+            if lfs_count="$(python "$work/lfs_pointers.py" "$target" <<< "$commits" 2>> "$gitlog")"; then
+              if [ "$lfs_count" -gt 0 ]; then
+                echo "赤: 全 ref: LFS のポインタの形をした blob（履歴を含む）${lfs_count} 件" >&2
+                failed=1
+              fi
+            else
+              echo "赤: 全 ref: LFS のポインタを数えられません" >&2
+              failed=1
+            fi
           fi
           # 注釈付きタグの作者（tagger）と注釈文。入れ子のタグもたどる。pre-push と同じ check_pushed_tags を、
           # デフォルト枝の版（tool 側）の許可名義で呼ぶ。指摘はファイルにだけ書き、種類と件数に直して出す。
@@ -358,16 +383,6 @@ jobs:
               failed=1
               checked_out=0
               quiet git -C "$scan" update-ref --no-deref HEAD "$sha" || true
-            fi
-            # LFS のポインタ（履歴にあるものも）。中身は検査できないので1件でも赤（取り出しでは LFS を動かさない）。
-            if lfs_count="$(python "$work/lfs_pointers.py" "$scan" 2>> "$gitlog")"; then
-              if [ "$lfs_count" -gt 0 ]; then
-                echo "赤: ${where}: LFS のポインタの形をした blob（履歴を含む）${lfs_count} 件" >&2
-                failed=1
-              fi
-            else
-              echo "赤: ${where}: LFS のポインタを数えられない ref 1 件" >&2
-              failed=1
             fi
             # デフォルト枝との分かれ目。整合性の比較元（preflight-gate の preflight-event-base と同じ形）と、
             # identity_gate の範囲（デフォルト枝に無い commit）に使う。分かれ目は HEAD の祖先なので、全履歴の範囲は広がらない。

@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from unittest.mock import create_autospec
 from urllib.parse import quote
 
 import pytest
@@ -82,9 +83,12 @@ def test_shared_transport_does_not_authorize_identity_roles(monkeypatch, role):
         monkeypatch.setattr(
             gate,
             "raw_commits",
-            lambda *args: [
-                ("0" * 40, "Fixture", author, "Fixture", committer, endpoint)
-            ],
+            create_autospec(
+                gate.raw_commits,
+                return_value=[
+                    ("0" * 40, "Fixture", author, "Fixture", committer, endpoint)
+                ],
+            ),
         )
         issues = gate.check_public_range(allowed, ".", "HEAD")
     assert any("公開許可名義と不一致" in issue for issue in issues), issues

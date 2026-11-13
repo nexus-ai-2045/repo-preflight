@@ -664,9 +664,7 @@ def test_unencodable_working_tree_encoding_is_red_without_name(tmp_path, origin)
     assert_nothing_personal(result, bad, secret)
 
 
-LFS_RED = (
-    r"赤: 検査 \d+/\d+（ref \d+ 件）: LFS のポインタの形をした blob（履歴を含む）1 件"
-)
+LFS_RED = r"赤: 全 ref: LFS のポインタの形をした blob（履歴を含む）1 件"
 
 LFS_POINTER = (
     "version https://git-lfs.github.com/spec/v1\n"
@@ -744,13 +742,15 @@ def test_lfs_pointer_added_then_removed_is_red_without_name_and_rest_is_scanned(
     git(origin, "rm", "-q", f"{PERSONAL}-old-scan.bin")
     git(origin, "commit", "-qm", "remove pointer")
     removed = git(origin, "rev-parse", "HEAD")
+    git(origin, "checkout", "-qb", "shared-history")
+    commit_file(origin, "shared.txt", "another tip from the removed pointer\n")
     git(origin, "checkout", "-q", "main")
     extra_env = lfs_config(tmp_path, kind) if kind != "none" else None
     result = run_scan(tmp_path, origin, extra_env=extra_env)
     assert result.returncode == 1
-    assert any(re.fullmatch(LFS_RED, line) for line in red_lines(result)), red_lines(
-        result
-    )
+    assert [line for line in red_lines(result) if "LFS" in line] == [
+        "赤: 全 ref: LFS のポインタの形をした blob（履歴を含む）1 件"
+    ]
     assert not any("checkout できない" in line for line in red_lines(result))
     assert_all_refs_scanned(result)
     assert_nothing_personal(result, added, removed, secret)

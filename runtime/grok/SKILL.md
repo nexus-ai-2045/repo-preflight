@@ -2,11 +2,11 @@
 name: repo-preflight
 description: >
   repository preflight and AI intent dialogue before PR, push, merge, publish, release, GitHub settings, or new repo creation.
-  Grok Build / agents で PR作る・pushする・公開する・リポジトリ作成・GitHub設定・preflight・公開前チェックのときに使う。
+  Codex / Gemini / Grok / shared agents で PR作る・pushする・公開する・リポジトリ作成・GitHub設定・preflight・公開前チェックのときに使う。
   Use before creating a PR, pushing, merging, publishing, releasing, changing GitHub settings, or creating a GitHub repo.
 ---
 
-# repo-preflight (Grok adapter)
+# repo-preflight (shared AI adapter)
 
 ## Source of truth
 
@@ -43,7 +43,15 @@ The base must be an ancestor of HEAD. Do not use target-diff mode for `publish` 
 python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent configure_settings --github-settings-profile solo_public --human
 ```
 
-## MUST
+## Common Git hooks and diagnostics
+
+Run `python "<THIS_SKILL_DIR>/run_preflight.py" --git-hooks plan --repo "<TARGET_REPO>"` for read-only inspection. Use `--git-hooks status` after installation. Install, update, or uninstall only after approval for the target and operation; preserve existing guards and follow the canonical `docs/git-hooks.md`.
+
+Git-based operations use the same checks across AIs and manual terminals. Report the finding kind, safe location, line, commit, or identity field without repeating matched values. Keep unavailable locations explicitly unknown.
+
+`create_repo` reviews creation; it does not monopolize creation. Approved ordinary tools such as `gh` and the GitHub UI remain usable. Do not automatically install a comment-ban lint policy.
+
+## Required behavior
 
 - Run `--intent` before PR / push / merge / publish / release / create_repo / configure_settings
 - Do not perform external ops while dialogue status is `needs_human_input` or `blocked`

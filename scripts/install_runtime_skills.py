@@ -17,7 +17,6 @@ import hashlib
 import json
 import os
 import shlex
-import shutil
 import sys
 from pathlib import Path
 
@@ -61,15 +60,38 @@ def _apply_remediation(repo: Path) -> str:
     return f"python {script} --repo {checked} --apply で再配布する"
 
 
+def validate_checkout_node(dest_checkout: Path) -> None:
+    if dest_checkout.is_symlink() or _is_junction(dest_checkout):
+        return
+    if not dest_checkout.exists():
+        return
+    marker = dest_checkout / "ROOT_PATH.txt"
+    if (
+        not dest_checkout.is_dir()
+        or set(p.name for p in dest_checkout.iterdir()) != {"ROOT_PATH.txt"}
+        or marker.is_symlink()
+        or not marker.is_file()
+    ):
+        raise FileExistsError("checkout_unmanaged")
+
+
 def link_checkout(dest_checkout: Path, repo: Path) -> str:
     """checkout を repo へリンク。成功した方式名を返す。"""
+    validate_checkout_node(dest_checkout)
     if dest_checkout.exists() or dest_checkout.is_symlink():
         is_junc = _is_junction(dest_checkout)
         if dest_checkout.is_symlink() or is_junc:
             dest_checkout.unlink()
         elif dest_checkout.is_dir():
-            # 古い実ディレクトリ / path-file fallback を消す
-            shutil.rmtree(dest_checkout)
+            marker = dest_checkout / "ROOT_PATH.txt"
+            if (
+                set(p.name for p in dest_checkout.iterdir()) != {"ROOT_PATH.txt"}
+                or marker.is_symlink()
+                or not marker.is_file()
+            ):
+                raise FileExistsError("checkout_unmanaged")
+            marker.unlink()
+            dest_checkout.rmdir()
         else:
             dest_checkout.unlink()
 
@@ -78,9 +100,10 @@ def link_checkout(dest_checkout: Path, repo: Path) -> str:
 
     # 1) symlink
     try:
-        dest_checkout.symlink_to(repo.resolve(), target_is_directory=True)
+        relative = os.path.relpath(repo.resolve(), dest_checkout.parent.resolve())
+        dest_checkout.symlink_to(relative, target_is_directory=True)
         return "symlink"
-    except OSError:
+    except (OSError, ValueError):
         pass
 
     # 2) Windows junction (管理者不要なことが多い)
@@ -141,6 +164,7 @@ def render_readme(link_mode: str) -> str:
         "```bash\n"
         'python run_preflight.py --repo "<TARGET>" --intent open_pr --human\n'
         "python run_preflight.py --intent create_repo --human\n"
+        'python run_preflight.py --git-hooks status --repo "<TARGET>"\n'
         "```\n"
         "\n"
         f"link mode: `{link_mode}`\n"
@@ -184,6 +208,7 @@ def install_one(
     if not run_src.is_file():
         return {"runtime": runtime, "dest": str(dest), "status": "missing_adapter"}
 
+    validate_checkout_node(dest / "checkout")
     action = {
         "runtime": runtime,
         "dest": str(dest),
@@ -409,8 +434,25 @@ def main() -> int:
             return 2
         return 1 if drifted else 0
 
+    targets = default_targets(args.home.resolve())
+    try:
+        for _, dest in targets:
+            validate_checkout_node(dest / "checkout")
+    except FileExistsError:
+        print(
+            json.dumps(
+                {
+                    "schema": "repo-preflight.install-runtime-skills/v1",
+                    "status": "conflict",
+                    "reason": "checkout_unmanaged",
+                    "results": [],
+                    "apply": bool(args.apply),
+                }
+            )
+        )
+        return 1
     results = []
-    for runtime, dest in default_targets(args.home.resolve()):
+    for runtime, dest in targets:
         results.append(
             install_one(repo=repo, runtime=runtime, dest=dest, apply=args.apply)
         )
