@@ -148,16 +148,10 @@ jobs:
           "${gate[@]}"
       # gitleaks を版とハッシュで固定して入れ、足した範囲（初回は全履歴）を見る。設定は固定した repo-preflight 側だけを使う。
       - name: Run pinned gitleaks
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_ARCHIVE_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
           set -euo pipefail
           dir="${RUNNER_TEMP:-/tmp}/gitleaks"
-          mkdir -p "$dir"
-          curl -fsSL -o "$dir/gl.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_ARCHIVE_SHA256}  $dir/gl.tgz" | sha256sum -c -
-          tar -xzf "$dir/gl.tgz" -C "$dir" gitleaks
+          python tool/scripts/install_pinned_gitleaks.py --dest "$dir"
           if git -C target rev-parse -q --verify refs/remotes/origin/preflight-event-base >/dev/null; then
             opts="refs/remotes/origin/preflight-event-base..HEAD"
           else

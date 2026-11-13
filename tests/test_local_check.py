@@ -1,5 +1,6 @@
 """scripts/local_check.py：途中の作業は差分に絞り、個人情報ゲートはどのモードでも全差分で回す。"""
 
+import importlib.util
 import json
 import os
 import shutil
@@ -762,6 +763,109 @@ def test_plan_binds_head_merge_base_policy_and_selector(repo):
     )
 
 
+def _copied_selector(directory, monkeypatch):
+    scripts = directory / "scripts"
+    scripts.mkdir(parents=True)
+    for name in (
+        "local_check.py",
+        "local_check_dependencies.py",
+        "local_identity_guard.py",
+    ):
+        shutil.copyfile(Path(local_check.__file__).with_name(name), scripts / name)
+    key = "_copied_selector_" + directory.name
+    spec = importlib.util.spec_from_file_location(key, scripts / "local_check.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, key, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("changed", ["local_check.py", "local_check_dependencies.py"])
+def test_selector_digest_binds_each_source_and_ignores_checkout_path(
+    tmp_path, monkeypatch, changed
+):
+    first = _copied_selector(tmp_path / "first", monkeypatch)
+    second = _copied_selector(tmp_path / "second", monkeypatch)
+    before = first._selector_source_sha256()
+    assert second._selector_source_sha256() == before
+    target = Path(second.__file__).with_name(changed)
+    target.write_bytes(target.read_bytes() + b"\n# source change\n")
+    assert second._selector_source_sha256() == before
+    spec = importlib.util.spec_from_file_location("_updated_selector", second.__file__)
+    updated = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, updated)
+    spec.loader.exec_module(updated)
+    assert updated._selector_source_sha256() != before
+    assert first._selector_source_sha256() == before
+
+
+def test_dependency_modules_are_isolated_between_checkouts(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "local_check_dependencies", object())
+    first = _copied_selector(tmp_path / "first", monkeypatch)
+    second = _copied_selector(tmp_path / "second", monkeypatch)
+    assert first.dependencies is not second.dependencies
+    assert Path(first.dependencies.__file__).parent == Path(first.__file__).parent
+    assert Path(second.dependencies.__file__).parent == Path(second.__file__).parent
+    monkeypatch.setattr(first.dependencies, "dependency_graph", lambda *args: "first")
+    assert first.dependencies.dependency_graph(None) == "first"
+    assert second.dependencies.dependency_graph(tmp_path, [], []) == ({}, [])
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink entry point")
+def test_symlinked_cli_fingerprints_the_loaded_sources(
+    repo, tmp_path_factory, monkeypatch
+):
+    tool_root = tmp_path_factory.mktemp("symlink-tool")
+    copied = _copied_selector(tool_root / "tool", monkeypatch)
+    entry = tool_root / "bin/local_check.py"
+    entry.parent.mkdir()
+    entry.symlink_to(copied.__file__)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(entry),
+            "--plan-tests",
+            "--repo",
+            str(repo),
+            "--base-ref",
+            "base",
+            "--json",
+        ],
+        capture_output=True,
+        text=True,
+        env=_ENV,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (
+        json.loads(result.stdout)["selector_source_sha256"]
+        == copied._selector_source_sha256()
+    )
+
+
+def test_dependency_reload_ignores_stale_same_size_bytecode(tmp_path, monkeypatch):
+    import py_compile
+
+    copied = _copied_selector(tmp_path / "tool", monkeypatch)
+    source = Path(copied.__file__).with_name("local_check_dependencies.py")
+    raw = source.read_bytes() + b"\nFIXTURE_REVISION = 1\n"
+    source.write_bytes(raw)
+    py_compile.compile(
+        str(source),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP,
+    )
+    before = source.stat()
+    source.write_bytes(raw.replace(b"FIXTURE_REVISION = 1", b"FIXTURE_REVISION = 2"))
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+    spec = importlib.util.spec_from_file_location(
+        "_same_size_selector", copied.__file__
+    )
+    reloaded = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, reloaded)
+    spec.loader.exec_module(reloaded)
+    assert reloaded.dependencies.FIXTURE_REVISION == 2
+
+
 def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, capsys):
     monkeypatch.setattr(
         local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
@@ -1351,13 +1455,13 @@ def test_semantic_unlisted_sibling_source_is_unknown(repo):
 
 def test_semantic_overlapping_file_directory_roots_parse_once(repo, monkeypatch):
     calls = []
-    original = local_check.ast.parse
+    original = local_check.dependencies.ast.parse
 
     def record(text, *args, **kwargs):
         calls.append(text)
         return original(text, *args, **kwargs)
 
-    monkeypatch.setattr(local_check.ast, "parse", record)
+    monkeypatch.setattr(local_check.dependencies.ast, "parse", record)
     local_check.select_tests(
         repo, ["scripts/alpha.py"], {"source_roots": ["scripts", "scripts/alpha.py"]}
     )
@@ -1730,7 +1834,7 @@ def test_file_reference_ids_are_platform_independent(repo, body):
 
 
 def test_windows_reference_path_composition_is_posix():
-    base = local_check._reference_path("scripts\\pkg\\loader.py")
+    base = local_check.dependencies._reference_path("scripts\\pkg\\loader.py")
     assert base.with_name("alpha.py").as_posix() == "scripts/pkg/alpha.py"
     assert (base.parent / "alpha.py").as_posix() == "scripts/pkg/alpha.py"
 
@@ -3010,9 +3114,13 @@ def test_core_selection_policy_keeps_known_cli_consumers_and_unknown_sources(
     ]
     unknown = source("unmapped_selection_probe")
     # All single-file scenarios share the same repository inventory and ASTs.
-    graph = local_check._dependency_graph(root, ["scripts", "tests"], [unknown])
+    graph = local_check.dependencies.dependency_graph(
+        root, ["scripts", "tests"], [unknown]
+    )
     reverse, _ = graph
-    monkeypatch.setattr(local_check, "_dependency_graph", lambda *args: graph)
+    monkeypatch.setattr(
+        local_check.dependencies, "dependency_graph", lambda *args: graph
+    )
     opaque = {
         test_file(stem)
         for stem in (

@@ -382,10 +382,9 @@ def test_h4_unpinned_gitleaks_is_refused(policy, repo, pushed, tmp_path):
 
 def test_h4_ci_runs_pinned_gitleaks():
     text = (ROOT / ".github/workflows/preflight-gate.yml").read_text(encoding="utf-8")
-    pins = json.loads((ROOT / "references/gitleaks-pins.json").read_text())
     assert "Run pinned gitleaks" in text
-    assert pins["archive_sha256"]["linux_x64"] in text
-    assert "sha256sum -c" in text
+    assert 'python tool/scripts/install_pinned_gitleaks.py --dest "$dir"' in text
+    assert "GITLEAKS_ARCHIVE_SHA256" not in text
 
 
 # ---- M4 呼び出し側のひな形 ----
