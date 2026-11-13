@@ -16,7 +16,8 @@ def test_successful_exit_does_not_prove_matrix_work():
         verify_work("candidate", {"gate": 4, "git": 10, "main": 136}, 137)
 
 
-def test_invalid_ref_creates_no_report(tmp_path):
+def test_rejected_invocation_creates_no_report(tmp_path):
+    import os
     import subprocess
     import sys
     from pathlib import Path
@@ -38,7 +39,8 @@ def test_invalid_ref_creates_no_report(tmp_path):
         cwd=script.resolve().parents[1],
     )
     assert result.returncode != 0
-    assert result.stderr.strip() == b"child_failure"
+    expected = b"child_failure" if os.name == "posix" else b"unsupported_parameters"
+    assert result.stderr.strip() == expected
     assert not report.exists()
 
 
