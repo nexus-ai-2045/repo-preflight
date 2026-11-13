@@ -5,7 +5,7 @@
 
 import pytest
 
-from test_review_3c import AT, GM, H, J, U, message, policy  # noqa: F401
+from test_review_3c import AT, GM, H, J, U, matrix_message, policy  # noqa: F401
 
 Z = "0" * 40
 SESSION = J(["Claude", "-Session"])
@@ -54,11 +54,11 @@ GREEN = {
 
 @pytest.mark.parametrize("name", sorted(RED))
 def test_review_3c_extra_canary_is_red(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, RED[name])
+    result = matrix_message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(GREEN))
 def test_review_3c_extra_control_is_green(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, GREEN[name])
+    result = matrix_message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)

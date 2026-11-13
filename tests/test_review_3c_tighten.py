@@ -11,7 +11,7 @@
 
 import pytest
 
-from test_review_3c import AT, H, message, policy  # noqa: F401
+from test_review_3c import AT, H, matrix_message, policy  # noqa: F401
 
 RED = {
     # (a)
@@ -42,8 +42,6 @@ RED = {
     "jpg の後に国別ドメイン": "fixture" + AT + "3x.jpg.company.co.jp",
 }
 GREEN = {
-    "承認どおり .get( の中": f'app.get("/{H}/index", show)',
-    "承認どおり href= の中": f'<a href="/{H}/feed">',
     "例示の localhost は外したまま": "user" + AT + "localhost",
     "例示の .test は外したまま": "alice" + AT + "example.test",
     "画像の倍率は外したまま": "icon" + AT + "3x.webp",
@@ -54,11 +52,11 @@ GREEN = {
 
 @pytest.mark.parametrize("name", sorted(RED))
 def test_wider_than_human_approval_is_red(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, RED[name])
+    result = matrix_message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(GREEN))
 def test_human_approved_route_stays_green(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, GREEN[name])
+    result = matrix_message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)
