@@ -325,3 +325,10 @@ PDFの元bytesは内部packetへ一度だけ格納し、親processでUTF-8/Latin
 FontDescriptorから参照されるCIDSetは最大65,536 CIDのbit表として、encoding以外の辞書項目・サイズを検証したうえで全byte-text viewも検査します。content/font/CMap/ICCと同じstreamを兼用する場合は停止します。未分類streamに一般的な除外を追加するものではありません。
 
 ページの文字抽出・画像確認・operand確認では同じ解析結果を再利用し、そのページの確認が終わると解放します。全ページの解析treeは保持しません。元readerの辞書と元stream bytesは変更せず、配列や複数の宣言roleを持つstreamは個別検査を維持します。
+
+
+## CIの検査責務と比較計測
+
+Linux/Python 3.11のrepository policy検査は専用の `ai-ratchet-gate` ジョブで一度実行する。Linux/Python 3.13とWindows/Python 3.13では互換性を検査し、Mac/Python 3.9を含む既存テストジョブも維持する。文字列検査は `main(argv)` を同じprocessで呼び、代表的なCLI境界と別実装の指定は外部processで確認する。
+
+通常CIでは関連するテストだけを選ぶ。同じ条件で各5回の比較を追加するのは、PRの新しい実行に `ci-benchmark` ラベルが付いている場合のLinux/Python 3.11だけである。計測方法と対象範囲は[テスト実行負荷の説明](test-efficiency.md)を参照する。
