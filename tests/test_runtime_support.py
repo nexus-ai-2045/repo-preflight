@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE = ROOT / "scripts" / "runtime_smoke.py"
 INSTALL = ROOT / "scripts" / "install_runtime_skills.py"
@@ -238,6 +240,77 @@ def _fresh_home(tmp_path: Path) -> Path:
     return home
 
 
+def _remove_checkout(checkout: Path) -> None:
+    if checkout.is_symlink():
+        checkout.unlink()
+    elif getattr(checkout, "is_junction", lambda: False)():
+        checkout.rmdir()
+    elif checkout.is_dir():
+        shutil.rmtree(checkout)
+    elif checkout.exists():
+        checkout.unlink()
+
+
+@pytest.mark.parametrize("kind", ["missing", "file", "directory", "path-file"])
+def test_remove_checkout_removes_fixture_nodes(tmp_path: Path, kind: str):
+    checkout = tmp_path / "checkout"
+    if kind == "file":
+        checkout.write_text("fixture", encoding="utf-8")
+    elif kind in ("directory", "path-file"):
+        checkout.mkdir()
+        child = "ROOT_PATH.txt" if kind == "path-file" else "fixture.txt"
+        (checkout / child).write_text("fixture", encoding="utf-8")
+
+    _remove_checkout(checkout)
+
+    assert not checkout.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX directory symlinks")
+@pytest.mark.parametrize("dangling", [False, True])
+def test_remove_checkout_preserves_symlink_target(tmp_path: Path, dangling: bool):
+    target = tmp_path / "source"
+    if not dangling:
+        target.mkdir()
+        (target / "source.txt").write_text("preserved", encoding="utf-8")
+    checkout = tmp_path / "checkout"
+    checkout.symlink_to(target, target_is_directory=True)
+
+    _remove_checkout(checkout)
+
+    assert not checkout.is_symlink()
+    assert not checkout.exists()
+    if not dangling:
+        assert (target / "source.txt").read_text(encoding="utf-8") == "preserved"
+
+
+def test_remove_checkout_does_not_recurse_into_junction(tmp_path: Path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    source = checkout / "source.txt"
+    source.write_text("preserved", encoding="utf-8")
+    removed_links = []
+    real_is_junction = getattr(Path, "is_junction", lambda self: False)
+    real_rmdir = Path.rmdir
+
+    def is_junction(path):
+        return path == checkout or real_is_junction(path)
+
+    def remove_junction(path):
+        if path == checkout:
+            removed_links.append(path)
+        else:
+            real_rmdir(path)
+
+    monkeypatch.setattr(Path, "is_junction", is_junction, raising=False)
+    monkeypatch.setattr(Path, "rmdir", remove_junction)
+
+    _remove_checkout(checkout)
+
+    assert removed_links == [checkout]
+    assert source.read_text(encoding="utf-8") == "preserved"
+
+
 def test_check_reports_not_installed_without_copies(tmp_path: Path):
     code, payload = _check(_fresh_home(tmp_path))
     assert code == 0
@@ -292,11 +365,7 @@ def test_check_detects_missing_and_dangling_checkout(tmp_path: Path):
     _install(home)
     dest = home / ".claude" / "skills" / "repo-preflight"
     checkout = dest / "checkout"
-    if checkout.is_symlink() or checkout.exists():
-        if checkout.is_symlink():
-            checkout.unlink()
-        elif checkout.is_dir():
-            shutil.rmtree(checkout)
+    _remove_checkout(checkout)
     code, payload = _check(home)
     assert code == 1
     entry = next(i for i in payload["results"] if i["runtime"] == "claude-code")
@@ -366,7 +435,7 @@ def test_readme_is_still_checked_when_checkout_is_gone(tmp_path: Path):
     home = _fresh_home(tmp_path)
     _install(home)
     skill_dir = home / ".claude" / "skills" / "repo-preflight"
-    (skill_dir / "checkout").unlink()  # install は symlink を張る
+    _remove_checkout(skill_dir / "checkout")
     readme = skill_dir / "README.md"
     readme.write_text(readme.read_text(encoding="utf-8") + "改竄\n", encoding="utf-8")
 
@@ -387,7 +456,7 @@ def test_untouched_readme_is_not_flagged_when_checkout_is_replaced(tmp_path: Pat
     home = _fresh_home(tmp_path)
     _install(home)
     checkout = home / ".claude" / "skills" / "repo-preflight" / "checkout"
-    checkout.unlink()
+    _remove_checkout(checkout)
     checkout.mkdir()
 
     code, payload = _check(home)
@@ -461,11 +530,7 @@ def _load_install():
 
 def _replace_checkout_with_path_file(dest: Path, recorded: str) -> None:
     checkout = dest / "checkout"
-    if checkout.is_symlink() or checkout.exists():
-        if checkout.is_symlink() or checkout.is_file():
-            checkout.unlink()
-        else:
-            shutil.rmtree(checkout)
+    _remove_checkout(checkout)
     checkout.mkdir()
     (checkout / "ROOT_PATH.txt").write_text(recorded, encoding="utf-8")
 
