@@ -580,45 +580,64 @@ def test_common_runner_requires_consumer_to_handle_check_ids(repo, monkeypatch):
     assert local_check.main(["--run-selected-tests", "--repo", str(repo)]) == 2
 
 
-def test_unresolved_plan_runs_the_full_suite(repo, monkeypatch, capsys):
+@pytest.mark.parametrize("unresolved", [False, True])
+@pytest.mark.parametrize("workers", [None, "auto", "2"])
+def test_runner_prioritizes_changed_tests_and_preserves_scope(
+    repo, monkeypatch, capsys, unresolved, workers
+):
     monkeypatch.setattr(
         local_check.local_identity_guard, "collect_identities", lambda **kwargs: []
     )
+    changed = "tests/test_z_changed.py"
+    dependency = "tests/test_dependency.py"
+    policy_only = "tests/test_a_policy_only.py"
     plan = {
-        "unresolved": [{"file": "tests/test_alpha.py", "reason": "opaque loader"}],
-        "selected_tests": ["integration/test_changed.py"],
+        "unresolved": [{"reason": "opaque loader"}] if unresolved else [],
+        "selected_tests": [dependency, changed],
+        "changed_files": [changed, "scripts/source.py"],
         "checks": [],
-        "status": "unresolved",
-        "policy_tests": ["tests/test_alpha.py", "tests/test_beta.py"],
+        "status": "unresolved" if unresolved else "selected",
     }
+    if unresolved:
+        plan["policy_tests"] = [changed, policy_only]
     monkeypatch.setattr(local_check, "plan_tests", lambda *a: plan)
-    calls = []
+    commands = []
 
     def run(command, **kwargs):
-        calls.append(command)
+        commands.append(command)
         assert kwargs["cwd"] == repo
         assert kwargs["stdout"] is sys.stderr
         return subprocess.CompletedProcess(command, 3)
 
     monkeypatch.setattr(local_check.subprocess, "run", run)
-    assert (
-        local_check.main(["--run-selected-tests", "--json", "--repo", str(repo)]) == 3
-    )
-    assert calls == [
+    args = ["--run-selected-tests", "--json", "--repo", str(repo)]
+    if workers:
+        args.extend(["--pytest-workers", workers])
+    assert local_check.main(args) == 3
+    effective_workers = workers or ("auto" if unresolved else None)
+    parallel = ["-n", effective_workers] if effective_workers else []
+    remaining = [policy_only, dependency] if unresolved else [dependency]
+    assert commands == [
         [
             sys.executable,
             "-m",
             "pytest",
             "-q",
-            "-n",
-            "auto",
+            "-x",
+            *parallel,
             "--",
-            "integration/test_changed.py",
-            "tests/test_alpha.py",
-            "tests/test_beta.py",
+            changed,
+            *remaining,
         ]
     ]
     assert json.loads(capsys.readouterr().out) == plan
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "abc", "257"])
+def test_cli_rejects_invalid_worker_count(value):
+    with pytest.raises(SystemExit) as caught:
+        local_check.main(["--run-selected-tests", "--pytest-workers", value])
+    assert caught.value.code == 2
 
 
 def test_unresolved_plan_lists_every_policy_test(repo):
@@ -744,6 +763,7 @@ def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, cap
     plan = {
         "unresolved": [],
         "selected_tests": ["tests/test_alpha.py"],
+        "changed_files": [],
         "checks": [],
         "status": "selected",
     }
@@ -755,6 +775,7 @@ def test_json_pytest_runner_keeps_stdout_machine_readable(repo, monkeypatch, cap
             "-m",
             "pytest",
             "-q",
+            "-x",
             "--",
             "tests/test_alpha.py",
         ]
@@ -2954,3 +2975,74 @@ def test_self_review_owner_mapping_preserves_other_dependency_uncertainty(
     else:
         assert plan["status"] == "unresolved"
         assert any(item["file"] == opaque for item in plan["unresolved"])
+
+
+def test_core_selection_policy_keeps_known_cli_consumers_and_unknown_sources(
+    monkeypatch,
+):
+    root = local_check.ROOT
+    config = json.loads((root / ".test-selection.json").read_text(encoding="utf-8"))
+
+    def source(stem):
+        return f"scripts/{stem}.py"
+
+    def test_file(stem):
+        return f"tests/test_{stem}.py"
+
+    sources = [
+        source(stem)
+        for stem in (
+            "ai_command_guard",
+            "benchmark_git_hooks",
+            "identity_gate",
+            "identity_normalization",
+            "media_identity",
+            "mp4_identity",
+            "readiness_scan",
+            "type1_identity",
+        )
+    ]
+    unknown = source("unmapped_selection_probe")
+    # All single-file scenarios share the same repository inventory and ASTs.
+    graph = local_check._dependency_graph(root, ["scripts", "tests"], [unknown])
+    reverse, _ = graph
+    monkeypatch.setattr(local_check, "_dependency_graph", lambda *args: graph)
+    opaque = {
+        test_file(stem)
+        for stem in (
+            "adv_ai_guard",
+            "jpeg_identity",
+            "media_identity",
+            "mp4_identity",
+            "png_identity",
+            "type1_identity",
+            "pdf_icc",
+            "readiness_media",
+        )
+    }
+    for fixture_path in [
+        source("readiness_scan"),
+        source("benchmark_git_hooks"),
+        *opaque,
+        test_file("benchmark_git_hooks"),
+    ]:
+        assert test_file("local_check") not in reverse.get(
+            fixture_path, set()
+        ), fixture_path
+
+    for change in sources:
+        plan = local_check.select_tests(root, [change], config)
+        assert plan["unresolved"] == [], (change, plan["unresolved"])
+        selected = set(plan["selected_tests"])
+        known = {
+            path
+            for path in local_check._dependents(reverse, change)
+            if path.startswith("tests/test_")
+        }
+        assert known <= selected
+        if change == source("benchmark_git_hooks"):
+            assert test_file("benchmark_git_hooks") in selected
+        else:
+            assert opaque <= selected
+    plan = local_check.select_tests(root, [sources[0], unknown], config)
+    assert unknown in {item["file"] for item in plan["unresolved"]}

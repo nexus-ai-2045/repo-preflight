@@ -3,7 +3,7 @@
 
 identity / consistency の必須ゲートは選択せず維持する。
 --plan-tests は副作用のない汎用選択、--run-selected-tests は選択済みpytestだけの入口。
-全件試験への暗黙のfallbackはない。full / quick は既存呼出し用の互換名。
+未解決の全件実行は --run-selected-tests だけが行う。full / quick は既存呼出し用の互換名。
 """
 
 from __future__ import annotations
@@ -2097,6 +2097,36 @@ def identity_worktree(repo: Path) -> int:
         ).returncode
 
 
+def _pytest_command(plan, workers=None):
+    tests = set(plan["selected_tests"])
+    if plan["unresolved"]:
+        tests.update(plan.get("policy_tests", []))
+        workers = workers or "auto"
+    if not tests:
+        return []
+    changed = set(plan["changed_files"])
+    parallel = ["-n", workers] if workers else []
+    return [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-x",
+        *parallel,
+        "--",
+        *sorted(tests & changed),
+        *sorted(tests - changed),
+    ]
+
+
+def _pytest_workers(value):
+    if value == "auto" or (
+        re.fullmatch(r"[1-9][0-9]{0,2}", value) and int(value) <= 256
+    ):
+        return value
+    raise argparse.ArgumentTypeError("expected auto or a worker count from 1 to 256")
+
+
 def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]:
     py = sys.executable
     merge_base = git(repo, "merge-base", base, "HEAD").strip()
@@ -2180,7 +2210,7 @@ def build_steps(repo: Path, mode: str, base: str) -> list[tuple[str, list[str]]]
         steps.append(
             (
                 f"pytest（関係 {len(tests)} ファイル）",
-                [py, "-m", "pytest", "-q", "--", *tests],
+                _pytest_command(plan),
             )
         )
     if mode == "quick" and any(
@@ -2212,6 +2242,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--run-selected-tests", action="store_true", help="選択したpytestだけを実行"
     )
+    ap.add_argument(
+        "--pytest-workers",
+        type=_pytest_workers,
+        help="pytest-xdist worker count (auto or 1-256)",
+    )
     ap.add_argument("--selection-config", type=Path, help="対象repo内の選択policy")
     ap.add_argument("--json", action="store_true", help="planをJSONで出す")
     ap.add_argument("--dry-run", action="store_true", help="回す項目だけを出す")
@@ -2221,6 +2256,8 @@ def main(argv: list[str] | None = None) -> int:
         help="内部用: 未ステージ・未追跡を含む作業ツリーの全部を identity_gate で見る",
     )
     ns = ap.parse_args(argv)
+    if ns.pytest_workers and not ns.run_selected_tests:
+        ap.error("--pytest-workers requires --run-selected-tests")
     repo = ns.repo.resolve()
     identities = local_identity_guard.collect_identities(
         repo=repo, public_names={"nexus-ai-2045", "nexus_ai"}
@@ -2259,44 +2296,19 @@ def main(argv: list[str] | None = None) -> int:
             if ns.run_selected_tests and plan["checks"]:
                 print("停止: check IDs require the consumer runner", file=sys.stderr)
                 return 2
-            # 対応が分からない時は選ばずに全部回す。回す試験が増える方向にだけ倒す
-            if ns.run_selected_tests and plan["unresolved"]:
-                every_test = sorted(
-                    set(plan.get("policy_tests", [])) | set(plan["selected_tests"])
-                )
-                if not every_test:
-                    return 2
-                print(
-                    "対応が分からない変更があるので、全部の試験を回します",
-                    file=sys.stderr,
-                )
-                return subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        "-n",
-                        "auto",
-                        "--",
-                        *every_test,
-                    ],
-                    cwd=repo,
-                    stdout=sys.stderr if ns.json else None,
-                ).returncode
-            if ns.run_selected_tests and plan["selected_tests"]:
-                return subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        "--",
-                        *plan["selected_tests"],
-                    ],
-                    cwd=repo,
-                    stdout=sys.stderr if ns.json else None,
-                ).returncode
+            if ns.run_selected_tests:
+                command = _pytest_command(plan, ns.pytest_workers)
+                if plan["unresolved"]:
+                    if not command:
+                        return 2
+                    print(
+                        "対応が分からない変更があるので、全部の試験を回します",
+                        file=sys.stderr,
+                    )
+                if command:
+                    return subprocess.run(
+                        command, cwd=repo, stdout=sys.stderr if ns.json else None
+                    ).returncode
             return 0
         if ns.selection_config:
             ap.error("--selection-config requires --plan-tests or --run-selected-tests")

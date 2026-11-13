@@ -37,8 +37,12 @@ def test_checkout_links_are_relative_and_launch_from_another_directory(tmp_path)
         repo=source, runtime="claude-code", dest=destination, apply=True
     )
     assert result["status"] == "written"
-    assert not os.path.isabs(os.readlink(destination / "checkout"))
-    assert (destination / "checkout").resolve() == source.resolve()
+    mode, problem = installer.detect_link_mode(destination / "checkout", source)
+    assert mode == result["link"] and problem is None
+    if os.name != "nt":
+        assert mode == "symlink"
+    if mode == "symlink":
+        assert not os.path.isabs(os.readlink(destination / "checkout"))
     env = dict(os.environ)
     env.pop("REPO_PREFLIGHT_ROOT", None)
     ran = subprocess.run(
@@ -91,8 +95,12 @@ def test_shared_launcher_exposes_read_only_hook_status(tmp_path):
         capture_output=True,
         text=True,
     )
-    assert result.returncode == 0
-    assert json.loads(result.stdout)["status"] == "not_installed"
+    if os.name == "nt":
+        assert result.returncode == 1
+        assert json.loads(result.stderr)["reason"] == "unsupported_platform"
+    else:
+        assert result.returncode == 0
+        assert json.loads(result.stdout)["status"] == "not_installed"
     assert not (target / ".git/.repo-preflight-hooks").exists()
 
 
