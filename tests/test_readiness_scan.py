@@ -4131,3 +4131,30 @@ def test_cached_caff_body_keeps_large_history_verification(
         assert second["worktree_files_cache_reused"] > 0
     else:
         assert second["worktree_files_cache_reused"] == 0
+
+
+def test_public_attribution_uses_one_isolated_batch_process(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    for message in (b"second", b"third"):
+        _raw_identity_fixture_commit(repo, message)
+    original = subprocess.Popen
+    launches = []
+
+    def observe(cmd, *args, **kwargs):
+        launches.append((cmd, kwargs["env"]))
+        return original(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", observe)
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(tmp_path / "absent"))
+    result = MODULE.public_attribution_result(
+        repo, None, {"Test Author <test-author@example.invalid>"}
+    )
+    assert result["status"] == "pass"
+    assert len(launches) == 2
+    assert "rev-list" in launches[0][0]
+    assert launches[1][0][-2:] == ["cat-file", "--batch"]
+    for cmd, env in launches:
+        assert "core.fsmonitor=" in cmd
+        assert "GIT_OBJECT_DIRECTORY" not in env
+        assert env["GIT_OPTIONAL_LOCKS"] == "0"
+        assert env["GIT_NO_REPLACE_OBJECTS"] == env["GIT_NO_LAZY_FETCH"] == "1"

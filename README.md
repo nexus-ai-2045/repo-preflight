@@ -47,6 +47,8 @@ Windowsでは`.venv/bin/python`を`.venv\Scripts\python`に読み替えます。
 
 ## 自動で止めるには
 
+Gitの`pre-commit`・`commit-msg`・`pre-push`は、[導入・状態確認・更新・解除の管理CLI](docs/git-hooks.md)で扱えます。対象ごとに導入し、既存フックを保持します。管理CLIはPOSIX向けで、設定済みの`core.hooksPath`は上書きしません。実測用のコマンドとCIの重複削減も同文書に記載しています。
+
 cloneやskill配置だけでは、通常の`git push`やGitHub画面の操作は止まりません。
 
 | 使う場所 | 必要な接続 |
@@ -62,6 +64,8 @@ cloneやskill配置だけでは、通常の`git push`やGitHub画面の操作は
 共通CIのラチェットは指摘の**新規増加**を止めます。既存の指摘を許容する基準値がある場合、指摘0件の意味にはなりません。許可外の公開名義は基準値で免除しません。
 
 結果の語彙、必須文書、保証の境界は [CLI・AI連携の詳細](docs/cli-reference.md) と [保証すること / 保証しないこと](docs/guarantees-and-limits.md) にあります。PNG・JPEGの検査は [実行環境の説明](docs/runtime-support.md#pngを含むprivate-identity検査) を参照してください。
+
+不合格時は、検出種別と安全な修正箇所をフック・JSON・人向けレポートへ返します。ファイル・行・コミット・名義欄の読み方と、位置を特定できない場合の扱いは[ヒットした場所の確認](docs/diagnostics.md)を参照してください。
 
 ## AIエージェントから使う
 

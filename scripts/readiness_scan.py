@@ -651,6 +651,12 @@ def _identity_git_raw(repo_path, *args):
     return result.stdout.decode("utf-8")
 
 
+def _identity_batch_command(repo_path, *args):
+    # The streaming reader uses Popen; apply run_subprocess's same Git hardening.
+    cmd = ["git", "-C", str(repo_path), "-c", "log.showSignature=false", *args]
+    return git_hardened_command(cmd), git_isolation_env()
+
+
 def load_identity_gate():
     """同梱 identity_gate.py を file から読む。sys.path と cwd では選ばない。"""
     script = Path(__file__).resolve().with_name("identity_gate.py")
@@ -671,6 +677,35 @@ def load_identity_gate():
     return module
 
 
+def diagnostic_evidence_label(label, private_identity=None):
+    if label == "<redacted-path>":
+        return label
+    history = re.fullmatch(r"history:([0-9a-f]{12})(?::.*)?", label, re.DOTALL)
+    if history:
+        return "history:" + history[1]
+    if label in {
+        "target-diff:working-tree",
+        "target-diff:untracked-worktree",
+    } or re.fullmatch(r"target-diff:commit:[0-9a-f]{12}", label):
+        return label
+    try:
+        if (
+            private_identity is not None
+            and private_identity.label_status(label) != "public"
+        ):
+            return "<redacted-path>"
+        return load_identity_gate().Diagnostics().safe_path(label) or "<redacted-path>"
+    except (
+        OSError,
+        ValueError,
+        ImportError,
+        AttributeError,
+        RuntimeError,
+        SyntaxError,
+    ):
+        return "<redacted-path>"
+
+
 def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="HEAD"):
     """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
@@ -686,12 +721,14 @@ def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="H
 
     rng = f"{base_ref}..{head_ref}" if base_ref else "--all"
     try:
+        diagnostics = _ig.Diagnostics(pol)
         issues = _ig.check_range(
             pol,
             str(repo),
             rng,
             identity_rng=f"{identity_base_ref}..HEAD" if identity_base_ref else None,
             git_fn=_identity_git_raw,
+            diagnostics=diagnostics,
         )
     except (
         OSError,
@@ -701,7 +738,11 @@ def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="H
         subprocess.SubprocessError,
     ):
         return {"status": "tool_error", "reason": "identity_history_unavailable"}
-    return {"status": "fail" if issues else "pass", "issue_count": len(issues)}
+    return {
+        "status": "fail" if issues else "pass",
+        "issue_count": len(issues),
+        **(diagnostics.as_report() if issues else {}),
+    }
 
 
 def public_attribution_result(repo, base_ref, allowed_identities):
@@ -709,11 +750,14 @@ def public_attribution_result(repo, base_ref, allowed_identities):
         return {"status": "not_evaluated", "reason": "public_allowlist_not_configured"}
     try:
         identity_gate = load_identity_gate()
+        diagnostics = identity_gate.Diagnostics(allowed_identities)
         issues = identity_gate.check_public_range(
             allowed_identities,
             str(repo),
             f"{base_ref}..HEAD" if base_ref else "--all",
             git_fn=_identity_git_raw,
+            batch_command=_identity_batch_command,
+            diagnostics=diagnostics,
         )
     except ImportError:
         return {"status": "tool_error", "reason": "public_attribution_unavailable"}
@@ -725,7 +769,11 @@ def public_attribution_result(repo, base_ref, allowed_identities):
         subprocess.SubprocessError,
     ):
         return {"status": "tool_error", "reason": "public_attribution_unavailable"}
-    return {"status": "fail" if issues else "pass", "issue_count": len(issues)}
+    return {
+        "status": "fail" if issues else "pass",
+        "issue_count": len(issues),
+        **(diagnostics.as_report() if issues else {}),
+    }
 
 
 def load_allowed_identities(path: Path):
@@ -825,6 +873,8 @@ class PrivateIdentityScan:
 
     def __init__(self, repo: Path, required: bool):
         self.findings = 0
+        self.finding_locations = []
+        self.finding_locations_truncated = 0
         self.objects = 0
         self.skipped = 0
         self._verified_caff_blobs = set()
@@ -1308,6 +1358,24 @@ class PrivateIdentityScan:
             return "unknown"
         return "private" if probe.findings else "public"
 
+    def record_location(self, source, *, path=None, field=None):
+        if path is not None:
+            path = diagnostic_evidence_label(path, self)
+        finding = {
+            "kind": "登録済み個人情報に一致",
+            "source": source,
+            "path": path,
+            "line": None,
+            "field": field,
+            "rule": "private_identity",
+        }
+        if path not in (None, "<redacted-path>") and finding in self.finding_locations:
+            return
+        if len(self.finding_locations) >= 50:
+            self.finding_locations_truncated += 1
+        else:
+            self.finding_locations.append(finding)
+
     def result(self):
         report = {
             **self.report,
@@ -1320,6 +1388,17 @@ class PrivateIdentityScan:
             return report
         if self.findings:
             report["status"] = "fail"
+            report["findings"] = self.finding_locations or [
+                {
+                    "kind": "登録済み個人情報に一致",
+                    "source": "private_scan",
+                    "path": None,
+                    "line": None,
+                    "field": None,
+                    "rule": "private_identity",
+                }
+            ]
+            report["findings_truncated"] = self.finding_locations_truncated
         elif self.skipped and self.checker is not None:
             report["status"] = "unknown"
         if self.report.get("not_expanded_count"):
@@ -1895,10 +1974,17 @@ def history_hits(
             _, _, name, _, mode, _, oid = entry
             if mode != b"000000" and private_identity is not None:
                 for view in {name, PurePosixPath(name).with_suffix("").as_posix()}:
+                    before_name_findings = getattr(private_identity, "findings", 0)
                     private_identity.check(
                         view.encode("utf-8", errors="surrogateescape"),
                         repository_name=True,
                     )
+                    if getattr(
+                        private_identity, "findings", 0
+                    ) > before_name_findings and hasattr(
+                        private_identity, "record_location"
+                    ):
+                        private_identity.record_location("filename", field="filename")
             if mode in {b"100644", b"100755", b"120000"}:
                 inventory_by_id.setdefault(oid, name)
                 entries_by_blob.setdefault(oid, []).append(entry)
@@ -2098,6 +2184,9 @@ def history_hits(
                                         old_data, (path,), opaque_suffixes
                                     )
                             if private_identity is not None:
+                                before_text_findings = getattr(
+                                    private_identity, "findings", 0
+                                )
                                 private_identity.check(
                                     text.encode("utf-8"),
                                     source_names=(path,),
@@ -2113,6 +2202,14 @@ def history_hits(
                                         )
                                     ),
                                 )
+                                if getattr(
+                                    private_identity, "findings", 0
+                                ) > before_text_findings and hasattr(
+                                    private_identity, "record_location"
+                                ):
+                                    private_identity.record_location(
+                                        "history_object", field=f"blob:{object_id[:12]}"
+                                    )
                                 if private_identity.last_text_path_match:
                                     path_hits.add(f"history:{object_id[:12]}")
                             if previous_text is None:
@@ -2212,6 +2309,7 @@ def history_hits(
                         private_identity.report[
                             "approved_private_commit_identity_fields"
                         ] += 2
+                    before_object_findings = getattr(private_identity, "findings", 0)
                     private_identity.check(
                         identity_data,
                         reviewed_raw_paths=reviewed_raw,
@@ -2219,6 +2317,14 @@ def history_hits(
                             tuple(names or ()) if object_type == "blob" else ()
                         ),
                     )
+                    if getattr(
+                        private_identity, "findings", 0
+                    ) > before_object_findings and hasattr(
+                        private_identity, "record_location"
+                    ):
+                        private_identity.record_location(
+                            "history_object", field=f"{object_type}:{object_id[:12]}"
+                        )
                 if object_type != "blob":
                     continue
                 label = (
@@ -3273,6 +3379,7 @@ def scan(
         private_identity.report["media_payload_inspected"] = False
         private_identity.report["media_content_privacy_verified"] = False
     credential_finding_count = 0
+    credential_locations: list[str] = []
     decoded_media_secrets: set[str] = set()
     path_hits: list[str] = []
     unscanned_path_files: list[str] = []
@@ -3347,6 +3454,7 @@ def scan(
                     break
             if private_identity.findings > before_name_findings:
                 private_worktree_sensitive_names.add(rel)
+                private_identity.record_location("filename", field="filename")
             if private_identity.checker is None:
                 break
             label = sanitized_evidence_label(
@@ -3388,6 +3496,7 @@ def scan(
                     normalizer=private_identity.path_normalizer,
                 )
             )
+            before_content_findings = private_identity.findings
             private_identity.check(
                 data,
                 reviewed_raw_paths=reviewed_raw,
@@ -3396,6 +3505,8 @@ def scan(
                     submission_rels is not None and rel not in submission_rels
                 ),
             )
+            if private_identity.findings > before_content_findings:
+                private_identity.record_location("worktree", path=label)
             if private_identity.last_media_secret_matches:
                 decoded_media_secrets.add(rel)
             if private_identity.checker is None:
@@ -3442,6 +3553,9 @@ def scan(
             else text_has(SECRET_PATTERNS, data)
         ) or rel in decoded_media_secrets:
             credential_finding_count += 1
+            credential_locations.append(
+                diagnostic_evidence_label(label, private_identity)
+            )
         if base_ref:
             continue
         if (
@@ -3501,6 +3615,9 @@ def scan(
             ),
         )
         credential_finding_count += len(history_credential_findings)
+        credential_locations.extend(
+            diagnostic_evidence_label(label) for label in history_credential_findings
+        )
     except RuntimeError:
         return {
             "status": "tool_error",
@@ -3675,6 +3792,8 @@ def scan(
         "secret_scan": {
             "status": "pass" if credential_finding_count == 0 else "fail",
             "finding_count": credential_finding_count,
+            "locations": sorted(set(credential_locations))[:50],
+            "locations_truncated": max(0, len(set(credential_locations)) - 50),
             "reviewed_exceptions": (
                 reviewed_exceptions.report() if reviewed_exceptions is not None else []
             ),
@@ -3683,7 +3802,10 @@ def scan(
             "status": (
                 "fail" if path_hits else "unknown" if unscanned_path_files else "pass"
             ),
-            "files": path_hits,
+            "files": [
+                diagnostic_evidence_label(label, private_identity)
+                for label in path_hits
+            ],
             "unscanned_files": unscanned_path_files,
             **(
                 {"reviewed_exceptions": reviewed_exceptions.report(personal_paths=True)}

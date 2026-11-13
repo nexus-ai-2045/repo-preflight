@@ -74,7 +74,11 @@ entry単位の必須性です。未導入または採用しないruntimeはentry
 5. GitHub 設定の自動適用。`configure_settings`は`gh api`のGET、profile比較、個別previewまでを保証するが、変更は別承認・別工程。
 6. github.com の repository ページが対話 UI になること。
 
-## 導入 (Claude Code / Grok)
+## 導入 (Claude Code / shared agents / Grok)
+
+Claude Code向けと共有agents向けに薄い入口を配り、検査本体は同じcheckoutを呼びます。Codex・Geminiの既存入口が共有agentsへのリンクなら、リンクを保って同じ更新を使えます。新たなAI製品の導入や、モデル・認証・権限設定の変更は行いません。
+
+Gitフック管理は`run_preflight.py --git-hooks`からも呼べます。[Gitフックの導入と衝突確認](git-hooks.md)を参照してください。スキル配布と実フックの導入は別の操作です。
 
 リポジトリを **好きな場所** に clone したうえで:
 

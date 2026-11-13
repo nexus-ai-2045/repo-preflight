@@ -43,7 +43,15 @@ base は HEAD の祖先であること。`publish` / `release` / `configure_sett
 python "<THIS_SKILL_DIR>/run_preflight.py" --repo "<TARGET_REPO>" --intent configure_settings --github-settings-profile solo_public --human
 ```
 
-## Claude Code 固有の読み替え
+## 共通Gitフックと診断
+
+`python "<THIS_SKILL_DIR>/run_preflight.py" --git-hooks plan --repo "<TARGET_REPO>"`で既存設定を読み取る。導入後は`--git-hooks status`で確認する。実際のinstall/update/uninstallは対象と操作の承認を確認してから実行する。衝突時に既存の保護を外さず、正本の`docs/git-hooks.md`に従う。
+
+フックはClaude Code・他のAI・手動Gitで同じ検査を呼ぶ。ヒットした種類・安全なファイルと行・名義欄を示し、実値を再掲しない。未確定の位置は未確定と伝える。
+
+`create_repo`は作成前の確認のみ。新規作成を専用ラッパーに縛らず、`gh`やGitHub画面など承認済みの通常手段を使える。コメント禁止lintの自動導入は行わない。
+
+## Claude Code 固有の操作
 
 | 正本の表現 | Claude Code |
 |---|---|

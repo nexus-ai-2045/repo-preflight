@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import traceback
@@ -316,6 +317,39 @@ def format_human_report(report: dict) -> str:
         for name, check in checks.items():
             if isinstance(check, dict):
                 lines.append(format_check_line(name, check))
+                if check.get("status") not in {"fail", "unknown", "tool_error"}:
+                    continue
+                findings = check.get("findings") or []
+                if not isinstance(findings, list):
+                    findings = []
+                for finding in findings[:50]:
+                    if not isinstance(finding, dict):
+                        continue
+                    location = []
+                    for field in ("source", "commit", "path", "line", "field", "rule"):
+                        value = finding.get(field)
+                        if value is not None:
+                            location.append(
+                                f"{field}={json.dumps(value, ensure_ascii=False)}"
+                            )
+                    if finding.get("line") is None:
+                        location.append("line=未確定")
+                    kind = json.dumps(finding.get("kind", "検出"), ensure_ascii=False)
+                    lines.append(f"  - {kind}: {'; '.join(location)}")
+                for location in (check.get("locations") or check.get("files") or [])[
+                    :50
+                ]:
+                    if isinstance(location, str):
+                        lines.append(
+                            f"  - location={json.dumps(location, ensure_ascii=False)}; line=未確定"
+                        )
+                omitted = check.get("findings_truncated", 0) + check.get(
+                    "locations_truncated", 0
+                )
+                if omitted:
+                    lines.append(
+                        "  - diagnostics truncated=true（以降の位置は省略・未確定）"
+                    )
         lines.append("")
     lines.extend(
         [

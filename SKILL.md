@@ -49,6 +49,12 @@ python scripts/readiness_scan.py --repo <path> --intent configure_settings --git
 
 stdout は `schema: repo-preflight.dialogue/v3` の JSON。`--human` 時は stderr に番号付きの質問文も出る。
 
+## 作成手段とGitフック
+
+`create_repo`は作成前の確認であり、作成手段をこのツールへ独占させない。承認された新規作成は`gh`やGitHub画面など通常の手段でもよい。説明コメント禁止lintや新規作成専用ラッパーの導入を、この検査の利用条件にしない。
+
+Gitフックの検査本体は全AIと手動Gitで共通。runtimeの`run_preflight.py --git-hooks plan --repo <TARGET_REPO>`で読取り確認できる。導入・更新・解除は対象と操作の承認を確認し、既存フックを保持する。[導入と衝突の扱い](docs/git-hooks.md)と[診断の読み方](docs/diagnostics.md)に従う。AI固有のスキル配置と、実Gitフックの有効化は別々に確認する。
+
 既存private GitHub repoへの通常送信は `--private-submission` と `--base-ref` を併用する。
 liveのprivate状態・実push先・比較元SHAを照合し、未送信の作業fileと既存の不変本文を除外して、
 途中で削除した情報と改名による形式変更も含めcommit済みの送信内容を検査する。

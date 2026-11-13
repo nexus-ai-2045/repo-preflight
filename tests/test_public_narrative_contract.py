@@ -37,6 +37,7 @@ OS_ALIASES = {
 SCRIPT_OWNERS = (
     "readiness_scan.py",
     "run_preflight.py",
+    "manage_git_hooks.py",
     "consistency_gate.py",
     "readme_release_gate.py",
     "install_runtime_skills.py",
@@ -86,7 +87,14 @@ def readiness_scan_flags(*, include_help: bool = False) -> frozenset[str]:
 
 def script_cli_flags(script_name: str) -> frozenset[str]:
     """1 script の add_argument 長オプション（または readiness_scan の parser）。"""
-    if script_name in {"readiness_scan.py", "run_preflight.py"}:
+    if script_name == "run_preflight.py":
+        launcher = _load(ROOT / "runtime/shared/run_preflight.py", "launcher_narrative")
+        flags = set(readiness_scan_flags(include_help=True))
+        flags.update(launcher.ENTRY_POINTS)
+        for script in launcher.ENTRY_POINTS.values():
+            flags.update(script_cli_flags(script))
+        return frozenset(flags)
+    if script_name == "readiness_scan.py":
         return readiness_scan_flags(include_help=True)
     path = SCRIPTS_DIR / script_name
     if not path.is_file():

@@ -640,7 +640,7 @@ def check_identity(
     return out
 
 
-def git(repo: str, *a: str) -> str:
+def identity_git_command(repo: str, *a: str):
     # Preserve the explicit repository even when a caller carries Git's directory overrides.
     env = dict(os.environ)
     for key in (
@@ -652,7 +652,7 @@ def git(repo: str, *a: str) -> str:
         "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     ):
         env.pop(key, None)
-    return subprocess.run(
+    return (
         [
             "git",
             "--no-replace-objects",
@@ -666,6 +666,14 @@ def git(repo: str, *a: str) -> str:
             "i18n.logOutputEncoding=UTF-8",
             *a,
         ],
+        env,
+    )
+
+
+def git(repo: str, *a: str) -> str:
+    command, env = identity_git_command(repo, *a)
+    return subprocess.run(
+        command,
         check=True,
         capture_output=True,
         env=env,
@@ -726,15 +734,257 @@ def parse_raw_commit(raw: str):
     return identities, body
 
 
-def raw_commits(repo: str, rng: str, run_git):
+def read_batch_commit(stream, oid: str) -> str:
+    header = stream.readline(128)
+    match = re.fullmatch(
+        oid.encode("ascii") + rb" commit (0|[1-9][0-9]{0,18})\n", header
+    )
+    if not match:
+        raise ValueError("identity_commit_batch_invalid")
+    # Read only one object, in chunks: even a truncated, oversized length
+    # must not cause an allocation for bytes we have not received.
+    remaining = int(match[1])
+    body = bytearray()
+    while remaining:
+        chunk = stream.read(min(remaining, 65536))
+        if not chunk:
+            raise ValueError("identity_commit_batch_invalid")
+        body.extend(chunk)
+        remaining -= len(chunk)
+    if stream.read(1) != b"\n":
+        raise ValueError("identity_commit_batch_invalid")
+    return body.decode("utf-8")
+
+
+def batch_commit_texts(repo: str, ids, command_fn=None):
+    command, env = (command_fn or identity_git_command)(repo, "cat-file", "--batch")
+    with subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    ) as proc:
+        try:
+            for oid in ids:
+                proc.stdin.write(oid.encode("ascii") + b"\n")
+                proc.stdin.flush()
+                yield oid, read_batch_commit(proc.stdout, oid)
+            proc.stdin.close()
+            if proc.stdout.read(1) or proc.wait() != 0:
+                raise ValueError("identity_commit_batch_invalid")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+
+
+def raw_commits(repo: str, rng: str, run_git, *, batch_command=None):
     """整形ログの区切り文字に依存せず、保存された commit の名義と本文を読む。"""
-    for oid in commit_ids(repo, rng, run_git):
-        identities, body = parse_raw_commit(run_git(repo, "cat-file", "commit", oid))
+    ids = commit_ids(repo, rng, run_git)
+    if not ids:
+        return
+    # Injected readers own their Git invocation and isolation policy.
+    records = (
+        batch_commit_texts(repo, ids, batch_command)
+        if batch_command is not None or run_git is git
+        else ((oid, run_git(repo, "cat-file", "commit", oid)) for oid in ids)
+    )
+    for oid, raw in records:
+        identities, body = parse_raw_commit(raw)
         yield oid, *identities["author"], *identities["committer"], body
 
 
+@functools.lru_cache(maxsize=1)
+def _local_guard():
+    spec = importlib.util.spec_from_file_location(
+        "_preflight_diagnostic_local_guard",
+        Path(__file__).with_name("local_identity_guard.py"),
+    )
+    guard = sys.modules.get(spec.name)
+    if (
+        guard is None
+        or Path(getattr(guard, "__file__", "")).resolve() != Path(spec.origin).resolve()
+    ):
+        guard = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = guard
+        spec.loader.exec_module(guard)
+    return guard
+
+
+@functools.lru_cache(maxsize=1)
+def _diagnostic_credential_filter():
+    spec = importlib.util.spec_from_file_location(
+        "_preflight_diagnostic_credential_rules",
+        Path(__file__).with_name("readiness_scan.py"),
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module._evidence_label_is_sensitive
+
+
+@functools.lru_cache(maxsize=1)
+def _local_path_filter():
+    guard = _local_guard()
+    identities = guard.collect_identities()
+    return lambda path: guard.redact(path, identities) != path or bool(
+        guard.find_hits(path, identities)
+    )
+
+
+class Diagnostics:
+    """Optional location hints. Neither a hint nor its budget changes any verdict."""
+
+    def __init__(self, policy=None, max_findings=50):
+        self.policy = policy
+        self.max_findings = max(0, max_findings)
+        self.findings = []
+        self.truncated = 0
+        self.rows_left = 2500
+        self.chars_left = 250_000
+
+    def safe_path(self, path):
+        if (
+            not path
+            or len(path) > 256
+            or not all(c.isalnum() or c in "_./ -" for c in path)
+            or unicodedata.normalize("NFKC", path) != path
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or path != path.strip()
+            or shape_findings("/" + path)
+            or any(r.search(path) for r in getattr(self.policy, "deny_res", ()))
+        ):
+            return None
+        try:
+            return (
+                None
+                if _local_path_filter()(path)
+                or _diagnostic_credential_filter()(path.encode("utf-8"))
+                else path
+            )
+        except (
+            OSError,
+            ImportError,
+            ValueError,
+            AttributeError,
+            RuntimeError,
+            SyntaxError,
+            subprocess.SubprocessError,
+        ):
+            return None
+
+    def add(
+        self, kind, source, *, commit=None, path=None, line=None, field=None, rule=None
+    ):
+        if len(self.findings) >= self.max_findings:
+            self.truncated += 1
+            return
+        self.findings.append(
+            dict(
+                kind=kind,
+                source=source,
+                commit=(
+                    commit[:8]
+                    if commit and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit)
+                    else None
+                ),
+                path=self.safe_path(path),
+                line=line,
+                field=field,
+                rule=rule,
+            )
+        )
+
+    def as_report(self):
+        return {"findings": self.findings, "findings_truncated": self.truncated}
+
+    def locate(self, kinds, source, rows, classify, *, commit=None):
+        """Search bounded rows only after an aggregate hit. Unresolved kinds stay visible."""
+        pending = set(kinds)
+        found = set()
+        if not pending:
+            return
+        if TOO_LARGE_KIND in pending:
+            self.add(TOO_LARGE_KIND, source, commit=commit)
+            return
+        for path, line, value in rows:
+            if (
+                self.rows_left < 1
+                or len(value) > self.chars_left
+                or len(self.findings) >= self.max_findings
+            ):
+                self.truncated += 1
+                break
+            self.rows_left -= 1
+            self.chars_left -= len(value)
+            for kind in dict.fromkeys(classify(value)):
+                if kind in pending:
+                    self.add(kind, source, commit=commit, path=path, line=line)
+                    found.add(kind)
+        for kind in dict.fromkeys(kinds):
+            if kind not in found:
+                self.add(kind, source + "_unlocated", commit=commit)
+
+
+def _text_issues(policy, body, where, source, diagnostics, commit=None):
+    private = isinstance(policy, Policy)
+    check = scan_text if private else check_public_text
+    issues = check(policy, body, where)
+    if diagnostics is None or not issues:
+        return issues
+    prefix = where + ": "
+    kinds = [i.removeprefix(prefix) for i in issues]
+    if private and "個人の型に一致" in kinds:
+        for index, pattern in enumerate(policy.deny_res):
+            m = pattern.search(body)
+            if m:
+                start, end = m.span()
+                line = (
+                    None if "\n" in body[start:end] else body.count("\n", 0, start) + 1
+                )
+                diagnostics.add(
+                    "個人の型に一致",
+                    source if line else source + "_unlocated",
+                    commit=commit,
+                    line=line,
+                    rule=f"deny_patterns[{index}]",
+                )
+                break
+        kinds.remove("個人の型に一致")
+    diagnostics.locate(
+        kinds,
+        source,
+        ((None, n, row) for n, row in enumerate(body.split("\n"), 1)),
+        lambda row: [i.removeprefix(": ") for i in check(policy, row, "")],
+        commit=commit,
+    )
+    return issues
+
+
+def _identity_field(policy, name, email, role):
+    field = "author" if role == "作者" else "committer"
+    allowed = policy.identities | (
+        policy.committer_only if role == "コミッター" else frozenset()
+    )
+    known_name = any(v.startswith(name + " <") for v in allowed)
+    known_email = any(v.endswith(" <" + email + ">") for v in allowed)
+    if known_name != known_email:
+        return field + (".email" if known_name else ".name")
+    return field + ".identity"
+
+
 def check_range(
-    pol: Policy, repo: str, rng: str, *, identity_rng: str | None = None, git_fn=None
+    pol: Policy,
+    repo: str,
+    rng: str,
+    *,
+    identity_rng: str | None = None,
+    git_fn=None,
+    diagnostics=None,
 ) -> list[str]:
     """PRの全コミット（基点..HEAD）を1件ずつ検査。マージコミットも含める。"""
     run_git = git if git_fn is None else git_fn
@@ -747,9 +997,44 @@ def check_range(
     for h, an, ae, cn, ce, body in raw_commits(repo, rng, run_git):
         w = h[:8]
         if identity_commits is None or h in identity_commits:
-            out += check_identity(pol, an, ae, "作者", w)
-            out += check_identity(pol, cn, ce, "コミッター", w)
-        out += scan_text(pol, body, w + " 本文")
+            for name, email, role, field in (
+                (an, ae, "作者", "author"),
+                (cn, ce, "コミッター", "committer"),
+            ):
+                problems = check_identity(pol, name, email, role, w)
+                out += problems
+                if diagnostics is not None:
+                    for issue in problems:
+                        kind = issue.removeprefix(w + ": ")
+                        suffix = (
+                            "email"
+                            if "メール" in kind
+                            else (
+                                "name"
+                                if "名前" in kind or "伏せ字" in kind
+                                else "identity"
+                            )
+                        )
+                        rule = (
+                            next(
+                                (
+                                    f"deny_patterns[{i}]"
+                                    for i, r in enumerate(pol.deny_res)
+                                    if r.search(name + " " + email)
+                                ),
+                                None,
+                            )
+                            if "個人の型" in kind
+                            else None
+                        )
+                        diagnostics.add(
+                            kind,
+                            "commit_identity",
+                            commit=h,
+                            field=field + "." + suffix,
+                            rule=rule,
+                        )
+        out += _text_issues(pol, body, w + " 本文", "commit_message", diagnostics, h)
     return out
 
 
@@ -832,7 +1117,15 @@ def check_public_text(allowed_identities, text: str, where: str) -> list[str]:
 
 
 def check_public_range(
-    allowed_identities, repo, rng, *, git_fn=None, diffs=False, exceptions=None
+    allowed_identities,
+    repo,
+    rng,
+    *,
+    git_fn=None,
+    batch_command=None,
+    diffs=False,
+    exceptions=None,
+    diagnostics=None,
 ):
     """非公開policyを使わず、許可名義の一覧と形だけで判定する（pre-push とCIの共通の中身）。
 
@@ -843,20 +1136,41 @@ def check_public_range(
     run_git = git if git_fn is None else git_fn
     fixture_exceptions = load_fixture_exceptions(exceptions) if diffs else {}
     issues = []
-    for oid, an, ae, cn, ce, body in raw_commits(repo, rng, run_git):
+    for oid, an, ae, cn, ce, body in raw_commits(
+        repo, rng, run_git, batch_command=batch_command
+    ):
         for name, email, role in [(an, ae, "作者"), (cn, ce, "コミッター")]:
             if masked_identity_name(name) or not policy.allows(
                 f"{name} <{email}>", role
             ):
                 issues.append(f"{oid[:8]}: {role}が公開許可名義と不一致")
-        issues += check_public_text(policy, body, oid[:8])
+                if diagnostics is not None:
+                    diagnostics.add(
+                        "公開許可名義と不一致",
+                        "commit_identity",
+                        commit=oid,
+                        field=_identity_field(policy, name, email, role),
+                    )
+        issues += _text_issues(
+            policy, body, oid[:8], "commit_message", diagnostics, oid
+        )
         if diffs:
             skip = _exception_skipper(repo, oid, fixture_exceptions)
-            issues += diff_findings(
-                policy, added_lines(repo, oid, run_git, skip), f"{oid[:8]}: 差分に"
+            diff = _commit_diff(repo, oid, run_git)
+            issues += _diagnose_diff(
+                policy,
+                diff,
+                skip,
+                f"{oid[:8]}: 差分に",
+                "commit_diff",
+                diagnostics,
+                oid,
             )
-            issues += diff_findings(
-                policy, changed_paths(repo, oid, run_git), f"{oid[:8]}: ファイル名に"
+            paths = run_git(
+                repo, "show", "--format=", *_PATH_NAME_ARGS, "--first-parent", oid
+            )
+            issues += _diagnose_paths(
+                policy, paths, f"{oid[:8]}: ファイル名に", diagnostics, oid
             )
             numstat = run_git(
                 repo,
@@ -871,6 +1185,8 @@ def check_public_range(
             )
             if isinstance(numstat, str) and new_binary_count(numstat, skip):
                 issues.append(f"{oid[:8]}: {NEW_BINARY_KIND}")
+                if diagnostics is not None:
+                    diagnostics.add(NEW_BINARY_KIND, "binary", commit=oid)
     return issues
 
 
@@ -1065,8 +1381,7 @@ def _added_from_diff(diff: str, skip=None) -> str:
     return "\n".join(out)
 
 
-def added_lines(repo: str, oid: str, run_git, skip=None) -> str:
-    """そのコミットで足された行だけを返す（消した行と文脈行は見ない）。"""
+def _commit_diff(repo, oid, run_git):
     diff = run_git(
         repo,
         "show",
@@ -1079,7 +1394,91 @@ def added_lines(repo: str, oid: str, run_git, skip=None) -> str:
     )
     if not isinstance(diff, str):
         return ""
-    return _added_from_diff(diff, skip)
+    return diff
+
+
+def added_lines(repo: str, oid: str, run_git, skip=None) -> str:
+    return _added_from_diff(_commit_diff(repo, oid, run_git), skip)
+
+
+def _diff_target(header):
+    """Read a Git +++ target, including quoted UTF-8 bytes. Ambiguity hides the path."""
+    if header.startswith('"'):
+        if not header.endswith('"'):
+            return None
+        payload = header[1:-1]
+        decoded = bytearray()
+        i = 0
+        while i < len(payload):
+            c = payload[i]
+            if c == "\\":
+                octal = payload[i + 1 : i + 4]
+                if not re.fullmatch(r"[0-3][0-7]{2}", octal):
+                    # Other C escapes encode controls, quotes, or backslashes;
+                    # none can appear in a displayable path.
+                    return None
+                decoded.append(int(octal, 8))
+                i += 4
+            elif 32 <= ord(c) < 127 and c != '"':
+                decoded.append(ord(c))
+                i += 1
+            else:
+                return None
+        try:
+            header = decoded.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            return None
+    return header[2:] if header.startswith("b/") else None
+
+
+def _diff_rows(diff, skip):
+    path = number = None
+    skipped = False
+    for row in io.StringIO(diff):
+        row = row.removesuffix("\n")
+        if row.startswith("diff --git "):
+            path = number = None
+            skipped = False
+        elif row.startswith("+++"):
+            target = row[4:]
+            skipped = bool(skip and target.startswith("b/") and skip(target[2:]))
+            if number is None and row.startswith("+++ "):
+                path = _diff_target(target.removesuffix("\t"))
+            elif number is not None:
+                number += 1
+        elif row.startswith("@@"):
+            hunk = re.match(r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,[0-9]+)? @@", row)
+            number = int(hunk[1]) if hunk else None
+        elif number is not None and row.startswith(("+", " ")):
+            if row.startswith("+") and not row.startswith("+++") and not skipped:
+                yield path, number, row[1:]
+            number += 1
+
+
+def _diagnose_diff(policy, diff, skip, prefix, source, diagnostics, commit=None):
+    issues = diff_findings(policy, _added_from_diff(diff, skip), prefix)
+    if issues and diagnostics is not None:
+        diagnostics.locate(
+            [i.removeprefix(prefix) for i in issues],
+            source,
+            _diff_rows(diff, skip),
+            lambda row: diff_findings(policy, row, ""),
+            commit=commit,
+        )
+    return issues
+
+
+def _diagnose_paths(policy, raw, prefix, diagnostics, commit=None):
+    issues = diff_findings(policy, _joined_paths(raw), prefix)
+    if issues and diagnostics is not None:
+        diagnostics.locate(
+            [i.removeprefix(prefix) for i in issues],
+            "filename",
+            ((p, None, p) for p in raw.split("\0") if p),
+            lambda row: diff_findings(policy, row, ""),
+            commit=commit,
+        )
+    return issues
 
 
 # レビュー3C 高1: 足した・変えた・改名したファイルのパス名（改名先も）。-z で読み、改行で並べ直す。
@@ -1110,7 +1509,9 @@ def _hook_git(repo: str, *args: str) -> str:
     ).stdout
 
 
-def check_public_staged(allowed_identities, repo: str, exceptions=None) -> list[str]:
+def check_public_staged(
+    allowed_identities, repo: str, exceptions=None, diagnostics=None
+) -> list[str]:
     """pre-commit の中身：これから作る commit の作者・記録者と、ステージした差分の足した行。
 
     全履歴ラチェットは pre-push と必須チェックで見る（ここは2秒以内に収める）。
@@ -1129,6 +1530,14 @@ def check_public_staged(allowed_identities, repo: str, exceptions=None) -> list[
             or not policy.allows(f"{m.group(1)} <{m.group(2)}>", role)
         ):
             issues.append(f"これから作る commit: {role}が公開許可名義と不一致")
+            if diagnostics is not None:
+                diagnostics.add(
+                    "公開許可名義と不一致",
+                    "commit_identity",
+                    field=_identity_field(
+                        policy, m[1] if m else "", m[2] if m else "", role
+                    ),
+                )
     diff = _hook_git(
         repo,
         "diff",
@@ -1139,18 +1548,22 @@ def check_public_staged(allowed_identities, repo: str, exceptions=None) -> list[
         "--no-renames",
     )
     skip = _exception_skipper(repo, "", load_fixture_exceptions(exceptions), hook=True)
-    added = _added_from_diff(diff, skip)
-    issues += diff_findings(policy, added, "ステージした差分に")
-    issues += diff_findings(
+    issues += _diagnose_diff(
+        policy, diff, skip, "ステージした差分に", "staged_diff", diagnostics
+    )
+    issues += _diagnose_paths(
         policy,
-        _joined_paths(_hook_git(repo, "diff", "--cached", *_PATH_NAME_ARGS)),
+        _hook_git(repo, "diff", "--cached", *_PATH_NAME_ARGS),
         "ステージしたファイル名に",
+        diagnostics,
     )
     numstat = _hook_git(
         repo, "diff", "--cached", "--numstat", "-z", "--no-renames", "--diff-filter=AM"
     )
     if new_binary_count(numstat, skip):
         issues.append(f"ステージした差分に{NEW_BINARY_KIND}")
+        if diagnostics is not None:
+            diagnostics.add(NEW_BINARY_KIND, "binary")
     return issues
 
 
@@ -1161,8 +1574,14 @@ GITLEAKS_CONFIG = Path(__file__).resolve().parent.parent / ".gitleaks.toml"
 
 
 def pinned_gitleaks() -> str:
-    """PATH の gitleaks が固定した版のハッシュと一致するときだけ、その絶対パスを返す（敵対的レビュー H4）。"""
-    exe = shutil.which("gitleaks")
+    """指定された実行ファイル、または PATH で見つけた実行ファイルのハッシュを照合する。"""
+    exe = os.environ.get("REPO_PREFLIGHT_GITLEAKS")
+    if exe is None:
+        exe = shutil.which("gitleaks")
+    elif (
+        not os.path.isabs(exe) or not os.path.isfile(exe) or not os.access(exe, os.X_OK)
+    ):
+        raise RuntimeError("gitleaks_missing")
     if exe is None:
         raise RuntimeError("gitleaks_missing")
     exe = os.path.realpath(exe)
@@ -1446,23 +1865,15 @@ def gitleaks_staged(repo: str) -> bool:
 
 def pre_push_ranges(repo: str, remote: str, stdin_text: str) -> list[list[str]]:
     """pre-push の範囲作りは既存の local_identity_guard.push_ranges_from_stdin をそのまま使う。"""
-    spec = importlib.util.spec_from_file_location(
-        "local_identity_guard", Path(__file__).with_name("local_identity_guard.py")
-    )
-    guard = sys.modules.get("local_identity_guard")
-    if guard is None:
-        guard = importlib.util.module_from_spec(spec)
-        sys.modules["local_identity_guard"] = (
-            guard  # dataclass が自分の module を引くため
-        )
-        spec.loader.exec_module(guard)
-    return guard.push_ranges_from_stdin(Path(repo), remote, stdin_text)
+    return _local_guard().push_ranges_from_stdin(Path(repo), remote, stdin_text)
 
 
 ZERO_OID = "0" * 40
 
 
-def check_pushed_tags(policy: "PublicPolicy", repo: str, stdin_text: str) -> list[str]:
+def check_pushed_tags(
+    policy: "PublicPolicy", repo: str, stdin_text: str, diagnostics=None
+) -> list[str]:
     """注釈付きタグの作者（tagger）と本文を見る（敵対的レビュー H7）。値は出さない。"""
     issues = []
     for line in stdin_text.splitlines():
@@ -1476,7 +1887,11 @@ def check_pushed_tags(policy: "PublicPolicy", repo: str, stdin_text: str) -> lis
             seen.add(local_sha)
             raw = _hook_git(repo, "cat-file", "tag", local_sha)
             header, _, body = raw.partition("\n\n")
-            where = f"タグ {local_sha[:8]}"
+            where = (
+                f"タグ {local_sha[:8]}"
+                if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", local_sha)
+                else "タグ"
+            )
             tagger = re.search(r"^tagger (.*?) <([^<>]*)> \d+ [+-]\d{4}$", header, re.M)
             if (
                 not tagger
@@ -1484,10 +1899,16 @@ def check_pushed_tags(policy: "PublicPolicy", repo: str, stdin_text: str) -> lis
                 or f"{tagger.group(1)} <{tagger.group(2)}>" not in policy
             ):
                 issues.append(f"{where}: タグの作者が公開許可名義と不一致")
-            issues += check_public_text(policy, body, where)
+                if diagnostics is not None:
+                    diagnostics.add(
+                        "公開許可名義と不一致", "tag_identity", field="tagger.identity"
+                    )
+            issues += _text_issues(policy, body, where, "tag_message", diagnostics)
             target = re.search(r"^object ([0-9a-f]{40,64})$", header, re.M)
             if not target:
                 issues.append(f"{where}: タグの中身が読めない")
+                if diagnostics is not None:
+                    diagnostics.add("タグの中身が読めない", "tag_object")
                 break
             local_sha = target.group(1)
             kind = _hook_git(repo, "cat-file", "-t", local_sha).strip()
@@ -1574,20 +1995,32 @@ def main(argv: list[str]) -> int:
         return 2
     try:
         issues: list[str] = []
+        diagnostics = Diagnostics(pol)
         if ns.message_file:
-            issues += scan_text(
-                pol, open(ns.message_file, encoding="utf-8").read(), "コミット文"
-            )
+            with open(ns.message_file, encoding="utf-8") as stream:
+                issues += _text_issues(
+                    pol, stream.read(), "コミット文", "commit_message", diagnostics
+                )
         if ns.range:
-            issues += check_range(pol, ns.repo, ns.range)
+            issues += check_range(pol, ns.repo, ns.range, diagnostics=diagnostics)
         if ns.pr_event:
             ev = json.load(open(ns.pr_event, encoding="utf-8"))
             pr = ev.get("pull_request") or ev.get("issue") or {}
-            issues += scan_text(
-                pol, (pr.get("title") or "") + "\n" + (pr.get("body") or ""), "PR本文"
+            issues += _text_issues(
+                pol,
+                (pr.get("title") or "") + "\n" + (pr.get("body") or ""),
+                "PR本文",
+                "pr_text",
+                diagnostics,
             )
             if ev.get("comment"):
-                issues += scan_text(pol, ev["comment"].get("body") or "", "コメント")
+                issues += _text_issues(
+                    pol,
+                    ev["comment"].get("body") or "",
+                    "コメント",
+                    "comment",
+                    diagnostics,
+                )
     except (
         OSError,
         UnicodeError,
@@ -1598,15 +2031,7 @@ def main(argv: list[str]) -> int:
     ):
         print('{"status": "tool_error", "reason": "identity_input_unavailable"}')
         return 2
-    for i in issues:
-        print("失敗:", i, file=sys.stderr)
-    print(
-        json.dumps(
-            {"status": "fail" if issues else "pass", "issue_count": len(issues)},
-            ensure_ascii=False,
-        )
-    )
-    return 1 if issues else 0
+    return _report(issues, diagnostics)
 
 
 # PR 題名・見出しの日本語境界。github-ops-skills の pr-japanese-gate の判定をそのまま移した。
@@ -1679,12 +2104,41 @@ def _pr_texts(path: str) -> list[tuple[str, str]]:
     return texts
 
 
-def _report(issues: list[str]) -> int:
+def _report(issues: list[str], diagnostics=None) -> int:
     for i in issues:
         print("失敗:", i, file=sys.stderr)
+    report = {"status": "fail" if issues else "pass", "issue_count": len(issues)}
+    if issues and diagnostics is not None:
+        report.update(diagnostics.as_report())
+        for finding in diagnostics.findings:
+            loc = finding["path"] or ""
+            source = finding["source"]
+            if not loc and source in {"filename", "staged_diff", "commit_diff"}:
+                loc = "ファイル名は非表示"
+            if finding["line"] is not None:
+                loc += (":" if loc else "行 ") + str(finding["line"])
+            elif source.endswith("_unlocated") or source in {"secret_scan", "binary"}:
+                loc = "行を特定できません"
+            print(
+                "修正箇所:",
+                *filter(
+                    None,
+                    (
+                        finding["kind"],
+                        finding["source"],
+                        finding["commit"],
+                        loc,
+                        finding["field"],
+                        finding["rule"],
+                    ),
+                ),
+                file=sys.stderr,
+            )
+        if diagnostics.truncated:
+            print("修正箇所: 上限のため詳細の一部を省略", file=sys.stderr)
     print(
         json.dumps(
-            {"status": "fail" if issues else "pass", "issue_count": len(issues)},
+            report,
             ensure_ascii=False,
         )
     )
@@ -1700,28 +2154,43 @@ def public_main(ns) -> int:
         return 2
     try:
         issues: list[str] = []
+        diagnostics = Diagnostics(policy)
         if ns.message_file:
             with open(ns.message_file, encoding="utf-8") as stream:
-                issues += check_public_text(policy, stream.read(), "コミット文")
+                issues += _text_issues(
+                    policy, stream.read(), "コミット文", "commit_message", diagnostics
+                )
         if ns.range:
-            issues += check_public_range(policy, ns.repo, ns.range, diffs=True)
+            issues += check_public_range(
+                policy, ns.repo, ns.range, diffs=True, diagnostics=diagnostics
+            )
         if ns.pre_push:
             stdin_text = sys.stdin.read()
             ranges = pre_push_ranges(ns.repo, ns.remote, stdin_text)
             for rng in ranges:
-                issues += check_public_range(policy, ns.repo, rng, diffs=True)
+                issues += check_public_range(
+                    policy, ns.repo, rng, diffs=True, diagnostics=diagnostics
+                )
                 if not gitleaks_range(ns.repo, rng):
                     issues.append("送る範囲に秘密情報の形（gitleaks）")
-            issues += check_pushed_tags(policy, ns.repo, stdin_text)
-            issues += check_new_roots(ns.repo, ranges)
+                    diagnostics.add("秘密情報の形（gitleaks）", "secret_scan")
+            issues += check_pushed_tags(policy, ns.repo, stdin_text, diagnostics)
+            roots = check_new_roots(ns.repo, ranges)
+            issues += roots
+            for issue in roots:
+                diagnostics.add(issue, "push_history")
         if ns.staged:
-            issues += check_public_staged(policy, ns.repo)
+            issues += check_public_staged(policy, ns.repo, diagnostics=diagnostics)
             if not gitleaks_staged(ns.repo):
                 issues.append("ステージした差分に秘密情報の形（gitleaks）")
+                diagnostics.add("秘密情報の形（gitleaks）", "secret_scan")
         if ns.pr_event:
             for where, text in _pr_texts(ns.pr_event):
-                issues += check_public_text(policy, text, where)
-            issues += _pr_japanese(ns.pr_event)
+                issues += _text_issues(policy, text, where, "pr_text", diagnostics)
+            japanese = _pr_japanese(ns.pr_event)
+            issues += japanese
+            for issue in japanese:
+                diagnostics.add(issue.removeprefix("PR本文: "), "pr_text")
     except (
         OSError,
         UnicodeError,
@@ -1739,7 +2208,7 @@ def public_main(ns) -> int:
         _explain_tool_error(exc)
         print('{"status": "tool_error", "reason": "identity_input_unavailable"}')
         return 2
-    return _report(issues)
+    return _report(issues, diagnostics)
 
 
 def _explain_tool_error(exc: BaseException) -> None:
