@@ -54,6 +54,7 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
@@ -84,6 +85,7 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
@@ -113,6 +115,7 @@ jobs:
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
+          PYTEST_ADDOPTS: --durations=20
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)

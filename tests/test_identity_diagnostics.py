@@ -124,15 +124,28 @@ def test_private_index_multiline_and_location_cap(tmp_path):
 
 def test_sensitive_and_control_paths_are_withheld(tmp_path):
     repo = _repo(tmp_path)
-    for path in (FAKE_MAIL, "split\nname.txt"):
-        (repo / path).write_text(FAKE_MAIL + "\n")
+    (repo / FAKE_MAIL).write_text(FAKE_MAIL + "\n")
     _git(repo, "add", ".")
     d = g.Diagnostics(policy())
     issues = g.check_public_staged(policy(), str(repo), diagnostics=d)
     assert issues and d.findings and all(f["path"] is None for f in d.findings)
     assert FAKE_MAIL not in str(d.as_report())
+    assert d.safe_path("split\nname.txt") is None
     private = g.Diagnostics(g.Policy(deny_res=[re.compile("sensitive")]))
     assert private.safe_path("src/sensitive.txt") is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows rejects control filenames")
+def test_control_filename_in_staged_diff_is_withheld(tmp_path):
+    repo = _repo(tmp_path)
+    path = "split\nname.txt"
+    (repo / path).write_text(FAKE_MAIL + "\n")
+    _git(repo, "add", ".")
+    diagnostics = g.Diagnostics(policy())
+    assert g.check_public_staged(policy(), str(repo), diagnostics=diagnostics)
+    assert diagnostics.findings
+    assert all(finding["path"] is None for finding in diagnostics.findings)
+    assert path not in str(diagnostics.as_report())
 
 
 def test_joined_only_diff_hit_does_not_invent_a_line(tmp_path):
@@ -149,12 +162,8 @@ def test_joined_only_diff_hit_does_not_invent_a_line(tmp_path):
 
 def test_missing_scanner_remains_a_tool_error(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
-    git_only = tmp_path / "bin"
-    git_only.mkdir()
-    git_binary = shutil.which("git")
-    assert git_binary
-    (git_only / "git").symlink_to(git_binary)
-    monkeypatch.setenv("PATH", str(git_only))
+    missing = tmp_path / "not-installed" / "gitleaks"
+    monkeypatch.setenv("REPO_PREFLIGHT_GITLEAKS", str(missing))
     code, report, stderr = _cli(repo, "--staged")
     assert code == 2
     assert report == {"status": "tool_error", "reason": "identity_input_unavailable"}
