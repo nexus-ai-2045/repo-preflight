@@ -55,7 +55,7 @@ jobs:
         shell: bash
         env:
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --pytest-workers auto --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -85,7 +85,7 @@ jobs:
         shell: bash
         env:
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --pytest-workers auto --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -114,6 +114,6 @@ jobs:
         shell: bash
         env:
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
-        run: python scripts/local_check.py --run-selected-tests --pytest-workers auto --base-ref "$SELECTION_BASE" --json
+        run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .

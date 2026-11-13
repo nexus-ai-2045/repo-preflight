@@ -26,3 +26,11 @@ python .repo-operating-contracts\check.py
 - 値を表示するコマンド（`whoami`、`id -F`、`echo $HOME`、`git config user.email` など）の出力をチャットやファイルへ貼らない。比べる必要があるときは一致・不一致だけを出す。
 - コミットの作成者とコミッターは公開用の名義（nexus-ai-2045 の GitHub noreply）だけにする。書き込み前に `python <repo-preflight>/scripts/local_identity_guard.py --public-name nexus-ai-2045 --public-name nexus_ai config` で確かめ、push 前は同じスクリプトの `check` を使う。
 - push 前検査や identity guard を緩めない・回避しない（`--no-verify`、`core.hooksPath` の付け替え、照合リストの無効化をしない）。止まったら、値を出さずに原因の箇所を直す。
+
+## 規則と強制手段
+
+| 規則 | 強制手段 |
+| --- | --- |
+| CIでは対応不明を全件テストの成功で埋めない。 | `local_check.py --ci` の実行判定と `test_ci_unknown_blocks_successful_fallback`。 |
+| テストの代役関数も実関数の呼出し契約に従う。 | 公開名義境界テストの `create_autospec`。 |
+| 実行ファイルの検査fixtureは対象OSで探索できる形式にする。 | `test_explicit_pin_is_revalidated_without_path_fallback` の実行ファイルコピーとLinux・macOS・WindowsのCI。 |

@@ -13,7 +13,7 @@ release 準備と runtime / テスト:
 ```powershell
 python scripts/readiness_scan.py --repo . --release
 python scripts/runtime_smoke.py --repo .
-python scripts/local_check.py --run-selected-tests --base-ref origin/main --json
+python scripts/local_check.py --ci --base-ref origin/main --json
 ```
 
 Claude Code / Grok へ skill pointer を配る (書込は `--apply`):
@@ -35,7 +35,9 @@ release準備では `--release` を省略しません。`readme_release_design` 
 
 - 手元もCIも `scripts/local_check.py` の差分・逆依存・文字参照による同じ選択入口を使う。手元は `python scripts/local_check.py`、計画だけなら `--plan-tests --json`。比較元は `--base-ref` で指定する。`full` / `quick` は既存呼出し用の互換名で、試験対象はどちらも差分から選ぶ。`full` は従来の追加ローカルgateも維持する。
 - リポジトリの `.test-selection.json` で検査対象を定める。通常は変更されたテストと逆依存のテストを選ぶ。`supplement` は逆依存を維持したまま指定テストを加える。Coreの動的ロードを含む名義・メディア・AIガード試験には、その試験をヘルパーとして使うテストも指定している。対応する有効な処置がすべて `mapped` の変更は所有者の指定範囲を使う。判定時は追加専用の `supplement` を除く。単独CLIの `benchmark_git_hooks.py` と `ai_command_guard.py` は専用テストを指定し、静的にたどれる利用側のテストがすべて選ばれることも検査する。
-- 未知の対応や `conftest.py` の変更は計画で `unresolved` として返す。手元の通常検査は停止し、CIの `--run-selected-tests` はポリシー内の全テストと選択済みテストを合わせて実行する。いずれの実行も変更テストを先頭に置き、各ファイルを一度だけpytestへ渡し、最初の失敗で打ち切る。CIは `--pytest-workers auto` でpytest-xdistを使う。手元の選択実行は既定で直列、全件への切り替え時は従来どおり自動並列になる。
+- 未知の対応や `conftest.py` の変更は計画で `unresolved` として返す。手元の通常検査とCIの `--ci` は停止する。`--ci` は選択実行と自動並列をまとめた入口で、未知・private identity・未処理check IDがあればexit 2を返し、pytestを起動しない。既知の空集合は成功skipにする。`--plan-tests` / `--dry-run` / `--identity-worktree` とは併用できない。
+- 互換入口の `--run-selected-tests` は従来どおり、未知ならポリシー内の全テストと選択済みテストを合わせて実行する。いずれの実行も変更テストを先頭に置き、各ファイルを一度だけpytestへ渡し、最初の失敗で打ち切る。明示の `--pytest-workers auto` または `1`〜`256` を優先し、未指定ならCIと互換の全件切り替えは自動並列、通常の選択実行は直列になる。
+- CIの標準出力は固定schema、選択状態、実行判断、件数、検証済みSHAだけを返し、file/path/pattern/refnameを含めない。`GITHUB_STEP_SUMMARY` があれば同じ安全な情報をMarkdownで追記する。summaryを書けなければ固定理由 `summary_write_failed` で停止し、pytestを起動しない。`--plan-tests --json` の詳細plan形式は維持する。
 - `--plan-tests --repo TARGET --selection-config POLICY --json` は対象repoのpolicyだけを受け、対象・理由・未解決・check IDを返す。check IDと言語・OSごとのrunnerは対象repoが所有する。`--run-selected-tests` はpytest専用で、空planをpytestの全件実行へ変換しない。CLIは出力前に環境由来のprivate identityと既存のpath伏せ字対象を検査し、該当planはpathを含まないunresolved（exit 2）へ置換して実行しない。test policyは名義許可を変更できない。in-process APIのraw pathは保持する。
 - 名義と個人情報の検査（`identity_gate --public`）は、比較元からHEAD、ステージ、未ステージ・未追跡の全差分を見る。一時索引を使い、本物のステージ状態は変えない。secret/identity/ratchet/base保証・required check名は維持する。Linux/Mac/Windows、Python 3.9/3.11/3.13はpath処理とCLI・hook互換性の既存保証であり、今回も選択した試験を必要な環境で回す。CI結果とローカル結果は別に確認する。
 - 画面には合否・件数・失敗した項目名だけを出し、全文のログは `.git/local-check/` に落とす。
