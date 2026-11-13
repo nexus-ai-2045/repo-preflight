@@ -210,7 +210,12 @@ def run_family(root, env, workers, audit=None):
 
 
 def allowed_comparison_paths(paths):
-    metadata = {b".test-selection.json", b"OPERATIONS.md", b"docs/test-efficiency.md"}
+    metadata = {
+        b".test-selection.json",
+        b"OPERATIONS.md",
+        b"docs/test-efficiency.md",
+        b"docs/runtime-support.md",
+    }
     return all(
         p in metadata or p.startswith((b"tests/", b".github/workflows/")) for p in paths
     )

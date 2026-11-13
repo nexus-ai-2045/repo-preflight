@@ -72,6 +72,7 @@ def test_comparison_metadata_does_not_allow_production_changes():
             b".test-selection.json",
             b"OPERATIONS.md",
             b"docs/test-efficiency.md",
+            b"docs/runtime-support.md",
         ]
     )
     assert not allowed_comparison_paths([b"scripts/identity_gate.py"])
