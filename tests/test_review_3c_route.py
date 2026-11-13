@@ -5,7 +5,7 @@
 
 import pytest
 
-from test_review_3c import H, message, policy  # noqa: F401
+from test_review_3c import H, matrix_message, policy  # noqa: F401
 
 # 人の承認（15:29）は `.get(` と `href=` の中だけ。ほかの呼び出し・属性は止める（品質係の下見）。
 GREEN = {
@@ -29,11 +29,11 @@ RED = {
 
 @pytest.mark.parametrize("name", sorted(GREEN))
 def test_web_route_is_green(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, GREEN[name])
+    result = matrix_message(policy, tmp_path, GREEN[name])
     assert result.returncode == 0, (name, result.stderr)
 
 
 @pytest.mark.parametrize("name", sorted(RED))
 def test_real_home_stays_red(policy, tmp_path, name):  # noqa: F811
-    result = message(policy, tmp_path, RED[name])
+    result = matrix_message(policy, tmp_path, RED[name])
     assert result.returncode == 1, (name, result.stderr)

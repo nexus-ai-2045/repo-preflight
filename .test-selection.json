@@ -62,7 +62,9 @@
         "tests/test_local_check.py",
         "tests/test_consistency_gate.py",
         "tests/test_gate_protection.py",
-        "tests/test_identity_fixture_exceptions.py"
+        "tests/test_identity_fixture_exceptions.py",
+        "tests/test_ci_policy_ownership.py",
+        "tests/test_benchmark_review_tests.py"
       ],
       "dependency_mode": "mapped"
     },
@@ -202,6 +204,48 @@
       "tests": [
         "tests/test_adv_ai_guard.py",
         "tests/test_adv_eol.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "tests/benchmark_review_tests.py"
+      ],
+      "tests": [
+        "tests/test_benchmark_review_tests.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "tests/test_review_3c.py",
+        "tests/test_review_3c_extra.py",
+        "tests/test_review_3c_human.py",
+        "tests/test_review_3c_route.py",
+        "tests/test_review_3c_tighten.py",
+        "tests/test_review_3c_runner.py",
+        "tests/test_benchmark_review_tests.py",
+        "tests/test_ci_policy_ownership.py"
+      ],
+      "tests": [
+        "tests/test_review_3c.py",
+        "tests/test_review_3c_extra.py",
+        "tests/test_review_3c_human.py",
+        "tests/test_review_3c_route.py",
+        "tests/test_review_3c_tighten.py",
+        "tests/test_review_3c_runner.py",
+        "tests/test_benchmark_review_tests.py",
+        "tests/test_ci_policy_ownership.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "docs/test-efficiency.md"
+      ],
+      "tests": [
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py"
       ],
       "dependency_mode": "mapped"
     }
