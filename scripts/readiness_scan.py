@@ -600,14 +600,14 @@ def text_has(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
         except UnicodeDecodeError:
             continue
         decoded_text = unquote(text)
+        candidates = (text,) if decoded_text == text else (text, decoded_text)
         if PATH_PATTERNS[1] in patterns and any(
-            _PATH_GRAMMAR.macos_shared_parent_matches(value)
-            for value in (text, decoded_text)
+            _PATH_GRAMMAR.macos_shared_parent_matches(value) for value in candidates
         ):
             return True
         if any(
             pattern.search(candidate)
-            for candidate in (text, decoded_text)
+            for candidate in candidates
             for pattern in patterns
         ):
             return True

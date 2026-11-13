@@ -8,6 +8,10 @@ solo 運用では CODEOWNERS 必須 review を使わない。門番の無音改�
 
 import json
 from pathlib import Path
+import runpy
+
+import pytest
+import yaml
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -40,9 +44,65 @@ def test_documentation_contract_workflow_invokes_the_gate_at_full_strength():
     # rules_version の自己整合だけだと前置き (frontmatter・出典・警告) が
     # 無防備なので、完全ファイル digest の allowlist 照合も要求する。
     assert "PR self-review copy integrity" in executable
-    assert "docs/pr-self-review.md" in executable
-    assert "rules_version" in executable
-    assert "docs/pr-self-review-trusted-digests.txt" in executable
+    workflow = yaml.safe_load(body)
+    step = next(
+        step
+        for step in workflow["jobs"]["documentation-contract"]["steps"]
+        if step.get("name") == "PR self-review copy integrity"
+    )
+    assert step["run"] == "python scripts/check_pr_self_review.py"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "clean",
+        "crlf",
+        "body",
+        "preamble",
+        "missing-version",
+        "empty-list",
+        "bad-list",
+        "missing-copy",
+    ],
+)
+def test_pr_self_review_checker_accepts_only_the_reviewed_copy(
+    tmp_path, monkeypatch, change
+):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    copy = docs / "pr-self-review.md"
+    allowlist = docs / "pr-self-review-trusted-digests.txt"
+    text = _read("docs/pr-self-review.md")
+    if change == "body":
+        text += "\nChanged body.\n"
+    elif change == "preamble":
+        text = "Changed preamble.\n" + text
+    elif change == "missing-version":
+        text = text.replace("rules_version", "missing_version")
+    copy.write_bytes(
+        text.replace("\n", "\r\n").encode() if change == "crlf" else text.encode()
+    )
+    allowlist.write_text(
+        _read("docs/pr-self-review-trusted-digests.txt"), encoding="utf-8"
+    )
+    if change == "empty-list":
+        allowlist.write_text("", encoding="utf-8")
+    elif change == "bad-list":
+        allowlist.write_text("invalid\n", encoding="utf-8")
+    elif change == "missing-copy":
+        copy.unlink()
+    monkeypatch.chdir(tmp_path)
+    if change in {"clean", "crlf"}:
+        runpy.run_path(
+            str(REPO / "scripts/check_pr_self_review.py"), run_name="__main__"
+        )
+    else:
+        with pytest.raises(SystemExit) as failure:
+            runpy.run_path(
+                str(REPO / "scripts/check_pr_self_review.py"), run_name="__main__"
+            )
+        assert failure.value.code
 
 
 def test_pr_self_review_allowlist_matches_the_distributed_copy():

@@ -54,17 +54,62 @@
     {
       "changes": [
         "scripts/local_check.py",
+        "scripts/local_check_dependencies.py",
         "tests/test_local_check.py",
         ".test-selection.json",
         ".github/workflows/ci.yml"
       ],
       "tests": [
         "tests/test_local_check.py",
+        "tests/test_self_intents.py",
         "tests/test_consistency_gate.py",
         "tests/test_gate_protection.py",
         "tests/test_identity_fixture_exceptions.py",
         "tests/test_ci_policy_ownership.py",
         "tests/test_benchmark_review_tests.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/preflight-gate.yml",
+        "tests/test_adv_identity.py",
+        "tests/test_preflight_gitleaks_install.py"
+      ],
+      "tests": [
+        "tests/test_adv_eol.py",
+        "tests/test_adv_guard.py",
+        "tests/test_adv_identity.py",
+        "tests/test_adv_prepush_ratchet.py",
+        "tests/test_gif_gitleaks.py",
+        "tests/test_holes_12_3.py",
+        "tests/test_preflight_gitleaks_install.py",
+        "tests/test_preflight_ratchet.py",
+        "tests/test_preflight_reusable_workflow.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/all-refs-scan.yml",
+        "scripts/ci_all_refs_scan.sh",
+        "tests/test_all_refs_scan_workflow.py"
+      ],
+      "tests": [
+        "tests/test_all_refs_scan_workflow.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/documentation-contract.yml",
+        "docs/repository-consistency-gate.md",
+        "scripts/check_pr_self_review.py",
+        "tests/test_gate_protection.py"
+      ],
+      "tests": [
+        "tests/test_gate_protection.py",
+        "tests/test_public_narrative_contract.py"
       ],
       "dependency_mode": "mapped"
     },

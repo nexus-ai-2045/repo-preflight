@@ -38,10 +38,10 @@ def steps():
 
 
 def scan_script():
-    for step in steps():
-        if step.get("name") == "Scan every ref":
-            return step["run"]
-    raise AssertionError("Scan every ref が無い")
+    assert (
+        step_run("Scan every ref").strip() == 'bash "$TOOL/scripts/ci_all_refs_scan.sh"'
+    )
+    return (ROOT / "scripts/ci_all_refs_scan.sh").read_text(encoding="utf-8")
 
 
 def step_run(name):
@@ -56,7 +56,7 @@ def fetch_script():
 
 
 def all_run_text():
-    return "\n".join(step.get("run", "") for step in steps())
+    return "\n".join(step.get("run", "") for step in steps()) + "\n" + scan_script()
 
 
 def shell_lines(script):
@@ -107,6 +107,7 @@ def test_triggers_are_schedule_manual_and_scoped_main_push():
         "scripts/consistency_gate.py",
         "scripts/readme_release_gate.py",
         "scripts/install_pinned_gitleaks.py",
+        "scripts/ci_all_refs_scan.sh",
         "references/public-commit-identities.json",
         "references/gitleaks-pins.json",
         ".repo-preflight/identity-fixture-exceptions.txt",
@@ -374,7 +375,7 @@ def run_scan(tmp_path, origin, *, extra_env=None):
         **(extra_env or {}),
     }
     outs, errs = [], []
-    for name, body in (("fetch", fetch_script()), ("scan", scan_script())):
+    for name, body in (("fetch", fetch_script()), ("scan", step_run("Scan every ref"))):
         script = tmp_path / f"{name}.sh"
         script.write_text(textwrap.dedent(body), encoding="utf-8")
         result = subprocess.run(
