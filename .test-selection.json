@@ -295,6 +295,15 @@
         "tests/test_runtime_support.py"
       ],
       "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "tests/test_characterization_entry_contracts.py"
+      ],
+      "tests": [
+        "tests/test_characterization_entry_contracts.py"
+      ],
+      "dependency_mode": "mapped"
     }
   ]
 }
