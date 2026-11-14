@@ -9,9 +9,9 @@
       "rule": "linux_home_path",
       "match_sha256": "2ce1dda1084edaefc6f33285f9259285b887f0eae16957495c6413f70ce72c85",
       "occurrence_count": 2,
-      "expires_at": "2026-11-05T02:03:42Z",
-      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
-      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+      "expires_at": "2026-11-21T00:00:00Z",
+      "review_reason": "2026-11-14に原本4blob・既存5項目6一致を独立再審査し、本文と全検出の人間レビューで今回の期限付き有効化を承認。合成した拒否入力とCI対照入力に限定し、秘密規則・登録済み個人識別子は除外しない。",
+      "review_reference": "docs/releases/v0.14.0-fixture-review.md"
     },
     {
       "id": "release_fixture_39b3c6cc_1",
@@ -21,9 +21,9 @@
       "rule": "linux_home_path",
       "match_sha256": "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
       "occurrence_count": 1,
-      "expires_at": "2026-11-05T02:03:42Z",
-      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
-      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+      "expires_at": "2026-11-21T00:00:00Z",
+      "review_reason": "2026-11-14に原本4blob・既存5項目6一致を独立再審査し、本文と全検出の人間レビューで今回の期限付き有効化を承認。合成した拒否入力とCI対照入力に限定し、秘密規則・登録済み個人識別子は除外しない。",
+      "review_reference": "docs/releases/v0.14.0-fixture-review.md"
     },
     {
       "id": "release_fixture_0446121a_2",
@@ -33,9 +33,9 @@
       "rule": "linux_home_path",
       "match_sha256": "6d06e07163cde8fac80c1941aed3c558499ef602b963201c2d43c681e76257df",
       "occurrence_count": 1,
-      "expires_at": "2026-11-05T02:03:42Z",
-      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
-      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+      "expires_at": "2026-11-21T00:00:00Z",
+      "review_reason": "2026-11-14に原本4blob・既存5項目6一致を独立再審査し、本文と全検出の人間レビューで今回の期限付き有効化を承認。合成した拒否入力とCI対照入力に限定し、秘密規則・登録済み個人識別子は除外しない。",
+      "review_reference": "docs/releases/v0.14.0-fixture-review.md"
     },
     {
       "id": "release_fixture_0446121a_3",
@@ -45,9 +45,9 @@
       "rule": "linux_home_path",
       "match_sha256": "b1cbc5f347543a03701354923cd95344068142e4aa08c74d259fbfe7c62984fc",
       "occurrence_count": 1,
-      "expires_at": "2026-11-05T02:03:42Z",
-      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
-      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+      "expires_at": "2026-11-21T00:00:00Z",
+      "review_reason": "2026-11-14に原本4blob・既存5項目6一致を独立再審査し、本文と全検出の人間レビューで今回の期限付き有効化を承認。合成した拒否入力とCI対照入力に限定し、秘密規則・登録済み個人識別子は除外しない。",
+      "review_reference": "docs/releases/v0.14.0-fixture-review.md"
     },
     {
       "id": "release_fixture_fe39b142_4",
@@ -57,9 +57,9 @@
       "rule": "linux_home_path",
       "match_sha256": "01c9f309dc1e667a5404ad9d98fb3e96c4d9c109d5b6d63d83adaf41448c38ec",
       "occurrence_count": 1,
-      "expires_at": "2026-11-05T02:03:42Z",
-      "review_reason": "候補・未有効化。旧履歴の合成負例と固定blob/content hashを独立診断。raw実値と秘密語は免除しない。",
-      "review_reference": "docs/adr/0017-release-identity-regex-and-fixtures.md"
+      "expires_at": "2026-11-21T00:00:00Z",
+      "review_reason": "2026-11-14に原本4blob・既存5項目6一致を独立再審査し、本文と全検出の人間レビューで今回の期限付き有効化を承認。合成した拒否入力とCI対照入力に限定し、秘密規則・登録済み個人識別子は除外しない。",
+      "review_reference": "docs/releases/v0.14.0-fixture-review.md"
     }
   ]
 }

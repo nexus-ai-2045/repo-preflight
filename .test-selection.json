@@ -316,6 +316,17 @@
         "tests/test_characterization_entry_contracts.py"
       ],
       "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".repo-preflight/reviewed-synthetic-fixtures.json"
+      ],
+      "tests": [
+        "tests/test_fixture_policy_trust.py",
+        "tests/test_reviewed_path_exceptions.py",
+        "tests/test_reviewed_secret_exceptions.py"
+      ],
+      "dependency_mode": "mapped"
     }
   ]
 }
