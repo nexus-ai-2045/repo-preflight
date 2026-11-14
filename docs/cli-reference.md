@@ -4,7 +4,7 @@
 
 ## 使い方
 
-**利用（検査だけ）**に必要なのは Python 3.9 以降と Git だけです。追加のパッケージはありません。
+**テキストと標準PNGの検査**には、Python 3.9以降とGitが必要です。追加パッケージは不要です。JPEG・GIF・PSD・CMO3には画像用の追加依存が必要です。Pillowを使う画像・PDF画像検査にはPython 3.11以上とPillow `>=13,<14`が必要です。導入手順は[README](../README.md#最短の検査)、形式ごとの条件は[ランタイム対応](runtime-support.md)を参照してください。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
@@ -260,3 +260,36 @@ text比較は合計200万文字またはold/new行数の積1600万を上限に�
 ## 非公開の制作媒体をmetadata中心に確認する方針（提案）
 
 `--private-submission --base-ref origin/main --media-inspection metadata`は、live確認した非公開originへの`push`・`open_pr`・`merge`に限る明示的な方針です。既定の`strict`や公開・releaseには適用しません。SHAは全ファイルで計算し、形式・既知metadata・先頭末尾sampleを確認します。圧縮payloadの全走査、映像・音声の意味や個人情報の判定は行わず、その範囲をJSONへ記録します。依存不足、壊れた形式、Git OIDやSHAの不一致、制限超過は成功にしません。
+
+## テスト選択とパス表記の補足
+
+### 関連テストの選択と解析の境界
+
+テストの対象と必要な環境は各repositoryが所有します。共通ゲートは利用側のpytestを一律に起動しません。差分の選択処理は `scripts/local_check.py` で再利用でき、対象・根拠・未解決と版hashを返します。コマンドと設定は[関連検査の運用](../OPERATIONS.md)を参照してください。各repositoryのpolicyがroot・関連範囲・明示対応を定め、runnerが選択したtestと必要な検査を実行します。CIと通常の選択検査では、対応不明を全件実行や対象なしへ置き換えません。互換入口での全件切り替えの条件は[運用手順](../OPERATIONS.md)を参照してください。
+
+本repository自身も [`.test-selection.json`](../.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。
+
+star importの束縛、class本体（メソッドのdefault式を含む）で束縛値を必要とするbare nameの静的評価、変数名を経由する可変listのcommand値は静的に確定せず、対応不明としてowner mappingを求めます。確実なimport文の依存、メソッド実行内部の通常scope、直接のliteral argvと不変tupleのargvは維持します。globals/localsと無引数varsによる字句namespaceの露出は対応外として停止します。展開引数などで引数個数が不明なvarsも停止し、単一の通常のobj引数を取るvarsだけをobject観測として区別します。
+
+object属性の内容や、外部関数によるmodule namespace書換えを一般に捕捉する保証はありません。複数importの候補由来は保持し、loader/CLI producerの候補を含む不確定なcalleeは停止します。これはPython全体の実行順や外部関数の副作用を推測しないための境界です。
+
+`source_roots` / `test_roots` はrepository相対のディレクトリまたは個別ファイルを指定できます。ディレクトリは再帰列挙し、ファイルは一件だけを親ディレクトリ基準で解析します。重複は一度だけ解析し、`"."` と既存のpath・symlink境界検査を維持します。宣言外の新しいコード変更は、明示ruleがなければ未知として停止します。
+
+ruleの `dependency_mode: "supplement"` は必須の `tests` / `checks` を追加し、依存解析modeは決めません。他の一致ruleが無ければ `auto`、明示 `auto` が一件でもあれば `auto`、残りがすべて `mapped` の場合だけownerの完全な対応表を使います。未知modeと未解決の依存は、CIと通常の選択検査では停止し、全件実行へ切り替えません。
+
+条件付きruleの `toml_only_keys` は、Git比較元と現在のTOML構造を照合して指定field以外が同一の時だけ有効です。未評価・解析不能・他fieldの変更はmapped扱いにせず、依存変更の自動解析を維持します。
+
+`base-guard` の配布と共通CIからの呼出しは廃止しました。利用先では独立workflowの削除、固定参照の更新、必須チェック設定からの除去を同じ変更単位で確認します。以前の署名判断の形式は[履歴資料](human-decision-chain.md)に残しています。
+
+### 個人のパスで止まった時の書き方
+
+テストや例に置く架空のパスを文字列の連結で組み立てると、個人のパスとして止まります。OSの違いを吸収する標準ライブラリ `pathlib` の `PureWindowsPath`（Windows）や `PurePosixPath`（Mac・Linux）で組み立ててください。
+
+```python
+from pathlib import PurePosixPath, PureWindowsPath
+
+windows_sample = str(PureWindowsPath("C:/", "Users", "fixture-person", "notes.txt"))
+posix_sample = str(PurePosixPath("/", "home", "fixture-person", "notes.txt"))
+```
+
+実際のホームを使うコードは、`Path.home()` や `Path(...).expanduser()` で環境変数（`HOME`、Windowsでは `USERPROFILE`）から読み、値をファイルに書き込まないでください。止まった時の確認事項（`--intent`）にも同じ案内を出します。
