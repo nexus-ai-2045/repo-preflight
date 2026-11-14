@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import create_autospec
 
 import pytest
 from path_input_fixture import fixture_path
@@ -403,7 +404,11 @@ def test_characterization_local_identity_guard_check_clean_passes(
     _git(repo, "add", ".")
     _git(repo, "commit", "-q", "-m", "init")
     fake = _fake_identities()
-    monkeypatch.setattr(GUARD, "collect_identities", lambda **_kw: fake)
+    monkeypatch.setattr(
+        GUARD,
+        "collect_identities",
+        create_autospec(_ORIGINAL_COLLECT, return_value=fake),
+    )
     code = GUARD.main(["--repo", str(repo), "check", "--range", "HEAD"])
     assert code == 0
 
@@ -434,7 +439,11 @@ def test_characterization_local_identity_guard_check_personal_blocks(
         email=FAKE_PERSON_EMAIL,
     )
     fake = _fake_identities()
-    monkeypatch.setattr(GUARD, "collect_identities", lambda **_kw: fake)
+    monkeypatch.setattr(
+        GUARD,
+        "collect_identities",
+        create_autospec(_ORIGINAL_COLLECT, return_value=fake),
+    )
     code = GUARD.main(["--repo", str(repo), "check", "--range", "HEAD"])
     captured = capsys.readouterr()
     assert code == 1
