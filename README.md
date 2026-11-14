@@ -1,140 +1,123 @@
 # Repo Preflight
 
-**Gitリポジトリを共有する前に、秘密情報らしき文字列・個人のパス・文書の不足や食い違いを調べるCLIです。** 人・AIエージェント・CIから使えます。
+Gitリポジトリを共有する前に、秘密情報らしき文字列・個人のパス・文書の不足や食い違いを調べるCLIです。人・AIエージェント・CIから使えます。
 
 ## 目的
 
-検査成功は、公開・push・マージの承認ではありません。個人情報や秘密情報が絶対に無いことも保証しません。
+削除済みの内容を含む、取得済みのGit全履歴を検査し、共有前に直すべき点を見つけます。
+検査成功は、公開・push・マージの承認でも、秘密情報や個人情報が無いことの保証でもありません。
 
 ## できること
 
-- APIキーなどの既知の形式と個人パスを、取得済みのGit全履歴（削除済みを含む）から検査します。形式やscopeによる限界があります。
+- APIキーなどの既知の形式と個人パスを、履歴・ファイル・コミット情報から検出します。
 - **必須の文書**（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）と、文書・コマンド・コードの整合性を確認します。
-- コミットの作者・コミッター・共同作者行を、指定した名義設定や公開許可一覧と照合します。
-- `--intent`で、操作前の確認事項をJSONとして返します。
+- 作者・コミッター・共同作者行を、非公開の名義設定やレビュー済みの公開許可一覧と照合します。
+- `--intent`で操作前の確認事項をJSONとして返します。GitHub Settingsは実測と変更案の提示まで行います。
 
-## 0.11.0の変更
-
-非公開リポジトリへの今回の送信に限り、`--media-inspection metadata`で動画・画像のメタデータを検査できます。原本のSHA-256とGit objectへ結果を結び付けますが、映像・画像の内容に個人情報がないことは保証しません。既定のstrict検査と公開・releaseの全体検査は維持します。GIF拡張本文の秘密情報検査とPowerShell引用符の解析も修正しました。[リリースノート](docs/releases/v0.11.0.md)で範囲と制約を確認してください。
+現在版は **0.14.0** です。今回の変更と移行事項は[リリースノート](docs/releases/v0.14.0.md)、過去の変更は[CHANGELOG](CHANGELOG.md)を参照してください。
 
 ## 使い方
 
-検査だけなら **Python 3.9以降とGit**（Mac 標準の 3.9 も可） で動きます。text と PNG だけなら追加パッケージは不要です。JPEG・GIF・PSD・CMO3 を含む repository は、下の `.[images]` が必要です。画像用追加依存が無い経路は検査不能で止まります。
+| やりたいこと | 最初に読むところ |
+|---|---|
+| 手元のリポジトリを検査する | 以下の「最短の検査」 |
+| AIエージェントの操作前に確認する | 以下の「非公開設定とAI連携」 |
+| GitHubのマージ前に検査する | [共通CIの導入手順](docs/publish-and-ci-gate.md#2-共通-ci-ゲート) |
+| commit・push時に自動で止める | [Gitフックの導入・確認・更新・解除](docs/git-hooks.md) |
 
-Pillowを使うGIF・PSD、追加の画像メタデータ読取り、PDF画像検査は **Python 3.11以上かつPillow 13（`>=13,<14`）** に限定します。追加依存の宣言だけでなく、入力をデコードする前に実行環境とPillowの版を確認し、旧版・不明版・欠損は検査不能で拒否します。Python 3.9・3.10のtext／標準PNG検査はPillowを読み込まず維持します。旧Pillow 11互換は提供しません。[下限変更と移行](docs/adr/0019-pillow-media-runtime-floor.md)を参照してください。
+### 最短の検査
+
+テキストと標準PNGの検査は、Python 3.9以降とGitで動き、追加パッケージは不要です。
 
 ```bash
 git clone https://github.com/nexus-ai-2045/repo-preflight.git
 cd repo-preflight
+python scripts/readiness_scan.py --repo /path/to/your-repo
+```
+
+対象は別の場所でも構いません。通常の検査は対象を読み取るだけです。
+整合性検査に比較元が必要なら、未指定時は利用可能な`origin/main`を試します。
+
+JPEG・GIF・PSD・CMO3を含む対象には、画像用の追加依存が必要です。
+Python 3.11以降の仮想環境で導入し、同じPythonから検査してください。
+
+```bash
 python -m venv .venv
 .venv/bin/python -m pip install ".[images]"
 .venv/bin/python scripts/readiness_scan.py --repo /path/to/your-repo
 ```
 
-調べるリポジトリは別の場所でも構いません。通常の検査は対象を読み取るだけです。整合性検査に比較元が必要な場合は、未指定なら利用可能な`origin/main`を試します。
-
 Windowsでは`.venv/bin/python`を`.venv\Scripts\python`に読み替えます。
+GIF・PSDなどのPillow使用経路とPDF画像検査は、Python 3.11以上かつPillow 13（`>=13,<14`）が必要です。
+旧版・不明版・欠損は、入力をデコードする前に検査不能として停止します。
+Python 3.9・3.10のテキストと標準PNG検査は維持します。旧Pillow 11互換は提供しません。
+[実行環境と形式ごとの制約](docs/runtime-support.md)、[下限変更と移行](docs/adr/0019-pillow-media-runtime-floor.md)を確認してください。
 
-**開発・テスト・CI**では `pip install -e ".[test]"` が必要です。手順は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+### 非公開設定とAI連携
 
-| 結果 | 終了コード | 次の対応 |
-|---|---|---|
-| `pass` | 0 | 検査範囲と内容を人が確認する |
-| `blocked` | 1 | 指摘を直して再検査する |
-| `tool_error` | 2 | 検査できていない原因を直す |
+名義検査は必須です。最初の検査前に、対象の外で管理する非公開設定を用意してください。
+値や設定ファイルを公開リポジトリ・PR・チャットへ貼らないでください。
 
-**GitHubのCIだけで使う場合、手元へのcloneは不要です。** [共通CIの導入手順](docs/publish-and-ci-gate.md#2-共通-ci-ゲート)を参照してください。
-
-## 自動で止めるには
-
-Gitの`pre-commit`・`commit-msg`・`pre-push`は、[導入・状態確認・更新・解除の管理CLI](docs/git-hooks.md)で扱えます。対象ごとに導入し、既存フックを保持します。管理CLIはPOSIX向けで、設定済みの`core.hooksPath`は上書きしません。実測用のコマンドとCIの重複削減も同文書に記載しています。
-
-cloneやskill配置だけでは、通常の`git push`やGitHub画面の操作は止まりません。
-
-| 使う場所 | 必要な接続 |
+| 設定 | 用途 |
 |---|---|
-| ローカル・AI | 検査を呼び、失敗したら次の操作を中止する入口を使う |
-| GitHubのマージ | 共通CIを導入し、そのチェックを対象branchで必須にする |
-| 公開範囲の変更 | 人の承認後、専用の`publish_gate.py`を経由する |
+| `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` | 名義・共同作者行を照合するJSON |
+| `PUBLIC_IDENTITY_DENYLIST` | 操作intentで必須の、個人識別子リストの絶対パス |
 
-持ち主の個人名義を環境から集めて照合する `scripts/local_identity_guard.py` と、名義・共同作者行の検査も含みます。名義検査は全体の必須判定になり、非公開設定が無ければ止まります。詳しい変更と保証範囲は[変更履歴](CHANGELOG.md)、PNG・JPEGの検査は[実行環境の説明](docs/runtime-support.md#pngを含むprivate-identity検査)を参照してください。
-
-止まるのは接続した経路と保護対象の操作です。直接操作、別branch、回避権限まで一律に制限しません。[公開コマンドとCI・保護設定](docs/publish-and-ci-gate.md)で接続と実行結果を確認してください。
-
-共通CIのラチェットは指摘の**新規増加**を止めます。既存の指摘を許容する基準値がある場合、指摘0件の意味にはなりません。許可外の公開名義は基準値で免除しません。
-
-結果の語彙、必須文書、保証の境界は [CLI・AI連携の詳細](docs/cli-reference.md) と [保証すること / 保証しないこと](docs/guarantees-and-limits.md) にあります。PNG・JPEGの検査は [実行環境の説明](docs/runtime-support.md#pngを含むprivate-identity検査) を参照してください。
-
-不合格時は、検出種別と安全な修正箇所をフック・JSON・人向けレポートへ返します。ファイル・行・コミット・名義欄の読み方と、位置を特定できない場合の扱いは[ヒットした場所の確認](docs/diagnostics.md)を参照してください。
-
-## AIエージェントから使う
-
-AI用skillの導入手順は[ランタイム対応](docs/runtime-support.md)、操作前の契約は[SKILL.md](SKILL.md)です。
+設定の形式・適用範囲は[CLI・AI連携の詳細](docs/cli-reference.md)にあります。
+持ち主の名義を環境から集め、値を表示せず照合する手順は[ローカル名義ガード](docs/local-identity-guard.md)を参照してください。
 
 ```bash
 python scripts/readiness_scan.py --repo /path/to/your-repo \
   --intent open_pr --base-ref origin/main --human
 ```
 
-操作intentでは非公開の名義設定・個人識別子リストが必要です。未設定・未確認・失敗なら、呼出側が外部操作を中止する必要があります。これらの設定を公開リポジトリへ置かないでください。
+AI用skillの導入は[ランタイム対応](docs/runtime-support.md)、操作前の契約は[SKILL.md](SKILL.md)を参照してください。
+呼出側は未設定・未確認・失敗なら外部操作を中止します。skillの配置だけでは操作を止めません。
+全intent・対話の状態・PRレビューの確認方法は[CLI・AI連携の詳細](docs/cli-reference.md)にまとめています。
 
-対話の状態・全intent・非公開設定・PRレビュー確認は[CLI・AI連携の詳細](docs/cli-reference.md)にまとめています。skillを配置したことと、実際に呼ばれて操作を止めたことは別です。
+### 結果の読み方
 
-GitHub上のCIは各workflowを実行の正本とし、PR・mainへのpush・merge queueの検査を保持します。古いPRとbranch pushの実行整理、およびreusable workflowとの責務分離は[既存のCI接続説明](docs/repository-consistency-gate.md#github-actions-接続例)に記します。ローカルの成功でhosted CIや人間レビューを省略しません。
+| 検査結果 | 終了コード | 次の対応 |
+|---|---|---|
+| `pass` | 0 | 検査範囲と内容を人が確認する |
+| `blocked` | 1 | 指摘を直して再検査する |
+| `tool_error` | 2 | 検査できていない原因を直す |
 
-テストの対象と必要な環境は各repositoryが所有します。共通ゲートは利用側のpytestを一律に起動しません。差分の選択処理は `scripts/local_check.py` で再利用でき、対象・根拠・未解決と版hashを返します。コマンドと設定は[関連検査の運用](OPERATIONS.md)を参照してください。各repositoryのpolicyがroot・関連範囲・明示対応を定め、runnerが選択したtestと必要な検査を実行します。対応不明を全件実行や対象なしへ置き換えません。
-
-本repository自身も [.test-selection.json](.test-selection.json) と同じ選択入口をCI・手元で使います。文書metadataの明示対応と、実際に処理が読み取る契約・設定の依存を区別します。共有ゲートの固定SHAを更新するだけでは、利用側に別に書かれたテストworkflowは変更されません。 star importの束縛、class本体（メソッドのdefault式を含む）で束縛値を必要とするbare nameの静的評価、変数名を経由する可変listのcommand値は静的に確定せず、対応不明としてowner mappingを求めます。確実なimport文の依存、メソッド実行内部の通常scope、直接のliteral argvと不変tupleのargvは維持します。globals/localsと無引数varsによる字句namespaceの露出は対応外として停止します。展開引数などで引数個数が不明なvarsも停止し、単一の通常のobj引数を取るvarsだけをobject観測として区別します。object属性の内容や、外部関数によるmodule namespace書換えを一般に捕捉する保証はありません。複数importの候補由来は保持し、loader/CLI producerの候補を含む不確定なcalleeは停止します。これはPython全体の実行順や外部関数の副作用を推測しないための境界です。
-
-`source_roots` / `test_roots` は repository 相対のディレクトリまたは個別ファイルを指定できます。ディレクトリは再帰列挙し、ファイルは一件だけを親ディレクトリ基準で解析します。重複は一度だけ解析し、`"."` と既存の path・symlink 境界検査を維持します。宣言外の新しいコード変更は、明示 rule がなければ未知として停止します。
-
-rule の `dependency_mode: "supplement"` は必須の `tests` / `checks` を追加し、依存解析 mode は決めません。他の一致 rule が無ければ `auto`、明示 `auto` が一件でもあれば `auto`、残りがすべて `mapped` の場合だけ owner の完全な対応表を使います。未知 mode と未解決の依存は停止し、全件実行へ切り替えません。 条件付き rule の `toml_only_keys` は、Git 比較元と現在の TOML 構造を照合して指定 field 以外が同一の時だけ有効です。未評価・解析不能・他 field の変更は mapped 扱いにせず、依存変更の自動解析を維持します。
-
-`base-guard` の配布と共通CIからの呼出しは廃止しました。利用先では独立ワークフローの削除、固定参照の更新、必須チェック設定からの除去を同じ変更単位で確認します。以前の署名判断の形式は[履歴資料](docs/human-decision-chain.md)に残しています。
-
-## 個人のパスで止まった時の書き方
-
-テストや例に置く架空のパスは、`"\\".join(("C:", "Users", ...))` のような文字列の連結で組み立てると、個人のパスとして止まります。OSの違いを吸収する標準ライブラリ `pathlib` の `PureWindowsPath`（Windows）や `PurePosixPath`（Mac・Linux）で組み立ててください。
-
-```python
-from pathlib import PurePosixPath, PureWindowsPath
-
-windows_sample = str(PureWindowsPath("C:/", "Users", "fixture-person", "notes.txt"))
-posix_sample = str(PurePosixPath("/", "home", "fixture-person", "notes.txt"))
-```
-
-実際のホームを使うコードは、`Path.home()` や `Path(...).expanduser()` で環境変数（`HOME`、Windowsでは `USERPROFILE`）から読み、値をファイルに書き込まないでください。止まった時の確認事項（`--intent`）にも同じ案内を出します。
+これは検査モードの結果です。`--intent`の対話と抑止記録には[別の状態語彙](docs/cli-reference.md#結果の読み方)があります。
+検出種別と安全な修正箇所はJSON・フック・人向けレポートに返します。
+ファイル・行・コミット・名義欄や、位置を特定できない場合の読み方は[診断ガイド](docs/diagnostics.md)を参照してください。
 
 ## 制約
 
-- 既知の形式による検出であり、個人情報の最終判断、権利確認、依存ライブラリの脆弱性検査は行いません。
-- 取得していない履歴、独自形式・圧縮ファイル内などは見逃し得ます。`.cmo3`の内部パス検査も現在の作業ツリーに限られます。
-- Settingsの実測と差分提示はできますが、設定変更は行いません。通常の検査はpush・PR作成・マージを実行しません。
-- ローカル検査の成功は、GitHub CI成功・branch保護の有効化・全操作経路での拒否の証明にはなりません。
+- 既知の形式による検出です。個人情報の最終判断、権利確認、依存ライブラリの脆弱性検査は行いません。
+- 未取得の履歴、独自形式・圧縮ファイル内などは見逃し得ます。CMO3内部パス検査は現在の作業ツリーに限ります。
+- 非公開送信の`--media-inspection metadata`は、原本SHA-256とGit objectを照合してメタデータを調べます。映像・画像の内容に個人情報が無いことは保証しません。公開・releaseには適用しません。
+- 通常の検査はpush・PR作成・マージやSettings変更を実行しません。検査成功はGitHub CI成功や保護設定の有効化の証明ではありません。
 
-範囲と例外は[保証すること・しないこと](docs/guarantees-and-limits.md)を参照し、人のレビューや専門の検査と併用してください。
+自動で止まるのは接続した操作経路です。cloneだけでは通常の`git push`やGitHub画面の操作を止めません。
+ローカルでは検査失敗時に中止する入口、GitHubでは共通CIと対象branchの必須チェック設定が必要です。
+公開範囲の変更は人の承認後に`publish_gate.py`を経由します。直接操作・別branch・回避権限まで一律に制限しません。
 
-## 詳しい手順
+共通CIのラチェットは指摘の新規増加を止めます。既存の基準値があれば指摘0件を意味しません。許可外の公開名義は基準値で免除しません。
+接続と実行結果は[公開コマンドとCI・保護設定](docs/publish-and-ci-gate.md)、保証の境界は[保証すること・しないこと](docs/guarantees-and-limits.md)を参照してください。
 
-| 調べたいこと | 参照先 |
-|---|---|
-| 全引数・結果・名義設定・PRレビュー | [CLI・AI連携の詳細](docs/cli-reference.md) |
-| CI・公開ゲート・必須チェック | [導入ガイド](docs/publish-and-ci-gate.md) |
-| 文書とコードのずれ | [整合性ゲート](docs/repository-consistency-gate.md)・[検査実装](scripts/consistency_gate.py) |
-| GitHub Settingsの実測 | [設定ガイド](references/github-settings.md)・[検査実装](scripts/github_settings_gate.py) |
-| README設計の検査 | [検査実装](scripts/readme_release_gate.py) |
-| AI憲法の入口 | [入口契約](docs/ai-constitution-entry-contract.md) |
-| 変更点・更新 | [CHANGELOG](CHANGELOG.md)・[v0.9.0](docs/releases/v0.9.0.md) |
-| 開発・設計判断 | [CONTRIBUTING](CONTRIBUTING.md)・[ADR一覧](docs/adr/README.md) |
+## 開発・検証と資料
 
-CIの対象はLinuxがPython 3.11・3.13、WindowsがPython 3.13、macOSがPython 3.9です（3.9 は検査の試験だけで、開発用の整形と ai-ratchet-gate は 3.11 以上）。ランタイムの検査は次で実行できます。
+CIの互換性検査は、LinuxのPython 3.11・3.13、WindowsのPython 3.13、macOSのPython 3.9の4環境です。
+Python 3.9は検査の試験のみで、開発用の整形と`ai-ratchet-gate`は3.11以上です。
+開発・テスト・CIには`pip install -e ".[test]"`が必要です。[開発手順](CONTRIBUTING.md)を参照してください。
 
 ```bash
 python scripts/runtime_smoke.py --repo .
 ```
 
+| 調べたいこと | 参照先 |
+|---|---|
+| 全引数・非公開設定・メディア検査 | [CLI・AI連携の詳細](docs/cli-reference.md) |
+| 関連テストの選択・手元とCIの責務・リリース | [運用手順](OPERATIONS.md) |
+| 文書とコードのずれ・workflowの責務 | [整合性ゲート](docs/repository-consistency-gate.md) |
+| 登録済み個人情報のCI導入・必須チェック化 | [導入手順](docs/private-identity-ci.md) |
+| Settingsの実測・README設計の検査 | [設定ガイド](references/github-settings.md)・[README検査実装](scripts/readme_release_gate.py) |
+| AI憲法の入口・設計判断 | [入口契約](docs/ai-constitution-entry-contract.md)・[ADR一覧](docs/adr/README.md) |
+
 脆弱性報告は[SECURITY.md](SECURITY.md)、ライセンスは[MIT](LICENSE)です。
-
-登録済み個人情報の CI 接続・必須チェック化・検査器の更新は、[導入手順](docs/private-identity-ci.md)を参照してください。導入前の候補と運用済みを区別します。
-
-PNGの対応範囲と検査不能時の扱いは、[実行環境の説明](docs/runtime-support.md#pngを含むprivate-identity検査)を参照してください。
