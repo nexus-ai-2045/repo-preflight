@@ -32,6 +32,18 @@
     },
     {
       "changes": [
+        "docs/cli-reference.md"
+      ],
+      "tests": [
+        "tests/test_public_narrative_contract.py",
+        "tests/test_consistency_gate.py",
+        "tests/test_local_check.py",
+        "tests/test_runtime_support.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
         "CHANGELOG.md",
         "docs/*.md",
         "references/*.md",
