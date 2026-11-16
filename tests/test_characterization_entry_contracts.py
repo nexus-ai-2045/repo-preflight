@@ -7,7 +7,7 @@
 - CLI: scripts/identity_gate.py (--public / 非公開)
 - CLI: scripts/local_identity_guard.py (config / check / exec)
 - CLI: scripts/git_data_privacy_gate.py
-- CLI: scripts/readiness_scan.py（終了コードは readiness_scan_report）
+- CLI: scripts/readiness_scan.py（終了コードは公開窓口から確認）
 - フック: run_git_hook.py -> identity_gate.py --public (--staged / --message-file / --pre-push)
 - CI: local_check.py、preflight-gate.yml -> preflight_ratchet.py、identity_gate --public --pr-event
 """
@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 IDENTITY_GATE = ROOT / "scripts" / "identity_gate.py"
 LOCAL_GUARD = ROOT / "scripts" / "local_identity_guard.py"
 PRIVACY_GATE = ROOT / "scripts" / "git_data_privacy_gate.py"
-REPORT = ROOT / "scripts" / "readiness_scan_report.py"
+SCANNER = ROOT / "scripts" / "readiness_scan.py"
 
 _J = "".join
 PUBLIC_IDENT = "nexus_ai <273569186+nexus-ai-2045@users.noreply.github.com>"
@@ -51,7 +51,7 @@ def _load(name: str, path: Path):
 
 
 GUARD = _load("characterization_local_identity_guard", LOCAL_GUARD)
-REPORT_MOD = _load("characterization_readiness_scan_report", REPORT)
+SCANNER_MOD = _load("characterization_readiness_scan", SCANNER)
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +134,6 @@ def _combined(result: subprocess.CompletedProcess[str]) -> str:
         "scripts/local_identity_guard.py",
         "scripts/git_data_privacy_gate.py",
         "scripts/readiness_scan.py",
-        "scripts/readiness_scan_report.py",
         "scripts/run_git_hook.py",
         "scripts/manage_git_hooks.py",
         "scripts/local_check.py",
@@ -460,7 +459,7 @@ def test_characterization_local_identity_guard_check_personal_blocks(
     [("pass", 0), ("blocked", 1), ("tool_error", 2)],
 )
 def test_characterization_readiness_report_exit_codes(status, code):
-    assert REPORT_MOD.report_exit_code({"status": status}) == code
+    assert SCANNER_MOD.report_exit_code({"status": status}) == code
 
 
 @pytest.mark.parametrize(
@@ -473,7 +472,7 @@ def test_characterization_readiness_report_exit_codes(status, code):
     ],
 )
 def test_characterization_dialogue_exit_codes(status, code):
-    assert REPORT_MOD.dialogue_exit_code({"status": status}) == code
+    assert SCANNER_MOD.dialogue_exit_code({"status": status}) == code
 
 
 def test_characterization_git_data_privacy_gate_cli_exit_mapping():
@@ -488,3 +487,9 @@ def test_characterization_git_data_privacy_gate_cli_exit_mapping():
     payload = json.loads(result.stdout)
     assert payload["status"] == "tool_error"
     assert "cli_arguments_invalid" in payload["reason_codes"]
+
+
+def test_characterization_scanner_bundle_is_complete():
+    digest = SCANNER_MOD.scanner_bundle_sha256()
+    assert len(digest) == 64
+    assert int(digest, 16) >= 0
