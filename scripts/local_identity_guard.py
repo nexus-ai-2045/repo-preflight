@@ -353,10 +353,6 @@ def collect_identities(
             _command_output(["scutil", "--get", "ComputerName"]),
             _command_output(["scutil", "--get", "LocalHostName"]),
         ]
-        # 分割語だけでは、区切りを含む完全な端末名の検出を保証できない。
-        sources["host_name_full"] = [h for h in hosts[:1] if h] + [
-            h for h in hosts[1:] if h and not _is_host_model_word(h)
-        ]
         # 端末名は集める。許可名義の一覧の語 (dependabot[bot] の bot など) だけは照合から外す。
         sources["host_name"] = [
             t
@@ -364,6 +360,16 @@ def collect_identities(
             if h
             for t in _hostname_tokens(h)
             if _normalize(t) not in permitted_tokens
+        ]
+        # 既存の分割語の由来を保ち、不足する完全名だけを補う。
+        sources["host_name_full"] = [
+            h for h in hosts[:1] if h and _normalize(h) not in permitted_tokens
+        ] + [
+            h
+            for h in hosts[1:]
+            if h
+            and not _is_host_model_word(h)
+            and _normalize(h) not in permitted_tokens
         ]
         private_file = OPTIONAL_PRIVATE_FILE.expanduser()
         if private_file.is_file():
