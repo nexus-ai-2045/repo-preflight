@@ -200,6 +200,9 @@ def hit_local_absolute_path(text: str) -> bool:
 
 # 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。
 _QUOTED_LITERAL = r'"(?:[^"\\\r\n]|\\[\s\S])*"|\'(?:[^\'\\\r\n]|\\[\s\S])*\''
+_QUOTE_SCAN_CHUNK = 65536
+_QUOTE_EVENT = re.compile(r"""['"\\\r\n]""")
+_QUOTE = re.compile(r"""['"]""")
 _STATIC_LITERAL = r"(?<![\w])(?:[rRuUbBfF]{1,2})?(?:" + _QUOTED_LITERAL + r")"
 _RECOVERY_NON_LITERAL_SOURCE = (
     r"(?P<comment>/\*[\s\S]*?\*/|//[^\r\n]*|\#[^\r\n]*)"
@@ -220,19 +223,27 @@ def _closed_quote_starts(text: str) -> set[int]:
     # backslashは改行を含め次の1文字を消費する。quote/未escape改行で止まる。
     following = [-1, -1]
     after = [-1, -1]
-    for index in range(len(text) - 1, -1, -1):
-        char = text[index]
-        for kind, quote in enumerate(('"', "'")):
-            next_stop = following[kind]
-            if char == quote and next_stop >= 0 and text[next_stop] == quote:
-                starts.add(index)
-            if char == "\\":
-                stop = after[kind]
-            elif char == quote or char in "\r\n":
-                stop = index
-            else:
-                stop = next_stop
-            after[kind], following[kind] = next_stop, stop
+    previous = len(text)
+    for end in range(len(text), 0, -_QUOTE_SCAN_CHUNK):
+        begin = max(0, end - _QUOTE_SCAN_CHUNK)
+        indices = [match.start() for match in _QUOTE_EVENT.finditer(text, begin, end)]
+        for index in reversed(indices):
+            if previous - index > 1:
+                after[:] = following
+            char = text[index]
+            for kind, quote in enumerate(('"', "'")):
+                next_stop = following[kind]
+                if char == quote and next_stop >= 0 and text[next_stop] == quote:
+                    starts.add(index)
+                if char == "\\":
+                    stop = after[kind]
+                elif char == quote or char in "\r\n":
+                    stop = index
+                else:
+                    stop = next_stop
+                after[kind], following[kind] = next_stop, stop
+            previous = index
+        del indices
     return starts
 
 
@@ -261,7 +272,10 @@ def _quoted_literals(text: str):
     position = 0
     while position < len(text):
         if position not in closed:
-            position += 1
+            quote = _QUOTE.search(text, position + 1)
+            if quote is None:
+                break
+            position = quote.start()
             continue
         match = literal.match(text, position)
         yield match

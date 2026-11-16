@@ -332,3 +332,9 @@ FontDescriptorから参照されるCIDSetは最大65,536 CIDのbit表として�
 Linux/Python 3.11のrepository policy検査は専用の `ai-ratchet-gate` ジョブで一度実行する。Linux/Python 3.13とWindows/Python 3.13では互換性を検査し、Mac/Python 3.9を含む既存テストジョブも維持する。文字列検査は `main(argv)` を同じprocessで呼び、代表的なCLI境界と別実装の指定は外部processで確認する。
 
 通常CIでは関連するテストだけを選ぶ。同じ条件で各5回の比較を追加するのは、PRの新しい実行に `ci-benchmark` ラベルが付いている場合のLinux/Python 3.11だけである。計測方法と対象範囲は[テスト実行負荷の説明](test-efficiency.md)を参照する。
+
+## CI比較の実行環境記録
+
+通常の4つの互換性ジョブと、文書・公開前・ratchetの担当範囲は維持します。環境情報はworkflow内の隔離した標準ライブラリ処理で収集し、検査対象のPythonを固定済みゲートより先に起動しません。Python版、runner image、CPU数、依存全体のhashを残し、hostname・user・homeや生の依存パスは記録しません。
+
+pytestの実行結果はrunnerの一時領域のJUnitから件数・結果区分・テスト識別子集合のhashを記録します。生XMLと識別子はアップロードしません。既知の対象なしは成功skipのままとし、対応不明時の停止を変えません。計測では非空の対象で証跡が欠けた実行を採用しません。

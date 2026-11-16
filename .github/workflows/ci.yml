@@ -53,15 +53,35 @@ jobs:
       # ファイル名の直書きにすると、新しく足した script / test が永久に対象外になる。
       # 実際 tests/test_session_timezone.py (#47) が未整形のまま main へ入った。
       - run: python -m black --check scripts/ tests/
+      - name: Record CI comparison controls
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import hashlib, json, os, platform, re
+          from importlib import metadata
+          rows = sorted((d.metadata.get("Name", ""), d.version) for d in metadata.distributions())
+          image = os.environ.get("ImageVersion", "")
+          facts = {
+              "schema": "ci-environment/v1", "python": platform.python_version(),
+              "os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+              "image_version": image if re.fullmatch(r"[0-9.]+", image) else None,
+              "dependency_count": len(rows),
+              "dependency_sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest(),
+          }
+          print(json.dumps(facts, sort_keys=True))
+          PY
       # PR/merge queue: compare their base; main push: compare the preceding revision.
       # All OS/Python compatibility jobs keep their guarantees for the selected paths.
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
           REPO_PREFLIGHT_DEEP_SELF_TEST: ${{ matrix.python-version == '3.11' && '1' || '0' }}
-          PYTEST_ADDOPTS: --durations=20
+          PYTEST_ADDOPTS: --durations=20 -v --junitxml="${{ runner.temp }}/ci-results.xml"
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
+      - name: Record executed test collection
+        if: always()
+        run: python tests/ci_test_witness.py --junit "${{ runner.temp }}/ci-results.xml"
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
       - name: Matched review benchmark (explicit label)
@@ -93,14 +113,34 @@ jobs:
         run: python scripts/install_pinned_gitleaks.py --dest "${{ runner.temp }}/gitleaks" --github-path
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[test]"
+      - name: Record CI comparison controls
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import hashlib, json, os, platform, re
+          from importlib import metadata
+          rows = sorted((d.metadata.get("Name", ""), d.version) for d in metadata.distributions())
+          image = os.environ.get("ImageVersion", "")
+          facts = {
+              "schema": "ci-environment/v1", "python": platform.python_version(),
+              "os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+              "image_version": image if re.fullmatch(r"[0-9.]+", image) else None,
+              "dependency_count": len(rows),
+              "dependency_sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest(),
+          }
+          print(json.dumps(facts, sort_keys=True))
+          PY
       # PR/merge queue: compare their base; main push: compare the preceding revision.
       # All OS/Python compatibility jobs keep their guarantees for the selected paths.
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
-          PYTEST_ADDOPTS: --durations=20
+          PYTEST_ADDOPTS: --durations=20 -v --junitxml="${{ runner.temp }}/ci-results.xml"
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
+      - name: Record executed test collection
+        if: always()
+        run: python tests/ci_test_witness.py --junit "${{ runner.temp }}/ci-results.xml"
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
 
@@ -123,13 +163,33 @@ jobs:
       - run: python -m pip install -e ".[test]"
       - run: python -m pip install --require-hashes -r requirements-tools.txt
       - run: python -m ai_ratchet_gate --repo .
+      - name: Record CI comparison controls
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import hashlib, json, os, platform, re
+          from importlib import metadata
+          rows = sorted((d.metadata.get("Name", ""), d.version) for d in metadata.distributions())
+          image = os.environ.get("ImageVersion", "")
+          facts = {
+              "schema": "ci-environment/v1", "python": platform.python_version(),
+              "os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+              "image_version": image if re.fullmatch(r"[0-9.]+", image) else None,
+              "dependency_count": len(rows),
+              "dependency_sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest(),
+          }
+          print(json.dumps(facts, sort_keys=True))
+          PY
       # PR/merge queue: compare their base; main push: compare the preceding revision.
       # All OS/Python compatibility jobs keep their guarantees for the selected paths.
       - name: pytest (changed paths and dependency neighbors)
         shell: bash
         env:
-          PYTEST_ADDOPTS: --durations=20
+          PYTEST_ADDOPTS: --durations=20 -v --junitxml="${{ runner.temp }}/ci-results.xml"
           SELECTION_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/local_check.py --ci --base-ref "$SELECTION_BASE" --json
+      - name: Record executed test collection
+        if: always()
+        run: python tests/ci_test_witness.py --junit "${{ runner.temp }}/ci-results.xml"
       - name: runtime smoke (CLI + skill adapters)
         run: python scripts/runtime_smoke.py --repo .
