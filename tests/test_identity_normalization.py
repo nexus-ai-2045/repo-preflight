@@ -1036,6 +1036,17 @@ def test_quote_only_iteration_preserves_literals_inside_comments():
         assert actual == expected
 
 
+@pytest.mark.parametrize(
+    ("escape", "newline", "status"),
+    [("\\", "\n", "fail"), ("", "\n", "pass"), ("", "\r", "pass")],
+)
+def test_spaced_identity_across_quote_scan_boundary(escape, newline, status):
+    prefix = "'unfinished\r" + '""' * 128 + ' 漢 "f i x ' + escape
+    tail = newline + 't u r e"; '
+    text = prefix + tail + "界" * (ENGINE._QUOTE_SCAN_CHUNK - len(tail))
+    assert ENGINE.scan_private_text(text, ["fixture"])["status"] == status
+
+
 @pytest.mark.parametrize("group", ["(group)", "[slug]"])
 @pytest.mark.parametrize("filename", ["page.tsx", "daily-quests.tsx"])
 def test_repository_name_context_distinguishes_relative_route_groups(group, filename):

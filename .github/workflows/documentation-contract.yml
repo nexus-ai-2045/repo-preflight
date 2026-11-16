@@ -28,6 +28,23 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install --upgrade "pip>=26.1.2"
       - run: python -m pip install -e ".[test]"
+      - name: Record CI comparison controls
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import hashlib, json, os, platform, re
+          from importlib import metadata
+          rows = sorted((d.metadata.get("Name", ""), d.version) for d in metadata.distributions())
+          image = os.environ.get("ImageVersion", "")
+          facts = {
+              "schema": "ci-environment/v1", "python": platform.python_version(),
+              "os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+              "image_version": image if re.fullmatch(r"[0-9.]+", image) else None,
+              "dependency_count": len(rows),
+              "dependency_sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest(),
+          }
+          print(json.dumps(facts, sort_keys=True))
+          PY
       - name: README readability gate
         run: python scripts/readme_release_gate.py --repo . --json
       # docs/pr-self-review.md は外部で生成された配布物。2 段で守る。
@@ -43,4 +60,9 @@ jobs:
           CONSISTENCY_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
         run: python scripts/consistency_gate.py --repo . --base-ref "$CONSISTENCY_BASE" --require-config --require-mode enforce --json
       - name: Public narrative contract (CLI / REQUIRED / status / CI matrix)
+        env:
+          PYTEST_ADDOPTS: --junitxml="${{ runner.temp }}/docs-results.xml"
         run: python -m pytest -q tests/test_public_narrative_contract.py
+      - name: Record executed test collection
+        if: always()
+        run: python tests/ci_test_witness.py --junit "${{ runner.temp }}/docs-results.xml"

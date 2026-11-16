@@ -200,6 +200,9 @@ def hit_local_absolute_path(text: str) -> bool:
 
 # 既存literal候補抽出と共通の字句。改行はescapeされた場合だけliteral内へ含める。
 _QUOTED_LITERAL = r'"(?:[^"\\\r\n]|\\[\s\S])*"|\'(?:[^\'\\\r\n]|\\[\s\S])*\''
+_QUOTE_SCAN_CHUNK = 65536
+_QUOTE_EVENT = re.compile(r"""['"\\\r\n]""")
+_QUOTE = re.compile(r"""['"]""")
 _STATIC_LITERAL = r"(?<![\w])(?:[rRuUbBfF]{1,2})?(?:" + _QUOTED_LITERAL + r")"
 _RECOVERY_NON_LITERAL_SOURCE = (
     r"(?P<comment>/\*[\s\S]*?\*/|//[^\r\n]*|\#[^\r\n]*)"

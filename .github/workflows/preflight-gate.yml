@@ -161,3 +161,20 @@ jobs:
           # git の差分は GIF を「Binary files differ」としか出さず、既定設定も .gif を外すので、足した GIF の
           # 拡張の本文（コメントなど）を取り出して同じ固定版・同じ設定の gitleaks で見る。
           PATH="$dir:$PATH" python tool/scripts/identity_gate.py --repo target --range "$opts" --gitleaks-gif
+      - name: Record CI comparison controls
+        shell: bash
+        run: |
+          python -I - <<'PY'
+          import hashlib, json, os, platform, re
+          from importlib import metadata
+          rows = sorted((d.metadata.get("Name", ""), d.version) for d in metadata.distributions())
+          image = os.environ.get("ImageVersion", "")
+          facts = {
+              "schema": "ci-environment/v1", "python": platform.python_version(),
+              "os": platform.system(), "architecture": platform.machine(), "cpu_count": os.cpu_count(),
+              "image_version": image if re.fullmatch(r"[0-9.]+", image) else None,
+              "dependency_count": len(rows),
+              "dependency_sha256": hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest(),
+          }
+          print(json.dumps(facts, sort_keys=True))
+          PY

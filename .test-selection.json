@@ -327,6 +327,16 @@
         "tests/test_reviewed_secret_exceptions.py"
       ],
       "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "tests/ci_test_witness.py",
+        "tests/test_ci_test_witness.py"
+      ],
+      "tests": [
+        "tests/test_ci_test_witness.py"
+      ],
+      "dependency_mode": "mapped"
     }
   ]
 }
