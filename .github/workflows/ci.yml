@@ -21,7 +21,7 @@ jobs:
   # ジョブ表示名は ruleset 必須チェック `test (3.11)` / `test (3.13)` と一致させる
   test:
     name: test (${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -98,7 +98,7 @@ jobs:
   # 保全した ai-ratchet-gate wheel と black は 3.11 以上が要るので、上のジョブで回す。
   test-py39:
     name: test-py39 (macos-latest)
-    runs-on: macos-latest
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -146,7 +146,7 @@ jobs:
 
   test-windows:
     name: test-windows (3.13)
-    runs-on: windows-latest
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
