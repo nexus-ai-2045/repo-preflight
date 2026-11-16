@@ -379,7 +379,13 @@ class ReviewedSecretExceptions:
             raise RuntimeError("reviewed_secret_exceptions_invalid") from exc
 
     def _unreviewed(
-        self, path: str, data: bytes, matches: Counter, applied: Counter
+        self,
+        path: str,
+        data: bytes,
+        matches: Counter,
+        applied: Counter,
+        *,
+        normalized_matches: Callable[[], Counter] | None = None,
     ) -> bool:
         # Windows の autocrlf で作業ツリーだけ CRLF になっても、LF で登録した digest と照合する。
         content_digests = {hashlib.sha256(data).hexdigest()}
@@ -387,14 +393,27 @@ class ReviewedSecretExceptions:
             content_digests.add(
                 hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
             )
+        normalized_counts = None
         for entry in self.entries:
             key = (entry["rule"], entry["match_sha256"])
             if (
                 entry["path"] == path
                 and entry["content_sha256"] in content_digests
-                and matches.get(key) == entry["occurrence_count"]
             ):
-                applied[entry["id"]] += matches.pop(key)
+                count = matches.get(key, 0)
+                exact = count == entry["occurrence_count"]
+                if (
+                    not exact
+                    and normalized_matches is not None
+                    and 0 < count < entry["occurrence_count"]
+                ):
+                    if normalized_counts is None:
+                        normalized_counts = normalized_matches()
+                    # 同じ本文の正規化で再構成された分だけ増えた場合に限る。
+                    # 「件数以下」では許可せず、正規化後も完全一致を要求する。
+                    exact = normalized_counts.get(key) == entry["occurrence_count"]
+                if exact:
+                    applied[entry["id"]] += matches.pop(key)
         return bool(matches)
 
     def has_unreviewed(self, path: str, data: bytes) -> bool:
@@ -408,6 +427,7 @@ class ReviewedSecretExceptions:
             data,
             personal_path_matches(data if scanned_data is None else scanned_data),
             self.path_applied,
+            normalized_matches=lambda: normalized_personal_path_matches(data),
         )
 
     def all_paths_reviewed(
@@ -428,7 +448,17 @@ class ReviewedSecretExceptions:
         if not matches:
             return False
         applied = self.path_applied if record and not normalized else Counter()
-        unreviewed = self._unreviewed(path, data, matches, applied)
+        unreviewed = self._unreviewed(
+            path,
+            data,
+            matches,
+            applied,
+            normalized_matches=(
+                None
+                if normalized
+                else lambda: normalized_personal_path_matches(data, normalizer)
+            ),
+        )
         if normalized and not unreviewed:
             self.normalized_path_applied |= applied
         return not unreviewed
