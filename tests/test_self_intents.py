@@ -246,7 +246,7 @@ def test_deep_self_scan_is_enabled_only_for_representative_linux_job():
     assert len(enabled) == 1
     job_id, step, flag = enabled[0]
     assert job_id == "test"
-    assert workflow["jobs"][job_id]["runs-on"] == "ubuntu-latest"
+    assert workflow["jobs"][job_id]["runs-on"] == "ubuntu-26.04"
     assert {
         entry["python-version"]
         for entry in workflow["jobs"][job_id]["strategy"]["matrix"]["include"]
