@@ -182,7 +182,21 @@ def _hostname_tokens(name: str) -> list[str]:
         if token.lower().endswith("s") and len(token) > MIN_TOKEN_LENGTH + 1:
             tokens.append(token[:-1])
         tokens.append(token)
-    return [t for t in tokens if t.casefold() not in HOSTNAME_NOISE]
+    return [
+        t
+        for t in tokens
+        if t.casefold() not in HOSTNAME_NOISE and not _is_host_model_word(t)
+    ]
+
+
+def _is_host_model_word(value: str) -> bool:
+    """端末名から得た機種語だけを分類する。名義源の値の許可には使わない。"""
+    return (
+        re.fullmatch(
+            r"(?:macbook|mac)[\s_-]*(?:air|pro|mini|studio)", _normalize(value)
+        )
+        is not None
+    )
 
 
 def load_permitted_identities(
@@ -333,8 +347,9 @@ def collect_identities(
             if _normalize(e) not in permitted_emails
             for p in _email_parts(e)
         ]
+        network_hostname = socket.gethostname()
         hosts = [
-            socket.gethostname(),
+            network_hostname,
             _command_output(["scutil", "--get", "ComputerName"]),
             _command_output(["scutil", "--get", "LocalHostName"]),
         ]
@@ -345,6 +360,16 @@ def collect_identities(
             if h
             for t in _hostname_tokens(h)
             if _normalize(t) not in permitted_tokens
+        ]
+        # 既存の分割語の由来を保ち、不足する完全名だけを補う。
+        sources["host_name_full"] = [
+            h for h in hosts[:1] if h and _normalize(h) not in permitted_tokens
+        ] + [
+            h
+            for h in hosts[1:]
+            if h
+            and not _is_host_model_word(h)
+            and _normalize(h) not in permitted_tokens
         ]
         private_file = OPTIONAL_PRIVATE_FILE.expanduser()
         if private_file.is_file():
@@ -365,12 +390,17 @@ def collect_identities(
         for value in values:
             value = (value or "").strip()
             folded = _normalize(value)
+            if source == "host_name" and _is_host_model_word(value):
+                continue
             if not value or folded in seen:
                 continue
+            full_hostname = source == "host_name_full"
             ascii_only = value.isascii()
-            if ascii_only and len(value) < MIN_TOKEN_LENGTH:
+            if not full_hostname and ascii_only and len(value) < MIN_TOKEN_LENGTH:
                 continue
-            if folded in GENERIC_VALUES or NOREPLY_PATTERN.search(folded):
+            if not full_hostname and (
+                folded in GENERIC_VALUES or NOREPLY_PATTERN.search(folded)
+            ):
                 continue
             if _is_allowed_public(value, allowed_email, public):
                 continue
