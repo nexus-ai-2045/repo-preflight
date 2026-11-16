@@ -338,3 +338,5 @@ Linux/Python 3.11のrepository policy検査は専用の `ai-ratchet-gate` ジョ
 通常の4つの互換性ジョブと、文書・公開前・ratchetの担当範囲は維持します。環境情報はworkflow内の隔離した標準ライブラリ処理で収集し、検査対象のPythonを固定済みゲートより先に起動しません。Python版、runner image、CPU数、依存全体のhashを残し、hostname・user・homeや生の依存パスは記録しません。
 
 pytestの実行結果はrunnerの一時領域のJUnitから件数・結果区分・テスト識別子集合のhashを記録します。生XMLと識別子はアップロードしません。既知の対象なしは成功skipのままとし、対応不明時の停止を変えません。計測では非空の対象で証跡が欠けた実行を採用しません。
+
+比較中のOS移行を避けるため、CIの実行ラベルをUbuntu 26.04、macOS 26（ARM64）、Windows Server 2025へ固定します。4つのOS/Python担当は維持し、表示名は既存checkとの互換性のため保持します。CPU数と実際のworker数は引き続き実測し、一致しない組は速度比較に採用しません。

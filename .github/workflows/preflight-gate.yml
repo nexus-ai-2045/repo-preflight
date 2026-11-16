@@ -26,7 +26,7 @@ permissions:
 jobs:
   preflight:
     name: preflight
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     env:
       PYTHONUTF8: "1"
     steps:

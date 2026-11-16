@@ -51,9 +51,9 @@ def test_repository_policy_has_one_owner_per_supported_runtime():
                     owners.append((job["runs-on"], entry["python-version"]))
     assert Counter(owners) == Counter(
         [
-            ("ubuntu-latest", "3.11"),
-            ("ubuntu-latest", "3.13"),
-            ("windows-latest", "3.13"),
+            ("ubuntu-26.04", "3.11"),
+            ("ubuntu-26.04", "3.13"),
+            ("windows-2025", "3.13"),
         ]
     )
 
