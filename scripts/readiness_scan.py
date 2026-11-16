@@ -396,10 +396,7 @@ class ReviewedSecretExceptions:
         normalized_counts = None
         for entry in self.entries:
             key = (entry["rule"], entry["match_sha256"])
-            if (
-                entry["path"] == path
-                and entry["content_sha256"] in content_digests
-            ):
+            if entry["path"] == path and entry["content_sha256"] in content_digests:
                 count = matches.get(key, 0)
                 exact = count == entry["occurrence_count"]
                 if (

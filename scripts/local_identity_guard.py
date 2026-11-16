@@ -182,7 +182,21 @@ def _hostname_tokens(name: str) -> list[str]:
         if token.lower().endswith("s") and len(token) > MIN_TOKEN_LENGTH + 1:
             tokens.append(token[:-1])
         tokens.append(token)
-    return [t for t in tokens if t.casefold() not in HOSTNAME_NOISE]
+    return [
+        t
+        for t in tokens
+        if t.casefold() not in HOSTNAME_NOISE and not _is_host_model_word(t)
+    ]
+
+
+def _is_host_model_word(value: str) -> bool:
+    """端末名から得た機種語だけを分類する。名義源の値の許可には使わない。"""
+    return (
+        re.fullmatch(
+            r"(?:macbook|mac)[\s_-]*(?:air|pro|mini|studio)", _normalize(value)
+        )
+        is not None
+    )
 
 
 def load_permitted_identities(
@@ -333,10 +347,15 @@ def collect_identities(
             if _normalize(e) not in permitted_emails
             for p in _email_parts(e)
         ]
+        network_hostname = socket.gethostname()
         hosts = [
-            socket.gethostname(),
+            network_hostname,
             _command_output(["scutil", "--get", "ComputerName"]),
             _command_output(["scutil", "--get", "LocalHostName"]),
+        ]
+        # 分割語だけでは、区切りを含む完全な端末名の検出を保証できない。
+        sources["host_name_full"] = [h for h in hosts[:1] if h] + [
+            h for h in hosts[1:] if h and not _is_host_model_word(h)
         ]
         # 端末名は集める。許可名義の一覧の語 (dependabot[bot] の bot など) だけは照合から外す。
         sources["host_name"] = [
@@ -365,12 +384,17 @@ def collect_identities(
         for value in values:
             value = (value or "").strip()
             folded = _normalize(value)
+            if source == "host_name" and _is_host_model_word(value):
+                continue
             if not value or folded in seen:
                 continue
+            full_hostname = source == "host_name_full"
             ascii_only = value.isascii()
-            if ascii_only and len(value) < MIN_TOKEN_LENGTH:
+            if not full_hostname and ascii_only and len(value) < MIN_TOKEN_LENGTH:
                 continue
-            if folded in GENERIC_VALUES or NOREPLY_PATTERN.search(folded):
+            if not full_hostname and (
+                folded in GENERIC_VALUES or NOREPLY_PATTERN.search(folded)
+            ):
                 continue
             if _is_allowed_public(value, allowed_email, public):
                 continue

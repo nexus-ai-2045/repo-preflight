@@ -77,7 +77,10 @@ def test_legacy_raw_count_still_approves_only_raw_view(tmp_path, private_origin)
     assert not reviewed.all_paths_reviewed("fixture.py", data, normalized=True)
 
 
-@pytest.mark.parametrize("count,hidden,expected", [(2, False, "pass"), (1, False, "fail"), (3, False, "fail"), (2, True, "fail")])
+@pytest.mark.parametrize(
+    "count,hidden,expected",
+    [(2, False, "pass"), (1, False, "fail"), (3, False, "fail"), (2, True, "fail")],
+)
 def test_full_scan_rejects_unreviewed_reconstructions(
     tmp_path, monkeypatch, private_origin, count, hidden, expected
 ):
