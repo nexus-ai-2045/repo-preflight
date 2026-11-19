@@ -396,7 +396,10 @@ def collect_identities(
                 continue
             full_hostname = source == "host_name_full"
             ascii_only = value.isascii()
-            if not full_hostname and ascii_only and len(value) < MIN_TOKEN_LENGTH:
+            # 3文字未満の英数字は、完全な端末名でも照合しない。クラウドの端末名は2文字のことがあり、
+            # ハッシュの文字列 (lock の sha512 など) や画像のバイト列に偶然当たる。個人も特定できない。
+            # 3文字以上の完全な端末名は、機種語や一般語でも今までどおり全部照合する。
+            if ascii_only and len(value) < MIN_TOKEN_LENGTH:
                 continue
             if not full_hostname and (
                 folded in GENERIC_VALUES or NOREPLY_PATTERN.search(folded)

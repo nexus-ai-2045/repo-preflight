@@ -66,7 +66,7 @@ def test_model_looking_distinctive_hostname_is_not_suppressed():
     assert GUARD.find_hits(value, identities)
 
 
-@pytest.mark.parametrize("hostname", ["xy", "noreply-workstation", "mac", model_word()])
+@pytest.mark.parametrize("hostname", ["noreply-workstation", "mac", model_word()])
 def test_complete_network_hostname_is_retained_even_if_it_is_a_model_word(
     monkeypatch, hostname
 ):
@@ -83,6 +83,49 @@ def test_complete_network_hostname_is_retained_even_if_it_is_a_model_word(
     identities = GUARD.collect_identities(environ={"HOME": "/runner"})
     assert GUARD.find_hits(hostname, identities)
     assert any(item.source == "host_name_full" for item in identities)
+
+
+def _network_host_identities(monkeypatch, hostname):
+    monkeypatch.setattr(GUARD.getpass, "getuser", lambda: "runner")
+    monkeypatch.setattr(GUARD, "_full_name_from_passwd", lambda: "")
+    monkeypatch.setattr(GUARD, "_git_config", lambda *a, **k: [])
+    monkeypatch.setattr(GUARD.socket, "gethostname", lambda: hostname)
+    monkeypatch.setattr(GUARD, "_command_output", lambda _: "")
+    monkeypatch.setattr(
+        GUARD,
+        "OPTIONAL_PRIVATE_FILE",
+        Path("/nonexistent-fixture/private-identities.txt"),
+    )
+    return GUARD.collect_identities(environ={"HOME": "/runner"})
+
+
+# 架空の sha512 の integrity。"+xy/" と "/xyz+" が記号に挟まれて現れる (base64 では起こりうる並び)。
+INTEGRITY_LINE = (
+    '"integrity": "sha512-c9h9dVab+xy/igMPc4bwTvC5dxq/xyz+tqJZwQPePsWjPlpSOnojbo=="'
+)
+
+
+@pytest.mark.parametrize("hostname", ["xy", "a1", "q"])
+def test_network_hostname_shorter_than_three_ascii_characters_is_not_matched(
+    monkeypatch, hostname
+):
+    identities = _network_host_identities(monkeypatch, hostname)
+    assert not any(item.source == "host_name_full" for item in identities)
+    assert GUARD.find_hits(INTEGRITY_LINE, identities) == []
+    assert GUARD.find_hits(hostname, identities) == []
+
+
+def test_three_character_network_hostname_still_matches_inside_a_hash_string(
+    monkeypatch,
+):
+    identities = _network_host_identities(monkeypatch, "xyz")
+    assert any(item.value == "xyz" for item in identities)
+    assert GUARD.find_hits(INTEGRITY_LINE, identities)
+
+
+def test_short_non_ascii_network_hostname_is_still_matched(monkeypatch):
+    identities = _network_host_identities(monkeypatch, "架空")
+    assert GUARD.find_hits("端末 架空 の記録", identities)
 
 
 @pytest.mark.parametrize("separator", [" ", "-", "_", "\t"])
