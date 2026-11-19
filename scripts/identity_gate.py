@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 import functools, hashlib, html, json, os, re, shutil, subprocess, sys, unicodedata
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
@@ -680,7 +681,7 @@ def git(repo: str, *a: str) -> str:
     ).stdout.decode("utf-8")
 
 
-def commit_ids(repo: str, rng: str, run_git) -> list[str]:
+def commit_ids(repo: str, rng: str | Sequence[str], run_git) -> list[str]:
     output = run_git(repo, "rev-list", *((rng,) if isinstance(rng, str) else rng))
     if not isinstance(output, str):
         raise ValueError("identity_commit_list_invalid")
@@ -778,7 +779,7 @@ def batch_commit_texts(repo: str, ids, command_fn=None):
                 proc.kill()
 
 
-def raw_commits(repo: str, rng: str, run_git, *, batch_command=None):
+def raw_commits(repo: str, rng: str | Sequence[str], run_git, *, batch_command=None):
     """整形ログの区切り文字に依存せず、保存された commit の名義と本文を読む。"""
     ids = commit_ids(repo, rng, run_git)
     if not ids:
@@ -980,7 +981,7 @@ def _identity_field(policy, name, email, role):
 def check_range(
     pol: Policy,
     repo: str,
-    rng: str,
+    rng: str | Sequence[str],
     *,
     identity_rng: str | None = None,
     git_fn=None,
