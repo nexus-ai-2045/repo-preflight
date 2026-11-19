@@ -247,6 +247,27 @@
     },
     {
       "changes": [
+        "references/github-settings.md",
+        "scripts/github_settings_gate.py"
+      ],
+      "tests": [
+        "tests/test_adv_ai_guard.py",
+        "tests/test_guard_requirements.py",
+        "tests/test_jpeg_identity.py",
+        "tests/test_media_cff_xml_metadata.py",
+        "tests/test_media_cover_metadata.py",
+        "tests/test_media_identity.py",
+        "tests/test_mp4_identity.py",
+        "tests/test_pdf_icc.py",
+        "tests/test_pdf_text_budget.py",
+        "tests/test_png_identity.py",
+        "tests/test_readiness_media.py",
+        "tests/test_type1_identity.py"
+      ],
+      "dependency_mode": "supplement"
+    },
+    {
+      "changes": [
         "scripts/benchmark_git_hooks.py"
       ],
       "tests": [
