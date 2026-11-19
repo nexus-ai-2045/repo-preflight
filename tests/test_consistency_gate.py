@@ -1078,3 +1078,40 @@ def test_ci_workflow_rule_allows_action_ref_updates():
     assert rules and all(
         r.get("allow_github_action_ref_updates") is True for r in rules
     )
+
+
+def test_first_private_save_defers_comparison_only(tmp_path):
+    repo, base = make_repo(tmp_path)
+    (repo / "src" / "app.py").write_text("print(2)\n", encoding="utf-8")
+    git(repo, "commit", "-am", "change source")
+    first_save = MODULE.check(repo, initial_private_save=True)
+    assert first_save["status"] == "pass"
+    assert first_save["comparison_scope"] == "deferred_until_first_pr"
+    assert first_save["impact"] == []
+    assert MODULE.check(repo)["status"] == "tool_error"
+    pr = MODULE.check(repo, base_ref=base)
+    assert "related_docs_update_missing:impact-1" in pr["findings"]
+    assert "generated_artifact_update_missing:generated.txt" in pr["findings"]
+    (repo / "generated.txt").write_text("changed", encoding="utf-8")
+    assert (
+        "generated_artifact_drift"
+        in MODULE.check(repo, initial_private_save=True)["findings"]
+    )
+
+
+def test_initial_private_save_does_not_report_private_consistency_labels(tmp_path):
+    repo, _ = make_repo(tmp_path)
+    marker = "sample-private-name"
+    (repo / "README.md").write_text(f"[guide]({marker})\n", encoding="utf-8")
+    cp = repo / MODULE.CONFIG_NAME
+    config = json.loads(cp.read_text())
+    config.update(
+        mode="ratchet",
+        ratchet={"baseline": [marker, "related_docs_update_missing:impact-1"]},
+    )
+    cp.write_text(json.dumps(config))
+    report = MODULE.check(repo, initial_private_save=True)
+    assert report["status"] == "fail"
+    assert "markdown_link_missing" in report["findings"]
+    assert report["ratchet"]["resolved"] == 1
+    assert marker not in json.dumps(report)

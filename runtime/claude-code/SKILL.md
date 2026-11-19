@@ -32,6 +32,7 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 `create_repo` 以外は `--repo <TARGET_REPO>` が必須。
+空のprivateリポジトリへの初回送信には `--intent push --initial-private-save OWNER/REPO` で意図した送信先を指定する。
 既存private GitHub repoへの通常送信では `--private-submission` と `--base-ref` を併用する。
 live確認とcommit済み内容の範囲はclone rootの正本に従い、未送信の作業file本文を対象にしない。
 `--private-submission` なしではprivate identityの全在庫検査を維持する。
