@@ -100,7 +100,9 @@ def _network_host_identities(monkeypatch, hostname):
 
 
 # 架空の sha512 の integrity。"+xy/" と "/xyz+" が記号に挟まれて現れる (base64 では起こりうる並び)。
-INTEGRITY_LINE = '"integrity": "sha512-c9h9dVab+xy/igMPc4bwTvC5dxq/xyz+tqJZwQPePsWjPlpSOnojbo=="'
+INTEGRITY_LINE = (
+    '"integrity": "sha512-c9h9dVab+xy/igMPc4bwTvC5dxq/xyz+tqJZwQPePsWjPlpSOnojbo=="'
+)
 
 
 @pytest.mark.parametrize("hostname", ["xy", "a1", "q"])
