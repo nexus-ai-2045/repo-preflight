@@ -30,7 +30,7 @@ from typing import Any
 REASON = (
     "repository を公開に切り替える操作は repo-preflight の公開コマンドからだけ行います。"
     "`python <repo-preflight>/scripts/publish_gate.py --repo <clone>` で判定し、"
-    "人が公開を決めたら `--apply --confirm OWNER/NAME` を付けてください。"
+    "人が対象と履歴を確認したら、判定結果の next に示す引数を使ってください。"
     "新しい repository は private で作ってください。"
 )
 

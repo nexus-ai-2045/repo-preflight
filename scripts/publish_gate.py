@@ -9,7 +9,7 @@ GitHub には「公開に切り替える操作そのもの」を止める仕組�
 2. readiness_scan.py の全体検査（削除済みを含む全履歴）が `pass`。ラチェットの基準値は使わない
 3. 公開後も検査が走り続けるよう、HEAD に共通 CI ゲート（`preflight-gate.yml` を呼ぶ workflow）と
    ラチェットの基準値ファイルがある
-4. `--apply` と、対象 repository 名をもう一度打った `--confirm OWNER/NAME` がある
+4. `--apply` と、対象 repository 名をもう一度打った `--confirm OWNER/NAME` と dry-run の --reviewed-snapshot がある
 
 既定は dry-run で、何も変更しない。結果は `repo-preflight.publish/v1` の JSON で返す。
 「pass」は機械で調べた範囲の結果で、公開してよいという承認ではない。承認は人が出す。
@@ -18,12 +18,15 @@ GitHub には「公開に切り替える操作そのもの」を止める仕組�
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterable, NamedTuple, Sequence
+
+from readiness_scan import PrivateIdentityScan
 
 SCHEMA = "repo-preflight.publish/v1"
 SCAN_SCRIPT = Path(__file__).resolve().parent / "readiness_scan.py"
@@ -37,9 +40,17 @@ Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
 
 def default_runner(cmd: Sequence[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        list(cmd), capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
+    try:
+        return subprocess.run(
+            list(cmd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+        )
+    except OSError as exc:
+        tool = cmd[0] if cmd[0] in {"git", "gh"} else "scanner"
+        raise GateStop("tool_error", f"{tool}_launch_failed") from exc
 
 
 class GateStop(Exception):
@@ -71,39 +82,56 @@ def remote_state(run: Runner, slug: str) -> dict:
             "gh",
             "repo",
             "view",
-            slug,
+            f"github.com/{slug}",
             "--json",
-            "visibility,isArchived,defaultBranchRef",
+            "id,nameWithOwner,visibility,isArchived,defaultBranchRef",
         ]
     )
     if proc.returncode != 0:
         raise GateStop("tool_error", "gh_repo_view_failed")
     try:
         data = json.loads(proc.stdout)
+        if (
+            not isinstance(data["id"], str)
+            or not data["id"]
+            or not isinstance(data["nameWithOwner"], str)
+            or not SLUG_RE.fullmatch(data["nameWithOwner"])
+            or data["visibility"] not in {"PRIVATE", "PUBLIC", "INTERNAL"}
+            or not isinstance(data["isArchived"], bool)
+        ):
+            raise GateStop("tool_error", "gh_repo_view_unreadable")
         return {
-            "visibility": str(data["visibility"]).upper(),
-            "archived": bool(data.get("isArchived")),
+            "id": data["id"],
+            "name_with_owner": data["nameWithOwner"],
+            "visibility": data["visibility"],
+            "archived": data["isArchived"],
             "default_branch": data["defaultBranchRef"]["name"],
         }
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         raise GateStop("tool_error", "gh_repo_view_unreadable") from exc
 
 
-def check_remote_refs_fetched(run: Runner, repo: Path, default_branch: str) -> str:
-    """origin の全 ref が手元にあり、HEAD が default branch と同じなら HEAD を返す。"""
-    listed = git(run, repo, "ls-remote", "--heads", "--tags", "origin")
+class CheckedRefs(NamedTuple):
+    head: str
+    remote: dict[str, str]
+    closure_digest: str
+
+
+def checked_remote_refs(run: Runner, repo: Path, default_branch: str) -> CheckedRefs:
+    """全履歴検査がたどれる origin の branch と tag を OID に固定する。"""
+    listed = git(run, repo, "ls-remote", "--refs", "--heads", "--tags", "origin")
     if listed.returncode != 0:
         raise GateStop("tool_error", "ls_remote_failed")
-    default_sha = None
-    for line in listed.stdout.splitlines():
+    refs = {}
+    for line in listed.stdout.rstrip("\n").split("\n") if listed.stdout else ():
         parts = line.split("\t")
         if len(parts) != 2:
             raise GateStop("tool_error", "ls_remote_unreadable")
         sha, ref = parts
-        if git(run, repo, "cat-file", "-e", sha).returncode != 0:
-            raise GateStop("blocked", "remote_refs_not_fetched")
-        if ref == f"refs/heads/{default_branch}":
-            default_sha = sha
+        if ref in refs or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha):
+            raise GateStop("tool_error", "ls_remote_unreadable")
+        refs[ref] = sha
+    default_sha = refs.get(f"refs/heads/{default_branch}")
     if default_sha is None:
         raise GateStop("blocked", "default_branch_missing_on_origin")
     head = git(run, repo, "rev-parse", "HEAD")
@@ -112,7 +140,17 @@ def check_remote_refs_fetched(run: Runner, repo: Path, default_branch: str) -> s
     head_sha = head.stdout.strip()
     if head_sha != default_sha:
         raise GateStop("blocked", "head_differs_from_origin_default_branch")
-    return head_sha
+    commit_tips = git(run, repo, "rev-list", "--no-walk=unsorted", "--all", "HEAD")
+    if commit_tips.returncode != 0:
+        raise GateStop("tool_error", "local_refs_unreadable")
+    tips = git(run, repo, "rev-parse", "--revs-only", "--all", "HEAD")
+    if tips.returncode != 0:
+        raise GateStop("tool_error", "local_refs_unreadable")
+    roots = dict.fromkeys(tips.stdout.splitlines() + commit_tips.stdout.splitlines())
+    if set(refs.values()).difference(roots):
+        raise GateStop("blocked", "remote_refs_not_fetched")
+    closure = hashlib.sha256("\n".join(roots).encode("ascii")).hexdigest()
+    return CheckedRefs(head_sha, refs, closure)
 
 
 GATE_USES_RE = re.compile(
@@ -151,12 +189,38 @@ def check_ci_gate(run: Runner, repo: Path, head: str) -> str:
 
 
 def run_scan(run: Runner, repo: Path, scan_args: Sequence[str]) -> dict:
-    proc = run([sys.executable, str(SCAN_SCRIPT), "--repo", str(repo), *scan_args])
+    proc = run(
+        [
+            sys.executable,
+            str(SCAN_SCRIPT),
+            "--repo",
+            str(repo),
+            "--require-private-identity",
+            *scan_args,
+        ]
+    )
     try:
         report = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise GateStop("tool_error", "scan_output_unreadable") from exc
+    if not isinstance(report, dict) or (
+        report.get("status") == "pass" and proc.returncode != 0
+    ):
+        raise GateStop("tool_error", "scan_output_unreadable")
     return report
+
+
+def check_public_names(checker: PrivateIdentityScan, names: Iterable[str]) -> None:
+    for name in names:
+        try:
+            raw_name = name.encode("utf-8")
+        except UnicodeEncodeError:
+            raise GateStop("tool_error", "public_name_encoding_unverified") from None
+        checker.check(raw_name, repository_name=True)
+        if checker.report["status"] != "pass" or checker.skipped:
+            raise GateStop("tool_error", "public_name_check_unverified")
+        if checker.findings:
+            raise GateStop("blocked", "private_identity_in_public_name")
 
 
 def evaluate(
@@ -164,25 +228,46 @@ def evaluate(
     *,
     apply: bool,
     confirm: str | None,
+    reviewed_snapshot: str | None = None,
     expected_slug: str | None = None,
     scan_args: Sequence[str] = (),
     run: Runner = default_runner,
 ) -> dict:
-    result: dict = {"schema": SCHEMA, "applied": False}
+    result: dict = {"schema": SCHEMA, "applied": False, "edit_attempted": False}
     try:
         slug = origin_slug(run, repo)
+        names = PrivateIdentityScan(repo.resolve(), required=True)
+        check_public_names(names, [slug])
         result["repository"] = slug
-        if expected_slug and expected_slug != slug:
+        if expected_slug and expected_slug.lower() != slug.lower():
             raise GateStop("blocked", "origin_differs_from_expected_repository")
         state = remote_state(run, slug)
+        checked_name = state["name_with_owner"]
+        check_public_names(names, [checked_name])
+        if checked_name.lower() != slug.lower():
+            raise GateStop("blocked", "github_repository_name_differs_from_origin")
+        result["repository"] = checked_name
         result["visibility_before"] = state["visibility"]
         if state["visibility"] == "PUBLIC":
             result["status"] = "already_public"
             return result
         if state["archived"]:
             raise GateStop("blocked", "repository_archived")
-        head = check_remote_refs_fetched(run, repo, state["default_branch"])
+        refs = checked_remote_refs(run, repo, state["default_branch"])
+        if any(
+            not ref.startswith(("refs/heads/", "refs/tags/")) for ref in refs.remote
+        ):
+            raise GateStop("tool_error", "ls_remote_unreadable")
+        check_public_names(names, (ref.split("/", 2)[2] for ref in refs.remote))
+        head = refs.head
         result["head"] = head
+        snapshot = hashlib.sha256(
+            json.dumps([slug, state, refs.remote], sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        if apply and (confirm is None or confirm.lower() != checked_name.lower()):
+            raise GateStop("blocked", "confirmation_mismatch")
+        if apply and reviewed_snapshot != snapshot:
+            raise GateStop("blocked", "reviewed_snapshot_mismatch")
         scan = run_scan(run, repo, scan_args)
         result["scan_status"] = scan.get("status")
         if scan.get("status") == "tool_error":
@@ -195,22 +280,35 @@ def evaluate(
                 and check.get("status") in {"fail", "unknown", "tool_error"}
             )
             raise GateStop("blocked", "scan_not_pass")
+        identity = (scan.get("checks") or {}).get("private_identity_scan") or {}
+        if (
+            scan.get("head") != head
+            or identity.get("status") != "pass"
+            or identity.get("closure_revisions_sha256") != refs.closure_digest
+        ):
+            raise GateStop("blocked", "scan_history_differs_from_review")
         result["ci_gate"] = check_ci_gate(run, repo, head)
         if not apply:
             result["status"] = "ready"
-            result["next"] = f"--apply --confirm {slug}"
+            result["reviewed_snapshot"] = snapshot
+            result["next"] = (
+                f"--apply --confirm {checked_name} --reviewed-snapshot {snapshot}"
+            )
             return result
-        if confirm != slug:
-            raise GateStop("blocked", "confirmation_mismatch")
         # 検査から切り替えまでの間に push されていないかを直前に確かめ直す
-        if check_remote_refs_fetched(run, repo, state["default_branch"]) != head:
+        if (
+            origin_slug(run, repo) != slug
+            or remote_state(run, slug) != state
+            or checked_remote_refs(run, repo, state["default_branch"]) != refs
+        ):
             raise GateStop("blocked", "origin_changed_during_gate")
+        result["edit_attempted"] = True
         edited = run(
             [
                 "gh",
                 "repo",
                 "edit",
-                slug,
+                f"github.com/{checked_name}",
                 "--visibility",
                 "public",
                 "--accept-visibility-change-consequences",
@@ -219,9 +317,13 @@ def evaluate(
         if edited.returncode != 0:
             raise GateStop("tool_error", "gh_repo_edit_failed")
         result["applied"] = True
-        after = remote_state(run, slug)
+        after = remote_state(run, checked_name)
         result["visibility_after"] = after["visibility"]
-        if after["visibility"] != "PUBLIC":
+        if (
+            after["visibility"] != "PUBLIC"
+            or after["id"] != state["id"]
+            or after["name_with_owner"] != checked_name
+        ):
             raise GateStop("tool_error", "visibility_not_confirmed")
         result["status"] = "published"
         return result
@@ -235,10 +337,10 @@ EXIT_CODES = {"published": 0, "ready": 0, "already_public": 0, "blocked": 1}
 
 MESSAGES = {
     "published": "公開に切り替え、GitHub 上で PUBLIC を確認しました。",
-    "ready": "機械の検査はすべて通りました。人が公開を決めたら --apply --confirm を付けて再実行してください。",
+    "ready": "機械の検査はすべて通りました。人が対象と履歴を確認したら next の引数で再実行してください。",
     "already_public": "すでに公開されています。何も変更していません。",
     "blocked": "公開に切り替えていません。issue と failed_checks を直してから再実行してください。",
-    "tool_error": "確認できなかったため公開に切り替えていません。この結果を判断に使わないでください。",
+    "tool_error": "確認できなかった項目があります。issue と GitHub 上の公開状態を確認してください。",
 }
 
 
@@ -259,6 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--confirm",
         help="--apply のとき、対象の OWNER/NAME をもう一度書く",
+    )
+    parser.add_argument(
+        "--reviewed-snapshot", help="人が確認したdry-runのreviewed_snapshot"
     )
     parser.add_argument(
         "--reviewed-secret-exceptions",
@@ -287,6 +392,7 @@ def main(argv: list[str] | None = None, run: Runner = default_runner) -> int:
         apply=args.apply,
         confirm=args.confirm,
         expected_slug=args.github,
+        reviewed_snapshot=args.reviewed_snapshot,
         scan_args=scan_args,
         run=run,
     )

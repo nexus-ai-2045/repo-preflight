@@ -19,21 +19,25 @@ repo-preflightの失敗を後続操作の中止につなげる導入手順です
 python scripts/publish_gate.py --repo /path/to/clone
 
 # 人が公開を決めたあと。対象名をもう一度書く
-python scripts/publish_gate.py --repo /path/to/clone --apply --confirm OWNER/NAME
+python scripts/publish_gate.py --repo /path/to/clone --apply --confirm OWNER/NAME --reviewed-snapshot REVIEWED_SNAPSHOT
 ```
 
 次をすべて満たしたときだけ `gh repo edit OWNER/NAME --visibility public` を実行し、切り替え後に GitHub 上で `PUBLIC` になったことを確かめます。
 
-1. origin が GitHub で、`--github OWNER/NAME` を付けたならそれと一致する
-2. 手元が origin の default branch と同じ commit で、origin の全 branch / tag を取得済み（検査した履歴＝公開される履歴）
+1. 公開するowner/repository名とbranch・tag名の非公開名義照合が通る。名前の照合を実行できなければ停止する。origin が GitHub で、`--github OWNER/NAME` を付けたならそれと一致する
+2. 手元が origin の default branch と同じ commit で、origin の全 branch / tag を取得済み。各branch・tagの先端OIDをローカルrefまたはHEADから照合する
 3. `readiness_scan.py` の全体検査（削除済みを含む全履歴）が `pass`
-4. HEAD に共通 CI ゲート（`preflight-gate.yml` を `uses:` で呼ぶ workflow、「2.」）と、その基準値ファイル（既定 `.repo-preflight/ratchet-baseline.json`、`baseline:` を渡していればその path）がある。無ければ `ci_gate_missing` / `ratchet_baseline_missing` で止まる。公開した後の push と PR でも検査を走らせ続けるため
-5. `--apply` と、対象名を打ち直した `--confirm OWNER/NAME` がある
-6. 切り替えの直前に origin が動いていない
+4. HEAD に共通 CI ゲート（`preflight-gate.yml` を `uses:` で呼ぶ workflow、「2.」）と、その基準値ファイル（既定 `.repo-preflight/ratchet-baseline.json`、`baseline:` を渡していればその path）がある。無ければ `ci_gate_missing` / `ratchet_baseline_missing` で止まる。ここで確かめるのはHEADにあるファイルです。対象branchでの起動、実行結果、必須チェックの設定はGitHub上で確認します
+5. 人が確認したdry-runの `next` に従い、`--apply`、対象名、`reviewed_snapshot` を渡す。対象名だけを渡す従来の呼び出しは停止する
+6. 切り替えの直前に対象のリポジトリID、公開範囲、archive状態、default branch、branch・tagの名前と先端OIDを再取得し、検査前と一致する
+
+未取得のrefがあれば `remote_refs_not_fetched` で停止します。対象のbranch・tagをローカルrefへfetchして再実行してください。検査した履歴が一致しない場合は `scan_history_differs_from_review`、承認後に公開対象が変わった場合は `reviewed_snapshot_mismatch` で停止します。どちらもdry-runからやり直してください。最終照合とGitHubの公開操作は別々の要求です。切り替えが終わるまで、他の人や自動処理からのpush・タグ作成・設定変更を止めてください。
+
+この照合が扱うのはGitHub上のbranch・tagとその履歴です。GitHubに保存されたPR本文、コメント、Actionsログ、branch・tagからたどれないPRの履歴は公開前に別途確認してください。
 
 **ラチェットの基準値は使いません。** 基準値で CI を通している既存の指摘（履歴に残った個人の path など）があると、公開コマンドは止まります。CI が緑でも公開できるとは限らない、という点に注意してください。
 
-全体検査には名義検査（`identity_gate`）も含まれるため、公開コマンドを実行する手元には非公開設定（`PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS`）が要ります。無ければ止まります。
+全体検査には名義検査（`identity_gate`）も含まれるため、公開コマンドを実行する手元には非公開設定（`PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS`）と、`PUBLIC_IDENTITY_DENYLIST` が指す非公開の照合リストが必要です。値はリポジトリの外で管理してください。
 
 レビュー済みの例外を使う repo は `--reviewed-secret-exceptions` をそのまま渡せます。
 
