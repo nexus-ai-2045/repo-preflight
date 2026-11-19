@@ -146,6 +146,32 @@ def build_proposals_from_scan(
     checks = scan.get("checks") or {}
     status = scan.get("status")
 
+    scan_scope = scan.get("scan_scope") or {}
+    if (
+        intent == "push"
+        and scan_scope.get("mode") in {"repository", "target_diff"}
+        and not scan_scope.get("existing_push_destination")
+    ):
+        proposals.append(
+            _proposal(
+                id="verify_push_scope",
+                kind="privacy_hold",
+                severity="required",
+                question="初回の非公開保存か既存履歴への送信かを指定して再検査しますか?",
+                current={
+                    "scope": scan_scope["mode"],
+                    "existing_push_destination_verified": False,
+                },
+                proposed={
+                    "initial_private_save": "--initial-private-save OWNER/REPO",
+                    "existing_history": "--base-ref origin/BRANCH",
+                },
+                options=_yes_no_options("対象を指定して再検査", "中止する"),
+                default="yes",
+                why="既存履歴のある送信先を確認できていない。初回保存には空の非公開リポジトリの確認が必要",
+            )
+        )
+
     freshness = checks.get("readme_release_freshness") or {}
     if freshness.get("status") in {"fail", "tool_error"}:
         unavailable = freshness.get("status") == "tool_error"
@@ -187,17 +213,37 @@ def build_proposals_from_scan(
         if root_proposal is not None:
             proposals.append(root_proposal)
             return proposals
+        failed_checks = [
+            name
+            for name, check in checks.items()
+            if check.get("status") == "tool_error"
+        ]
+        question = (
+            "検査結果の issues と失敗した検査項目を確認し、原因を直して再検査しますか?"
+        )
+        action = "resolve_scan_errors_then_rerun_preflight"
+        private_scan = checks.get("private_identity_scan") or {}
+        if (
+            private_scan.get("status") == "tool_error"
+            and private_scan.get("reason") == "private_identity_input_unverified"
+        ):
+            question = (
+                "個人情報の照合設定を読み込めません。PUBLIC_IDENTITY_DENYLIST が"
+                "対象リポジトリの外にある読み取り可能な UTF-8 の照合リストを絶対パスで指しているか、"
+                "外部検査器を指定した場合は PUBLIC_IDENTITY_GUARD_SCRIPT も確認して再検査しますか?"
+            )
+            action = "verify_private_identity_inputs_then_rerun"
         proposals.append(
             _proposal(
                 id="fix_tool_error",
                 kind="tool_error",
                 severity="required",
-                question=(
-                    "検査自体が失敗しています。Git リポジトリとして読める状態に直してから"
-                    f"「{INTENT_LABELS.get(intent, intent)}」へ進みますか?"
-                ),
-                current={"issues": scan.get("issues", [])},
-                proposed="fix_repository_access_then_rerun_preflight",
+                question=question,
+                current={
+                    "issues": scan.get("issues", []),
+                    "failed_checks": failed_checks,
+                },
+                proposed=action,
                 options=_yes_no_options(
                     "直して再検査する",
                     "中止する",
@@ -819,6 +865,15 @@ def build_confirmations(
                 "require_exact_base_for_push_or_pr": True,
                 "rerun_if_base_or_head_changes": True,
             }
+    if intent == "push" and scan_scope.get("mode") == "initial_private_save":
+        base["proposed"]["operation_binding"] = {
+            "remote": "origin",
+            "head_oid": head,
+            "initial_private_save": scan_scope["initial_private_save"],
+            "destination_ref_sha256": scan_scope["destination_ref_sha256"],
+            "require_empty_private_destination_at_push": True,
+            "rerun_if_destination_or_head_changes": True,
+        }
     if consistency_base_ref and consistency_base_oid:
         base["proposed"]["consistency_binding"] = {
             "base_ref": consistency_base_ref,

@@ -94,6 +94,9 @@ def _build_bounded_self_repository(repo):
         "origin",
         "https://github.com/nexus-ai-2045/repo-preflight.git",
     )
+    # Keep the self-test offline even if the calling account has an authenticated gh.
+    # GitHub state is exercised by test_initial_private_save with a simulated gh boundary.
+    _git(repo, "remote", "set-url", "--push", "origin", "./offline-fixture.git")
     _git(repo, "-c", "core.autocrlf=false", "add", "--all")
     if executable:
         _git(repo, "update-index", "--chmod=+x", "--", *executable)

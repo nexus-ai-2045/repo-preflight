@@ -85,14 +85,38 @@ python scripts/readiness_scan.py --repo PATH --intent <場面> --human
 | 場面 | `--intent` | 追加引数 | 主に確認すること |
 |---|---|---|---|
 | リポジトリを新しく作る | `create_repo` | `--repo` 不要 | 公開範囲、最初の文書、名義 |
-| push する | `push` | `--base-ref origin/比較元` | 今回の変更、履歴、未コミット |
+| push する | `push` | 初回private保存は `--initial-private-save OWNER/REPO`。既存ブランチへの差分は `--base-ref origin/比較元` | 今回の変更、履歴、未コミット |
 | PR を作る | `open_pr` | `--base-ref origin/比較元` | 差分、文書とテストの追随 |
 | マージする | `merge` | `--base-ref origin/比較元` | 統合前の残作業と人の確認 |
 | GitHub Settings の変更準備 | `configure_settings` | `--github-settings-profile` | remote設定の実測とpreview |
 | 共有・納品・公開 | `publish` | `--audience public` など | 見せる相手、全履歴、権利 |
 | リリース準備 | `release` | なし | READMEの情報設計と運用記録 |
 
+初回private保存では、作成を承認したGitHubリポジトリ名を指定します。照合の基準になる名前は依頼者が指定した送信先から取り、originから自動で埋めないでください。
+
+```bash
+python scripts/readiness_scan.py --repo PATH --intent push --initial-private-save OWNER/REPO --human
+```
+
+この検査にはGitHub CLIの読み取り権限と、名義照合用の非公開設定が必要です。送信先が一致し、空のprivateリポジトリであることを確認して、削除済みファイルを含む全履歴を検査します。通常のpush経路でも、既存の送信先と確認できなければ停止します。手元に残った追跡ブランチだけでは初回保存の確認を省略できません。最初のPRでは実際のベースブランチを `--base-ref` で指定します。変更追随を適用するルールと比較元の条件は[整合性ゲート](repository-consistency-gate.md)にあります。
+
+検査後の送信は別の操作です。確認パケットのコミットを、明示した `origin` の、検査時のローカルブランチと同名のブランチへ送る場合に使います。タグの追加送信、別名ブランチ、mirror送信には使えません。検査と実際のpushは別々の要求なので、送信先・履歴・公開範囲が変わった場合は再検査してください。
+
 返ってくるのは**質問リスト**です。エージェントはそれを人へ番号付きで見せ、答えが返るまで外部への操作をしません。
+
+次の図は、検査後にAIが人へ何を返すかを示します。最終確認に進める場合も、送信や公開の実行には対象と操作についての承認が要ります。
+
+```mermaid
+stateDiagram-v2
+  s0: 検査結果を読む
+  s1: 修復が必要
+  s2: 不足項目を人に確認する
+  s3: 操作前の最終確認に進める
+  [*] --> s0
+  s0 --> s2: 必須の対応が残る
+  s0 --> s1: 秘密情報の指摘または検査不能
+  s0 --> s3: 停止理由と必須の対応がない
+```
 
 `configure_settings` は `gh api` のGETだけで remoteを実測し、`solo_public` / `team_public` / `high_risk_public` と比較します。認証account、複数rulesetの累積効果・bypass、required check名、default/advanced CodeQLを分けて確認し、設定候補は一件ずつ現在値・推奨値・外部影響・rollback・API操作previewを返します。**設定変更は実行しません。** 403 / 404 / plan制約は `false` とみなさず `unavailable` にします。
 

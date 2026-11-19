@@ -268,6 +268,35 @@
     },
     {
       "changes": [
+        ".repo-preflight/identity-fixture-exceptions.txt"
+      ],
+      "tests": [
+        "tests/test_all_refs_scan_workflow.py",
+        "tests/test_identity_fixture_exceptions.py",
+        "tests/test_manage_git_hooks.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        "docs/publish-and-ci-gate.md",
+        "scripts/publish_gate.py",
+        "scripts/publish_guard_hook.py",
+        "tests/test_publish_gate.py"
+      ],
+      "tests": [
+        "tests/test_cli_utf8_stdio.py",
+        "tests/test_consistency_gate.py",
+        "tests/test_preflight_reusable_workflow.py",
+        "tests/test_public_narrative_contract.py",
+        "tests/test_publish_gate.py",
+        "tests/test_publish_guard_hook.py",
+        "tests/test_readiness_scan.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
         "scripts/benchmark_git_hooks.py"
       ],
       "tests": [

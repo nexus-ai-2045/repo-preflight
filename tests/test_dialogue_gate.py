@@ -129,6 +129,26 @@ def test_cli_intent_create_repo_without_repo_path():
     )
 
 
+def test_private_policy_error_identifies_which_setting_to_repair(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    missing_policy = tmp_path / "unavailable-private-policy"
+    monkeypatch.setenv("PUBLIC_IDENTITY_DENYLIST", str(missing_policy))
+    for intent in ("push", "publish"):
+        stdout = StringIO()
+        code = SCAN.main(
+            ["--repo", str(repo), "--intent", intent],
+            stdin_is_tty=False,
+            stdout=stdout,
+        )
+        dialogue = json.loads(stdout.getvalue())
+        assert code == 1
+        assert dialogue["status"] == "blocked"
+        fix = next(p for p in dialogue["proposals"] if p["id"] == "fix_tool_error")
+        assert "private_identity_scan" in fix["current"]["failed_checks"]
+        assert "PUBLIC_IDENTITY_DENYLIST" in fix["question"]
+        assert missing_policy.name not in stdout.getvalue()
+
+
 def test_cli_intent_open_pr_includes_scan(tmp_path: Path):
     repo = make_repo(tmp_path)
     console = StringIO()

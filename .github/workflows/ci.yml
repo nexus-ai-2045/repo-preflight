@@ -52,7 +52,9 @@ jobs:
         run: python -m ai_ratchet_gate --repo .
       # ファイル名の直書きにすると、新しく足した script / test が永久に対象外になる。
       # 実際 tests/test_session_timezone.py (#47) が未整形のまま main へ入った。
-      - run: python -m black --check scripts/ tests/
+      - name: Check formatting
+        if: matrix.python-version == '3.11'
+        run: python -m black --check scripts/ tests/
       # PR/merge queue: compare their base; main push: compare the preceding revision.
       # All OS/Python compatibility jobs keep their guarantees for the selected paths.
       - name: pytest (changed paths and dependency neighbors)

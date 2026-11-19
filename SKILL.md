@@ -1,15 +1,11 @@
 ---
 name: repo-preflight
-description: "repositoryを構想、登録、設計、リサーチ、TDD、実装、security review、test、運用準備、private GitHub、PR、人間目視review、merge、public化、release、告知、branch/worktree cleanupまで検査記録に基づいて進める。AIがリポジトリ作成・push・PR・merge・公開・releaseに進む直前に自動発火し、不足設定と推奨案を人間へ質問してから続行する。public化に限らずチーム共有、客先納品、外部協力者への受け渡しでも同じ手順を通す。『リポジトリを作る』『PRを作る』『公開する』『pushする』『公開前チェック』『共有前チェック』『納品前チェック』の依頼で使う。"
+description: "AIがGitHubリポジトリを作成・push・PR・merge・公開・releaseする前に、対象、履歴の秘密情報・個人名義、必要な確認を調べる。チーム共有、客先納品、GitHub Settingsの変更前にも使う。"
 ---
 
 # Repo Preflight
 
-repositoryを見せる相手を広げる前の手順を管理する。専門作業は既存skillへ委譲し、各状態を現在の検査結果で判定する。
-
-**v0.3 の中心は「AI実装フローでの自動発火対話」** です。人がTTYでメニューを回すことが主目的ではありません。エージェントが外部操作に進む直前に preflight を走らせ、不足や未設定を「こう設定しますか？」「未設定ですが設定しますか？」と人間に聞く。
-
-public化は到達点のひとつであり、唯一の終点ではない。private保存、PRまで、mergeまで、チーム共有、客先納品も正規の完了地点として扱う。
+AIがリポジトリを作成・共有する直前に使う。今回の操作と相手を特定し、検査結果と未確認事項を人に返す。private保存、PR、チーム共有、納品はそれぞれ完了地点にできる。
 
 ## 原則
 
@@ -105,18 +101,11 @@ baseまたはHEADが動いた場合は再検査する。
 
 `publication_decision` は常に `blocked_human_review_required`。pass 相当でも公開承認にはならない。
 
-## 状態遷移
+## 今回の操作と完了地点
 
-```text
-discovered -> requirements_defined -> research_complete -> design_complete
--> implementation_in_progress -> local_checks_passed -> operations_checked
--> repository_recorded -> private_remote_synced -> pull_request_ready
--> human_review_complete -> merge_approved -> merged
--> audience_expansion_approved -> audience_expanded -> expansion_checks_passed
--> cleanup_complete
-```
+新規のprivateリポジトリは作成前に `create_repo` を確認する。初回pushの前に、人が指定した送信先を `--intent push --initial-private-save OWNER/REPO` に渡す。GitHub上のprivate・空の状態、originの送信先、取得済みの全履歴を検査する。文書や生成物の変更追随は、最初のPRで実際の比較元を指定して検査する。
 
-各外部操作の境界で上記 intent 対話を挟む。検査記録の不足、`unknown`、失敗があれば先へ進めず、停止理由と再実行条件を返す。詳細は[状態一覧](references/lifecycle.md)。
+privateからpublicへ切り替えるときは、`publish` の全履歴検査と人間レビューを経て[公開コマンド](docs/publish-and-ci-gate.md)を使う。開発・運用の証跡が必要な作業は[状態一覧](references/lifecycle.md)を参照し、今回依頼された地点で終了する。
 
 ## 実行 (実装中の通常ループ)
 
