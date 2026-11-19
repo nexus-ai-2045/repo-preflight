@@ -733,7 +733,9 @@ def diagnostic_evidence_label(label, private_identity=None):
         return "<redacted-path>"
 
 
-def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="HEAD"):
+def _identity_gate_result(
+    repo, base_ref, identity_base_ref=None, *, history_roots=("--all",), head_ref="HEAD"
+):
     """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
     try:
@@ -746,14 +748,16 @@ def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="H
     except (OSError, UnicodeError, ValueError, TypeError, re.error):
         return {"status": "tool_error", "reason": "private_patterns_invalid"}
 
-    rng = f"{base_ref}..{head_ref}" if base_ref else "--all"
+    rng = f"{base_ref}..{head_ref}" if base_ref else history_roots
     try:
         diagnostics = _ig.Diagnostics(pol)
         issues = _ig.check_range(
             pol,
             str(repo),
             rng,
-            identity_rng=f"{identity_base_ref}..HEAD" if identity_base_ref else None,
+            identity_rng=(
+                f"{identity_base_ref}..{head_ref}" if identity_base_ref else None
+            ),
             git_fn=_identity_git_raw,
             diagnostics=diagnostics,
         )
@@ -772,7 +776,9 @@ def _identity_gate_result(repo, base_ref, identity_base_ref=None, *, head_ref="H
     }
 
 
-def public_attribution_result(repo, base_ref, allowed_identities):
+def public_attribution_result(
+    repo, base_ref, allowed_identities, *, history_roots=("--all",)
+):
     if allowed_identities is None:
         return {"status": "not_evaluated", "reason": "public_allowlist_not_configured"}
     try:
@@ -781,7 +787,7 @@ def public_attribution_result(repo, base_ref, allowed_identities):
         issues = identity_gate.check_public_range(
             allowed_identities,
             str(repo),
-            f"{base_ref}..HEAD" if base_ref else "--all",
+            f"{base_ref}..HEAD" if base_ref else history_roots,
             git_fn=_identity_git_raw,
             batch_command=_identity_batch_command,
             diagnostics=diagnostics,
@@ -1651,6 +1657,8 @@ def sanitized_ref_report(
 def fixed_history_revisions(repo: Path, rev_args: tuple[str, ...]) -> tuple[str, ...]:
     """履歴の省略を拒否し、可変refをraw objectの固定OID閉包へ束縛する。"""
     shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
+    if shallow_code == 0 and shallow == "true":
+        raise RuntimeError("shallow_history_unavailable")
     graft_code, graft_path = run(repo, "git", "rev-parse", "--git-path", "info/grafts")
     if shallow_code or shallow != "false" or graft_code or not graft_path:
         raise RuntimeError("git_raw_history_context_unverified")
@@ -1660,8 +1668,15 @@ def fixed_history_revisions(repo: Path, rev_args: tuple[str, ...]) -> tuple[str,
     if path.exists():
         raise RuntimeError("git_grafts_history_unverified")
     args = (*rev_args, "HEAD") if "--all" in rev_args else rev_args
+    commit_tips = ""
+    if "--all" in rev_args:
+        tip_code, commit_tips = run(
+            repo, "git", "rev-list", "--no-walk=unsorted", "--all", "HEAD"
+        )
+        if tip_code:
+            raise RuntimeError("git_history_roots_unverified")
     code, values = run(repo, "git", "rev-parse", "--revs-only", *args)
-    revisions = tuple(dict.fromkeys(values.splitlines()))
+    revisions = tuple(dict.fromkeys(values.splitlines() + commit_tips.splitlines()))
     if (
         code
         or not revisions
@@ -3247,19 +3262,29 @@ def scan(
         if private_submission
         else repository_evidence_label(repo)
     )
+    history_roots = ()
+    snapshot_head = None
     if not base_ref:
-        shallow_code, shallow = run(repo, "git", "rev-parse", "--is-shallow-repository")
-        if shallow_code or shallow not in {"true", "false"}:
+        head_code, snapshot_head = run(repo, "git", "rev-parse", "HEAD")
+        if head_code:
             return {
                 "status": "tool_error",
                 "repo": report_repo_label,
-                "issues": ["git_history_inventory_failed"],
+                "issues": ["git_probe_failed"],
             }
-        if shallow == "true":
+        try:
+            history_roots = fixed_history_revisions(repo, ("--all",))
+        except RuntimeError as exc:
             return {
                 "status": "tool_error",
                 "repo": report_repo_label,
-                "issues": ["shallow_history_unavailable"],
+                "issues": [
+                    (
+                        "shallow_history_unavailable"
+                        if str(exc) == "shallow_history_unavailable"
+                        else "git_history_inventory_failed"
+                    )
+                ],
             }
     if identity_base_ref:
         if not release or base_ref or not expected_identity:
@@ -3325,14 +3350,14 @@ def scan(
             "git",
             "log",
             "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
-            f"{identity_base[1]}..HEAD",
+            f"{identity_base[1]}..{probes['head'][1]}",
         )
         probes["historical_identities"] = run(
             repo,
             "git",
             "log",
             "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
-            "--all",
+            *history_roots,
         )
     else:
         probes["identities"] = run(
@@ -3340,7 +3365,7 @@ def scan(
             "git",
             "log",
             "--format=%an <%ae>|%cn <%ce>%n%(trailers:key=Co-authored-by,valueonly)",
-            "--all",
+            *history_roots,
         )
     if any(code for code, _ in probes.values()):
         return {
@@ -3349,6 +3374,14 @@ def scan(
             "issues": ["git_probe_failed"],
         }
     head = probes["head"][1]
+    if snapshot_head is not None and (
+        head != snapshot_head or snapshot_head not in history_roots
+    ):
+        return {
+            "status": "tool_error",
+            "repo": report_repo_label,
+            "issues": ["git_history_head_changed"],
+        }
     dirty = probes["dirty"][1]
     identities = probes["identities"][1]
     resolved_base_ref: str | None = None
@@ -3625,7 +3658,7 @@ def scan(
             (
                 (f"{base_oid}..{head}",)
                 if private_submission
-                else (f"{base_ref}..HEAD",) if base_ref else ("--all",)
+                else (f"{base_ref}..HEAD",) if base_ref else history_roots
             ),
             reviewed_exceptions,
             private_identity if private_identity.checker is not None else None,
@@ -3841,14 +3874,18 @@ def scan(
             ),
         },
         "public_attribution": public_attribution_result(
-            repo, base_ref, allowed_identity_set
+            repo, base_ref, allowed_identity_set, history_roots=history_roots
         ),
         "private_identity_scan": private_identity_report,
         "identity_gate": (
             identity_gate_report
             if identity_gate_report is not None
             else _identity_gate_result(
-                repo, base_ref, identity_base[1] if identity_base is not None else None
+                repo,
+                base_ref,
+                identity_base[1] if identity_base is not None else None,
+                history_roots=history_roots,
+                head_ref=head,
             )
         ),
         "commit_identity": {

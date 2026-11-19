@@ -9,6 +9,7 @@ import sys
 import zlib
 from pathlib import Path
 from subprocess import CompletedProcess
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -1085,6 +1086,94 @@ def test_allowed_identities_pass_when_every_commit_is_listed(tmp_path: Path):
     assert check["mismatch_count"] == 0
 
 
+def test_full_scan_pins_identity_and_content_to_the_same_roots(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    original_branch = MODULE.run(repo, "git", "branch", "--show-current")[1]
+    git(repo, "checkout", "-b", "transient")
+    git(
+        repo,
+        "-c",
+        "user.name=synthetic-private-identity-marker",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "synthetic side branch",
+    )
+    git(repo, "checkout", original_branch)
+    allowed = write_allowed_identities(
+        tmp_path, ["Test Author <test-author@example.invalid>"]
+    )
+    resolve = MODULE.fixed_history_revisions
+    roots = resolve(repo, ("--all",))
+
+    def remove_ref_after_inventory(repo, revisions):
+        pinned = resolve(repo, revisions)
+        if "--all" in revisions:
+            git(repo, "branch", "-D", "transient")
+        return pinned
+
+    monkeypatch.setattr(MODULE, "fixed_history_revisions", remove_ref_after_inventory)
+    report = MODULE.scan(
+        repo, allowed_identities=allowed, require_private_identity=True
+    )
+    assert report["status"] == "blocked"
+    checks = report["checks"]
+    for name in (
+        "identity_gate",
+        "commit_identity",
+        "public_attribution",
+        "private_identity_scan",
+    ):
+        assert checks[name]["status"] == "fail"
+    assert (
+        checks["private_identity_scan"]["closure_revisions_sha256"]
+        == hashlib.sha256("\n".join(roots).encode("ascii")).hexdigest()
+    )
+
+
+def test_full_scan_checks_a_linked_detached_worktree(tmp_path):
+    repo = make_repo(tmp_path)
+    linked = tmp_path / "linked"
+    git(repo, "worktree", "add", "--detach", str(linked))
+    git(
+        linked,
+        "-c",
+        "user.name=synthetic-private-identity-marker",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "synthetic linked worktree commit",
+    )
+    try:
+        allowed = write_allowed_identities(
+            tmp_path, ["Test Author <test-author@example.invalid>"]
+        )
+        report = MODULE.scan(
+            repo, allowed_identities=allowed, require_private_identity=True
+        )
+        assert report["status"] == "blocked"
+        assert report["checks"]["public_attribution"]["status"] == "fail"
+        assert report["checks"]["private_identity_scan"]["status"] == "fail"
+    finally:
+        git(repo, "worktree", "remove", str(linked))
+
+
+def test_full_scan_rejects_head_changed_after_history_inventory(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    resolve = MODULE.fixed_history_revisions
+
+    def advance_head_after_inventory(repo, revisions):
+        roots = resolve(repo, revisions)
+        if "--all" in revisions:
+            git(repo, "commit", "--allow-empty", "-m", "synthetic concurrent commit")
+        return roots
+
+    monkeypatch.setattr(MODULE, "fixed_history_revisions", advance_head_after_inventory)
+    report = MODULE.scan(repo)
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["git_history_head_changed"]
+
+
 def test_allowed_identities_fail_on_unlisted_committer(tmp_path: Path):
     repo = make_repo(tmp_path)
     (repo / "extra.txt").write_text("x\n", encoding="utf-8")
@@ -1321,6 +1410,8 @@ def test_history_scan_does_not_parse_object_path_text(monkeypatch, tmp_path: Pat
             return CompletedProcess(args, 0, stdout=".git/info/grafts", stderr="")
         if "--revs-only" in args:
             return CompletedProcess(args, 0, stdout=object_id, stderr="")
+        if git_argv(args)[1:] == ["rev-list", "--no-walk=unsorted", "--all", "HEAD"]:
+            return CompletedProcess(args, 0, stdout="", stderr="")
         if git_argv(args)[:3] == ["git", "rev-list", "--objects"]:
             output = (
                 f"{object_id}\n".encode()
@@ -2799,7 +2890,11 @@ def test_identity_gate_controls_overall_status(
 ):
     repo = make_repo(tmp_path)
     monkeypatch.setattr(
-        MODULE, "_identity_gate_result", lambda *args: {"status": gate_status}
+        MODULE,
+        "_identity_gate_result",
+        create_autospec(
+            MODULE._identity_gate_result, return_value={"status": gate_status}
+        ),
     )
     report = MODULE.scan(repo)
     assert report["status"] == expected_status
