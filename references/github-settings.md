@@ -93,6 +93,38 @@ auto-mergeは全PRを自動でmergeする設定ではない。各PRで個別に�
 
 読めない情報を、満たしている側へ倒さない。rulesetは、`~DEFAULT_BRANCH`だけをincludeしてexcludeが空のactiveなものだけをdefault branchの保護として数える。それ以外の対象指定（`~ALL`、`refs/heads/main`の直接指定、glob、exclude付き）は解釈せず、その情報源を`確認不能`にする。rulesetの一覧は`per_page=100`で読み、上限まで埋まっていたら`確認不能`にする。rulesetの詳細に`bypass_actors`が返らないときは、bypassが無いとは読まず`確認不能`にする（[Get a repository ruleset](https://docs.github.com/en/rest/repos/rules)に、`bypass_actors`はrulesetへの書き込み権限が無いと返らないとある）。
 
+### 既定の枝に保護を当てる計画
+
+保護を当てる中身は関門が決め、当てる側（例: github-ops-skillsの`new-repo-bootstrap`）は計画を受け取って当て、読み戻して照合するだけにする。条件を当てる側に複製しない。
+
+```bash
+python scripts/github_settings_gate.py protection-plan --repository OWNER/REPO \
+  --profile solo_public --require-check verify --require-check "gate / preflight" \
+  --expected-login LOGIN
+```
+
+関門はGETだけを行い、`repo-preflight.branch-protection-plan/v1`のJSONを出す。`state`は次の4つのどれかである。
+
+| `state` | 意味 | 当てる側の動き |
+|---|---|---|
+| `noop` | 既に基準を満たす | 書き込まず、`readback`で照合する |
+| `create` | classic branch protectionが無い | `operation`の本文を1回PUTし、`readback`で照合する |
+| `overlay` | 別のclassic branch protectionがある | 取り直した現在値に基準の項目だけを重ねた本文を1回PUTし、`readback`で照合する |
+| `blocked` | 計画を作れない | 書き込まず、`blocked_reasons`を報告して止まる |
+
+基準の項目は次の通り。ここに無い項目（`strict`、linear history、push制限、bypassの許可など）は現在値をそのまま残し、緩めも締めもしない。
+
+- 管理者も保護の対象にする（`enforce_admins`を有効）。AIは管理者の名義で動くので、管理者を外すとAIに保護が効かない。
+- プルリクエスト必須。承認数は`solo_public`で0、それ以外で1。既存の値がこれより大きければ下げない。
+- 会話の解決を必須にする。強制の送信と枝の削除を禁止する。
+- 必須の検査は、指定した名前を既存の必須の検査に足す。名前は直近にmergeされたプルリクエストのhead commitで実際に出た検査と照らし（上の必須status checksと同じ方法）、照らせない名前が1つでもあれば`blocked`にする。マージ済みのプルリクエストが無い新しいrepositoryも`blocked`になる。名前の空、前後の空白、重複は入口で拒む。
+
+次の場合も`blocked`にする。認証accountが`--expected-login`と違う、repositoryの同定が合わない、rulesetの読み取りが確認不能、default branchを保護するrulesetがある（rulesetは解釈せず別に判断する）、classic branch protectionを読めない（非公開repositoryの無料planの403を含む）、GETの応答に解釈できない項目がある。
+
+`overlay`は、上の「取り直した現在値へ承認された項目の変更だけを重ねて1回で送る」手順をclassic branch protectionへ当てたものである。GETとPUTは形が違う（`enforce_admins.enabled`と真偽値、`checks`の`app_id`、push制限の利用者の表し方）ため、変換は関門が行い、変換できない項目があれば落とさずに止める。`app_id`の無い既存の検査は、どのappからでも良い意味の`-1`で保つ。
+
+計画の`basis`には、計画を作った時の現在値の指紋（`sha256`、無ければ`null`）を載せる。当てる側は、PUTの直前にGETを取り直して同じ方法で指紋を計算し、違えば書き込まずに計画を取り直す。読み戻しは`readback.jq`を`gh api`の`--jq`で評価し、結果を`readback.expected`とJSONの値で比べる。
+
 ### 2026-10-09の見直しで確認した点
 
 - security checkの置き方: 必須status checksへ入れる「security check」は、CodeQLのcheckを必須checkにするか、rulesetの「Require code scanning results」ruleで必須toolにCodeQLを指定して満たす。このruleは、必須toolの未設定、実行中、定めたseverity以上のalertがあるときにmergeを止める。check名は、対象repositoryのPRで実際に出る名前を確かめてから指定する。出典: [Available rules for rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets) / [Set code scanning merge protection](https://docs.github.com/en/code-security/code-scanning/managing-your-code-scanning-configuration/set-code-scanning-merge-protection)
