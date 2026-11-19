@@ -1975,6 +1975,7 @@ def history_hits(
     check_repository_names: bool = False,
     approved_private_commit_identity: str | None = None,
     check_raw_commit_payloads: bool = False,
+    initial_private_save: bool = False,
 ) -> tuple[list[str], list[str]]:
     revisions = fixed_history_revisions(repo, rev_args)
     if private_identity is not None:
@@ -2091,6 +2092,9 @@ def history_hits(
                     private_identity.report["verified_large_caff_objects_read"] += 1
                 else:
                     private_identity.skipped += 1
+    secret_hits: set[str] = set()
+    path_hits: set[str] = set()
+    checked_names: set[bytes] = set()
     aliases: dict[str, set[str]] = {}
     if reviewed_exceptions is not None or private_identity is not None:
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
@@ -2115,7 +2119,14 @@ def history_hits(
                 root_trees.add(resolved.stdout.strip())
         for tree in root_trees:
             tree_files = run_subprocess(
-                ["git", "ls-tree", "-r", "-z", tree.decode("ascii")],
+                [
+                    "git",
+                    "ls-tree",
+                    "-r",
+                    *(["-t"] if initial_private_save else []),
+                    "-z",
+                    tree.decode("ascii"),
+                ],
                 cwd=repo,
                 capture_output=True,
             )
@@ -2128,12 +2139,35 @@ def history_hits(
                 fields = metadata.split()
                 if not sep or len(fields) != 3:
                     raise RuntimeError("git_history_inventory_failed")
+                if initial_private_save and private_identity is not None:
+                    path = raw_path.decode("utf-8", errors="surrogateescape")
+                    stem = (
+                        PurePosixPath(path)
+                        .with_suffix("")
+                        .as_posix()
+                        .encode("utf-8", errors="surrogateescape")
+                    )
+                    for candidate in {raw_path, stem} - checked_names:
+                        checked_names.add(candidate)
+                        before = private_identity.findings
+                        private_identity.check(candidate, repository_name=True)
+                        label = "history:" + tree.decode("ascii")[:12]
+                        if private_identity.findings > before:
+                            private_identity.record_location(
+                                "filename", field="filename"
+                            )
+                        if secret_matches(candidate):
+                            secret_hits.add(label)
+                        if personal_path_matches(
+                            candidate
+                        ) or normalized_personal_path_matches(
+                            candidate, private_identity.path_normalizer
+                        ):
+                            path_hits.add(label)
                 if fields[1] == b"blob":
                     aliases.setdefault(fields[2].decode("ascii"), set()).add(
                         raw_path.decode("utf-8", errors="surrogateescape")
                     )
-    secret_hits: set[str] = set()
-    path_hits: set[str] = set()
     for object_id, size in metadata_eligible:
         names = tuple(sorted(aliases.get(object_id, ())))
         if not _metadata_media_names(names):
@@ -2303,7 +2337,9 @@ def history_hits(
                             if path_found:
                                 path_hits.add(f"history:{object_id[:12]}")
                         continue
-                if object_type == "commit" and check_raw_commit_payloads:
+                if (object_type == "commit" and check_raw_commit_payloads) or (
+                    initial_private_save and object_type in {"commit", "tag", "tree"}
+                ):
                     # Inspect immutable payload even when another identity gate fails.
                     if secret_matches(data):
                         secret_hits.add(f"history:{object_id[:12]}")
@@ -3005,13 +3041,17 @@ def load_github_settings_module():
 DEFAULT_CONSISTENCY_BASE_REF = "origin/main"
 
 
-def run_consistency_gate(repo: Path, base_ref: str | None) -> dict:
+def run_consistency_gate(
+    repo: Path, base_ref: str | None, *, initial_private_save: bool = False
+) -> dict:
     script = Path(__file__).with_name("consistency_gate.py")
     spec = importlib.util.spec_from_file_location("consistency_gate", script)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    if initial_private_save:
+        return module.check(repo, initial_private_save=True)
     return module.check(repo, base_ref=base_ref)
 
 
@@ -3152,6 +3192,163 @@ def _private_submission_repository(remote: str) -> str | None:
     return f"{match[1]}/{match[2]}"
 
 
+def initial_save_branch(repo: Path) -> str | None:
+    result = run_subprocess(
+        ["git", "symbolic-ref", "--quiet", "HEAD"], cwd=repo, capture_output=True
+    )
+    try:
+        ref = result.stdout.removesuffix(b"\n").decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return ref if result.returncode == 0 and ref.startswith("refs/heads/") else None
+
+
+def github_push_origin(repo: Path, expected: str | None) -> tuple[str, str]:
+    for flags in (("--all",), ("--all", "--push")):
+        result = run_subprocess(
+            ["git", "remote", "get-url", *flags, "origin"],
+            cwd=repo,
+            capture_output=True,
+        )
+        # Preserve whitespace and additional URLs: neither identifies a single canonical destination.
+        url = result.stdout.removesuffix(b"\n").decode("ascii", errors="replace")
+        destination = _private_submission_repository(url)
+        if (
+            result.returncode
+            or destination is None
+            or (expected is not None and destination.lower() != expected.lower())
+        ):
+            raise RuntimeError("push_destination_origin_unverified")
+        expected = destination.lower()
+    return expected, url
+
+
+def live_push_destination(
+    repo: Path, expected: str | None = None, *, base_ref: str | None = None
+) -> dict:
+    """Bind GitHub state to one effective origin without executing repository transports."""
+    expected, push_url = github_push_origin(repo, expected)
+    owner, name = expected.split("/")
+    base_variable = ""
+    base_selection = ""
+    base_args = []
+    if base_ref is not None:
+        prefix = "refs/remotes/origin/"
+        if not base_ref.startswith(prefix) or base_ref == prefix + "HEAD":
+            raise RuntimeError("push_destination_base_unverified")
+        branch = "refs/heads/" + base_ref[len(prefix) :]
+        base_variable = ",$base:String!"
+        base_selection = " baseline:ref(qualifiedName:$base){target{oid}}"
+        base_args = ["-f", "base=" + branch]
+    query = (
+        "query($owner:String!,$name:String!"
+        + base_variable
+        + "){repository(owner:$owner,name:$name)"
+        '{id nameWithOwner visibility isEmpty heads:refs(refPrefix:"refs/heads/",first:1)'
+        '{totalCount} tags:refs(refPrefix:"refs/tags/",first:1){totalCount}'
+        + base_selection
+        + "}}"
+    )
+    try:
+        result = run_subprocess(
+            [
+                "gh",
+                "api",
+                "--hostname",
+                "github.com",
+                "graphql",
+                "-f",
+                "query=" + query,
+                "-f",
+                "owner=" + owner,
+                "-f",
+                "name=" + name,
+                *base_args,
+            ],
+            capture_output=True,
+            timeout=20,
+            check=True,
+        )
+        response = json.loads(result.stdout)
+        live = response["data"]["repository"]
+        counts = [live["heads"]["totalCount"], live["tags"]["totalCount"]]
+        if (
+            not isinstance(live["id"], str)
+            or not live["id"]
+            or any(type(count) is not int or count < 0 for count in counts)
+            or response.get("errors")
+            or not isinstance(live["nameWithOwner"], str)
+            or live["nameWithOwner"].lower() != expected
+            or live["visibility"] not in {"PRIVATE", "PUBLIC", "INTERNAL"}
+            or type(live["isEmpty"]) is not bool
+        ):
+            raise ValueError("repository_state")
+        live_base = live["baseline"]["target"]["oid"] if base_ref is not None else None
+        if base_ref is not None and (
+            not isinstance(live_base, str)
+            or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", live_base)
+        ):
+            raise ValueError("repository_base")
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise RuntimeError("push_destination_live_verification_failed") from exc
+    if github_push_origin(repo, expected) != (expected, push_url):
+        raise RuntimeError("push_destination_origin_changed")
+    return {
+        "repository_sha256": hashlib.sha256(expected.encode("ascii")).hexdigest(),
+        "repository_id_sha256": hashlib.sha256(live["id"].encode("utf-8")).hexdigest(),
+        "push_url_sha256": hashlib.sha256(push_url.encode("ascii")).hexdigest(),
+        "visibility": live["visibility"].lower(),
+        "empty": live["isEmpty"],
+        "branch_count": counts[0],
+        "tag_count": counts[1],
+        "push_repository_verified": True,
+        "verification": "live_github_api",
+        **({"live_base_oid": live_base} if live_base is not None else {}),
+    }
+
+
+def verify_initial_private_save(repo: Path, expected: str) -> dict:
+    proof = live_push_destination(repo, expected)
+    if (
+        proof["visibility"] != "private"
+        or not proof["empty"]
+        or proof["branch_count"]
+        or proof["tag_count"]
+    ):
+        raise RuntimeError("initial_private_save_requires_empty_private_repository")
+    return proof
+
+
+def valid_initial_private_scope(
+    expected,
+    base_ref,
+    consistency_base_ref,
+    identity_base_ref,
+    private_submission,
+    release,
+):
+    return (
+        isinstance(expected, str)
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+", expected)
+        and expected.split("/")[1] not in {".", ".."}
+        and not any(
+            (
+                base_ref is not None,
+                consistency_base_ref is not None,
+                identity_base_ref is not None,
+                private_submission,
+                release,
+            )
+        )
+    )
+
+
 def verify_private_submission(
     repo: Path, remote: str, base_ref: str, base_oid: str
 ) -> dict:
@@ -3220,7 +3417,22 @@ def scan(
     allowed_identities: Path | None = None,
     media_inspection: str = "strict",
     allow_expected_private_commit_identity: bool = False,
+    initial_private_save: str | None = None,
 ) -> dict:
+    if initial_private_save is not None:
+        if not valid_initial_private_scope(
+            initial_private_save,
+            base_ref,
+            consistency_base_ref,
+            identity_base_ref,
+            private_submission,
+            release,
+        ):
+            return {
+                "status": "tool_error",
+                "issues": ["invalid_initial_private_save_scope"],
+            }
+        require_private_identity = True
     if allow_expected_private_commit_identity and (
         not private_submission or not base_ref or release or not expected_identity
     ):
@@ -3253,13 +3465,15 @@ def scan(
     repo = repo.resolve()
     root_error = repository_root_error(repo)
     if root_error is not None:
-        if private_submission:
+        if initial_private_save and "repository_root" in root_error:
+            root_error["repository_root"] = "<private-repository>"
+        if private_submission or initial_private_save:
             root_error["repo"] = "<private-repository>"
         return root_error
     repo = Path(run(repo, "git", "rev-parse", "--show-toplevel")[1]).resolve()
     report_repo_label = (
         "<private-repository>"
-        if private_submission
+        if private_submission or initial_private_save
         else repository_evidence_label(repo)
     )
     history_roots = ()
@@ -3304,7 +3518,7 @@ def scan(
     # 最短コマンドが change_sensitive_scope_unavailable で落ちないよう
     # origin/main を既定候補にする。usable でなければ従来どおり未指定のまま。
     consistency_base_was_defaulted = False
-    if consistency_base_ref is None and base_ref is None:
+    if consistency_base_ref is None and base_ref is None and not initial_private_save:
         defaulted = probe_consistency_base_ref(repo, DEFAULT_CONSISTENCY_BASE_REF)
         if defaulted is not None:
             consistency_base_ref = DEFAULT_CONSISTENCY_BASE_REF
@@ -3390,6 +3604,19 @@ def scan(
         resolved_base_ref = symbolic_probe[1]
         base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
+    initial_proof = None
+    push_ref = None
+    if initial_private_save:
+        push_ref = initial_save_branch(repo)
+        if push_ref is None:
+            return {
+                "status": "tool_error",
+                "issues": ["initial_private_save_requires_current_branch"],
+            }
+        try:
+            initial_proof = verify_initial_private_save(repo, initial_private_save)
+        except RuntimeError as exc:
+            return {"status": "tool_error", "issues": [str(exc)]}
     private_submission_proof = None
     if private_submission:
         try:
@@ -3440,8 +3667,22 @@ def scan(
         private_identity.report["media_content_privacy_verified"] = False
     credential_finding_count = 0
     credential_locations: list[str] = []
-    decoded_media_secrets: set[str] = set()
     path_hits: list[str] = []
+    if initial_private_save and private_identity.checker is not None:
+        for name in (initial_private_save, push_ref.removeprefix("refs/heads/")):
+            raw = name.encode("utf-8", errors="surrogateescape")
+            before = private_identity.findings
+            private_identity.check(raw, repository_name=True)
+            if private_identity.findings > before:
+                private_identity.record_location("push_destination", field="name")
+            if secret_matches(raw):
+                credential_finding_count += 1
+                credential_locations.append("<redacted-path>")
+            if personal_path_matches(raw) or normalized_personal_path_matches(
+                raw, private_identity.path_normalizer
+            ):
+                path_hits.append("<redacted-path>")
+    decoded_media_secrets: set[str] = set()
     unscanned_path_files: list[str] = []
     try:
         if private_submission:
@@ -3520,7 +3761,8 @@ def scan(
             label = sanitized_evidence_label(
                 rel,
                 private_name=(
-                    rel in private_worktree_sensitive_names
+                    initial_private_save is not None
+                    or rel in private_worktree_sensitive_names
                     or private_identity.report.get("status") == "tool_error"
                 ),
             )
@@ -3589,7 +3831,8 @@ def scan(
         label = sanitized_evidence_label(
             rel,
             private_name=(
-                rel in private_worktree_sensitive_names
+                initial_private_save is not None
+                or rel in private_worktree_sensitive_names
                 or private_identity.report.get("status") == "tool_error"
             ),
         )
@@ -3663,6 +3906,7 @@ def scan(
             reviewed_exceptions,
             private_identity if private_identity.checker is not None else None,
             **({"check_repository_names": True} if private_submission else {}),
+            **({"initial_private_save": True} if initial_private_save else {}),
             **(
                 {"approved_private_commit_identity": approved_private_commit_identity}
                 if approved_private_commit_identity is not None
@@ -3771,6 +4015,7 @@ def scan(
                     workflow.relative_to(repo).as_posix(),
                     private_name=(
                         private_submission
+                        or initial_private_save is not None
                         or workflow.relative_to(repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
@@ -3784,6 +4029,7 @@ def scan(
                     workflow.relative_to(repo).as_posix(),
                     private_name=(
                         private_submission
+                        or initial_private_save is not None
                         or workflow.relative_to(repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
@@ -3940,9 +4186,25 @@ def scan(
         },
         "origin": {
             "status": "pass" if remote else "unknown",
-            "url": "<private-origin>" if private_submission else redact_remote(remote),
+            "url": (
+                "<private-origin>"
+                if private_submission or initial_private_save
+                else redact_remote(remote)
+            ),
         },
     }
+    if initial_private_save:
+        for name in ("identity_gate", "public_attribution"):
+            for finding in checks[name].get("findings", []):
+                if finding.get("path"):
+                    finding["path"] = "<redacted-path>"
+        for name, key in (
+            ("secret_scan", "reviewed_exceptions"),
+            ("personal_path_scan", "reviewed_exceptions"),
+            ("private_identity_scan", "reviewed_path_exceptions"),
+        ):
+            for exception in checks[name].get(key, []):
+                exception["id"] = "<reviewed-exception>"
     if identity_base:
         checks["historical_identity_audit"] = {
             "status": "observed",
@@ -3951,7 +4213,9 @@ def scan(
             "scope": "all_refs",
         }
     checks["repository_consistency"] = run_consistency_gate(
-        repo, consistency_base_ref or base_ref
+        repo,
+        consistency_base_ref or base_ref,
+        **({"initial_private_save": True} if initial_proof else {}),
     )
     if release:
         release_baseline = (
@@ -4038,6 +4302,32 @@ def scan(
         ),
         "checks": checks,
     }
+    if initial_proof:
+        try:
+            if verify_initial_private_save(repo, initial_private_save) != initial_proof:
+                raise RuntimeError("initial_private_save_destination_changed")
+        except RuntimeError as exc:
+            return {"status": "tool_error", "issues": [str(exc)]}
+        try:
+            current_roots = fixed_history_revisions(repo, ("--all",))
+        except RuntimeError:
+            current_roots = ()
+        if (
+            initial_save_branch(repo) != push_ref
+            or current_roots != history_roots
+            or run(repo, "git", "rev-parse", "HEAD") != (0, head)
+        ):
+            return {
+                "status": "tool_error",
+                "issues": ["initial_private_save_local_refs_changed"],
+            }
+        report["scan_scope"].update(
+            mode="initial_private_save",
+            initial_private_save=initial_proof,
+            destination_ref_sha256=hashlib.sha256(push_ref.encode("utf-8")).hexdigest(),
+            head_oid=head,
+        )
+        report["consistency_scope"] = {"mode": "initial_private_save"}
     if private_submission and (
         run(repo, "git", "rev-parse", "HEAD") != (0, head)
         or run(repo, "git", "rev-parse", resolved_base_ref) != (0, base_oid)
@@ -4081,6 +4371,7 @@ class ScanOptions:
         allowed_identities: Path | None = None,
         media_inspection: str = "strict",
         allow_expected_private_commit_identity: bool = False,
+        initial_private_save: str | None = None,
     ) -> None:
         self.repo = repo
         self.release = release
@@ -4090,6 +4381,7 @@ class ScanOptions:
         self.show_json = show_json
         self.intent = intent
         self.base_ref = base_ref
+        self.initial_private_save = initial_private_save
         self.private_submission = private_submission
         self.allow_expected_private_commit_identity = (
             allow_expected_private_commit_identity
@@ -4131,6 +4423,18 @@ def enrich_report(report: dict, options: ScanOptions) -> dict:
 
 def build_intent_dialogue(options: ScanOptions) -> dict:
     """AI が外部操作直前に使う質問パケットを作る。"""
+    if options.initial_private_save is not None and (
+        options.intent != "push"
+        or not valid_initial_private_scope(
+            options.initial_private_save,
+            options.base_ref,
+            options.consistency_base_ref,
+            options.identity_base_ref,
+            options.private_submission,
+            options.release,
+        )
+    ):
+        raise ValueError("invalid_initial_private_save_scope")
     if options.allow_expected_private_commit_identity and (
         not options.private_submission
         or not options.expected_identity
@@ -4159,6 +4463,8 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
             "expected_identity": options.expected_identity,
             "release": release,
         }
+        if options.initial_private_save is not None:
+            scan_kwargs["initial_private_save"] = options.initial_private_save
         if options.private_submission:
             scan_kwargs["private_submission"] = True
         if options.allow_expected_private_commit_identity:
@@ -4179,6 +4485,32 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
         if options.allowed_identities is not None:
             scan_kwargs["allowed_identities"] = options.allowed_identities
         scan_report = scan(options.repo, **scan_kwargs)
+        if options.intent == "push" and scan_report.get("scan_scope", {}).get(
+            "mode"
+        ) in {"repository", "target_diff"}:
+            scope = scan_report["scan_scope"]
+            target_diff = scope["mode"] == "target_diff"
+            resolved_base = scope.get("resolved_base_ref") if target_diff else None
+            try:
+                if target_diff and not resolved_base:
+                    raise RuntimeError("push_destination_base_unverified")
+                proof = live_push_destination(options.repo, base_ref=resolved_base)
+            except RuntimeError:
+                proof = None
+            if (
+                proof
+                and not proof["empty"]
+                and (proof["branch_count"] or proof["tag_count"])
+                and (
+                    not target_diff
+                    or (
+                        proof.get("live_base_oid") == scope.get("base_oid")
+                        and run(options.repo, "git", "rev-parse", resolved_base)
+                        == (0, scope["base_oid"])
+                    )
+                )
+            ):
+                scope["existing_push_destination"] = proof
         scan_report = enrich_report(
             scan_report,
             ScanOptions(
@@ -4191,6 +4523,7 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 intent=options.intent,
                 base_ref=options.base_ref,
                 private_submission=options.private_submission,
+                initial_private_save=options.initial_private_save,
                 allow_expected_private_commit_identity=options.allow_expected_private_commit_identity,
                 consistency_base_ref=options.consistency_base_ref,
                 identity_base_ref=options.identity_base_ref,
@@ -4467,6 +4800,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--initial-private-save",
+        metavar="OWNER/REPO",
+        help="空のprivate originへの初回pushを実地確認し、全refを検査する",
+    )
+    parser.add_argument(
         "--private-submission",
         action="store_true",
         help="live確認済みprivate originへ送るcommit済みobjectsだけを検査。--base-refとpush/open_pr/merge専用",
@@ -4604,6 +4942,19 @@ def resolve_options(
         )
     consistency_base_ref = getattr(args, "consistency_base_ref", None)
     identity_base_ref = getattr(args, "identity_base_ref", None)
+    initial_private_save = getattr(args, "initial_private_save", None)
+    if initial_private_save is not None and (
+        intent != "push"
+        or not valid_initial_private_scope(
+            initial_private_save,
+            base_ref,
+            consistency_base_ref,
+            identity_base_ref,
+            private_submission,
+            args.release,
+        )
+    ):
+        raise SystemExit("error: invalid_initial_private_save_scope")
     if base_ref and consistency_base_ref:
         raise SystemExit("error: --base-ref and --consistency-base-ref are exclusive")
     if base_ref and intent not in {"push", "open_pr", "merge"}:
@@ -4640,6 +4991,7 @@ def resolve_options(
         options.allowed_identities = allowed_identities
         options.intent = intent
         options.base_ref = base_ref
+        options.initial_private_save = initial_private_save
         options.private_submission = private_submission
         options.allow_expected_private_commit_identity = allow_private_identity
         options.media_inspection = media_inspection
@@ -4662,6 +5014,7 @@ def resolve_options(
             intent=intent,
             base_ref=base_ref,
             private_submission=private_submission,
+            initial_private_save=initial_private_save,
             allow_expected_private_commit_identity=allow_private_identity,
             media_inspection=media_inspection,
             consistency_base_ref=consistency_base_ref,
@@ -4685,6 +5038,7 @@ def resolve_options(
         intent=intent,
         base_ref=base_ref,
         private_submission=private_submission,
+        initial_private_save=initial_private_save,
         allow_expected_private_commit_identity=allow_private_identity,
         media_inspection=media_inspection,
         consistency_base_ref=consistency_base_ref,

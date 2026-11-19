@@ -31,6 +31,7 @@ python "<THIS_SKILL_DIR>/run_preflight.py" --intent create_repo --human
 
 `intent`: `create_repo` | `push` | `open_pr` | `merge` | `configure_settings` | `publish` | `release`  
 Use `--repo` for every intent except `create_repo`.
+For the first push to an empty private repository, pass the intended destination with `--intent push --initial-private-save OWNER/REPO`.
 For normal updates to an existing private GitHub repo, use `--private-submission` with `--base-ref`.
 The canonical skill defines the live private/base/push checks and committed-content scope; unsent worktree content is excluded.
 Without `--private-submission`, the private identity gate retains its full-inventory behavior.

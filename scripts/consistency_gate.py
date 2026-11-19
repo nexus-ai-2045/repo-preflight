@@ -250,7 +250,9 @@ def _capability_recommendations(changed: list[str]) -> list[dict]:
     return recommendations
 
 
-def _ratchet_result(config: dict, findings: list[str]) -> dict:
+def _ratchet_result(
+    config: dict, findings: list[str], *, initial_private_save: bool = False
+) -> dict:
     ratchet = config.get("ratchet", {})
     if not isinstance(ratchet, dict):
         raise ValueError("invalid_consistency_config")
@@ -260,6 +262,15 @@ def _ratchet_result(config: dict, findings: list[str]) -> dict:
     ):
         raise ValueError("invalid_consistency_config")
     baseline_set = set(baseline)
+    if initial_private_save:
+        # Deferred checks cannot establish that an accepted finding was resolved.
+        baseline_set = {
+            item
+            for item in baseline_set
+            if not item.startswith(
+                ("related_docs_update_missing:", "generated_artifact_update_missing:")
+            )
+        }
     finding_set = set(findings)
     return {
         "accepted": sorted(finding_set & baseline_set),
@@ -701,7 +712,15 @@ def _single_complete_root(repo: Path) -> bool:
     return probes[0] == "false" and probes[1] == "1" and len(probes[2].split()) == 1
 
 
-def check(repo: Path, *, base_ref: str | None = None) -> dict:
+def check(
+    repo: Path, *, base_ref: str | None = None, initial_private_save: bool = False
+) -> dict:
+    if initial_private_save and base_ref is not None:
+        return {
+            "status": "tool_error",
+            "mode": None,
+            "findings": ["unexpected_initial_save_base"],
+        }
     repo = repo.resolve()
     # GitHubの初回push通知のbeforeはGit objectではなく、比較元なしの印。
     # 初期履歴かどうかは下の実測条件で確認し、既存履歴を免除しない。
@@ -718,13 +737,14 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
         change_sensitive = bool(impact_rules) or any(
             artifact.get("sources") for artifact in artifacts
         )
+        comparison_required = change_sensitive and not initial_private_save
         initial_tree = (
-            change_sensitive and base_ref is None and _single_complete_root(repo)
+            comparison_required and base_ref is None and _single_complete_root(repo)
         )
         if initial_tree:
             # 比較元を捏造せず、初期状態の全fileを追加されたfileとして照合する。
             changed = list(files)
-        if change_sensitive and base_ref is None and not initial_tree:
+        if comparison_required and base_ref is None and not initial_tree:
             return {
                 "status": "tool_error",
                 "mode": None,
@@ -747,13 +767,17 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
             contracts = config["readme_contracts"]
             findings.extend(_readme_findings(repo, contracts, tracked_files))
         impact, impact_findings = _impact_results(
-            repo, base_ref or "", changed, impact_rules
+            repo, base_ref or "", changed, [] if initial_private_save else impact_rules
         )
         findings.extend(impact_findings)
         findings.extend(_artifact_findings(repo, artifacts, changed))
         findings = sorted(set(findings))
         mode = config["mode"]
-        ratchet = _ratchet_result(config, findings) if mode == "ratchet" else None
+        ratchet = (
+            _ratchet_result(config, findings, initial_private_save=initial_private_save)
+            if mode == "ratchet"
+            else None
+        )
         unreadable_markdown = any(
             finding.startswith(("markdown_unreadable:", "readme_unreadable:"))
             for finding in findings
@@ -768,15 +792,25 @@ def check(repo: Path, *, base_ref: str | None = None) -> dict:
                 if not findings
                 else ("fail" if mode == "enforce" else "shadow_findings")
             )
+        finding_count = len(findings)
+        if initial_private_save:
+            # Findings are generated here; their suffixes and the configured baseline can contain private names.
+            findings = sorted({finding.partition(":")[0] for finding in findings})
+            if ratchet is not None:
+                ratchet = {key: len(items) for key, items in ratchet.items()}
         return {
             "status": status,
             "comparison_scope": (
-                "initial_tree"
-                if initial_tree
-                else "base_ref" if base_ref else "not_required"
+                "deferred_until_first_pr"
+                if initial_private_save
+                else (
+                    "initial_tree"
+                    if initial_tree
+                    else "base_ref" if base_ref else "not_required"
+                )
             ),
             "mode": mode,
-            "finding_count": len(findings),
+            "finding_count": finding_count,
             "findings": findings,
             "impact": impact,
             "ratchet": ratchet,

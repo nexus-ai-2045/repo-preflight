@@ -78,6 +78,8 @@ jobs:
 - checkoutの`persist-credentials: false`は維持します。非公開の利用側でも比較元を取得できるよう、組込み`github.token`（`contents: read`）の認証headerをそのfetch一命令の環境だけへ渡します。credential helperとtraceを抑え、tokenをGit設定ファイルへ保存せず、raw tokenや認証設定を後続の検査processへ渡しません。追加Secretsや権限拡張は不要です。
 - 比較元の欠落・不正・非祖先、checkoutとイベントHEADの不一致、force push、削除通知は検査本体へ進めず停止します。初回pushのゼロ比較元だけは、既存の`initial_tree`契約（非shallowかつ全参照で単一root commit）を確認して全体検査します。空commitや架空の比較元は作りません。PR・merge queue・push以外からの呼出しは未対応として停止します。
 
+初回private保存の送信前検査は、送信先が空のうちにGitHubへ問い合わせます。送信後のCIに届くゼロ比較元は、既存リポジトリにブランチを追加した場合にも発生します。そのため、複数コミットの初回保存で送信前の検査が通っても、共通CIはゼロ比較元を証明不足として停止します。最初のPRではイベントの比較元を使って文書・生成物の追随を検査します。
+
 ### 全 ref の定期検査（repo-preflight 本体）
 
 通常のPR・pushのCIは、そのイベントのcommitから辿れる履歴だけを見ます。PRの無い枝・タグ・閉じたPRのheadは、本体では `.github/workflows/all-refs-scan.yml` が毎日（03:17 UTC）と手動実行で見ます。監査器・規則・許可一覧・基準値を変更したmainへのpushでも、同じ全ref検査を実行します。分割したscanner部品も対象とし、通常の文書・テストだけの変更では追加起動しません。対象pathの正本は同workflowの `push.paths` です。検査本体と読み取り専用の権限は共通です。

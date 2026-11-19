@@ -233,6 +233,8 @@ def enrich_report(
         "reviewed_secret_exceptions_configured": options.reviewed_secret_exceptions
         is not None,
     }
+    if options.initial_private_save is not None:
+        enriched["options"]["mode"] = "initial_private_save"
     enriched.update(boundary_sections())
     if options.media_inspection == "metadata":
         enriched["guarantees"].append(
