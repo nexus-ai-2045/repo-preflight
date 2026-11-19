@@ -2509,11 +2509,11 @@ def plan_branch_protection(
     except ProtectionShapeError as exc:
         return _blocked_plan(plan, f"protection_shape_not_interpreted:{exc}")
     reviews = (current or {}).get("required_pull_request_reviews") or {}
-    bypass_users = (reviews.get("bypass_pull_request_allowances") or {}).get(
-        "users", []
-    )
-    if login.lower() in {name.lower() for name in bypass_users}:
+    bypass = reviews.get("bypass_pull_request_allowances") or {}
+    if login.lower() in {name.lower() for name in bypass.get("users", [])}:
         return _blocked_plan(plan, "authenticated_login_bypasses_pull_request")
+    if bypass.get("teams") or bypass.get("apps"):
+        return _blocked_plan(plan, "pull_request_bypass_membership_not_resolved")
     dismissal = reviews.get("dismissal_restrictions")
     if dismissal is not None:
         owner_type = (root.get("owner") or {}).get("type")
@@ -2569,6 +2569,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(
     argv: list[str] | None = None, *, api_get: Callable[[str], Any] = gh_api_get
 ) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

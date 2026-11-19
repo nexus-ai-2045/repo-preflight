@@ -144,7 +144,6 @@ def test_existing_protection_is_overlaid_without_loosening_other_items():
     }
     existing["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {
         "users": [{"login": "maintainer"}],
-        "teams": [{"slug": "core"}],
     }
     responses[CLASSIC_ENDPOINT] = existing
 
@@ -164,7 +163,7 @@ def test_existing_protection_is_overlaid_without_loosening_other_items():
     assert body["required_pull_request_reviews"]["required_approving_review_count"] == 2
     assert body["required_pull_request_reviews"]["bypass_pull_request_allowances"] == {
         "users": ["maintainer"],
-        "teams": ["core"],
+        "teams": [],
         "apps": [],
     }
     assert body["required_linear_history"] is True
@@ -538,3 +537,18 @@ def test_readback_query_detects_loosened_preserved_items():
     read["required_status_checks"]["strict"] = True
     read["required_linear_history"] = {"enabled": False}
     assert evaluate(read) != result["readback"]["expected"]
+
+
+@pytest.mark.parametrize(
+    "bypass",
+    [{"teams": [{"slug": "core"}]}, {"apps": [{"slug": "release-bot"}]}],
+)
+def test_team_or_app_pull_request_bypass_blocks(bypass):
+    responses = org_responses()
+    existing = classic_protection(contexts=CHECKS)
+    existing["required_pull_request_reviews"]["bypass_pull_request_allowances"] = bypass
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    assert result["blocked_reasons"] == ["pull_request_bypass_membership_not_resolved"]

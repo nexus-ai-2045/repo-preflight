@@ -119,7 +119,7 @@ python scripts/github_settings_gate.py protection-plan --repository OWNER/REPO \
 - 会話の解決を必須にする。強制の送信と枝の削除を禁止する。
 - 必須の検査は、指定した名前を既存の必須の検査に足す。名前は直近にmergeされたプルリクエストのhead commitで実際に出た検査と照らし（上の必須status checksと同じ方法）、照らせない名前が1つでもあれば`blocked`にする。マージ済みのプルリクエストが無い新しいrepositoryも`blocked`になる。名前の空、前後の空白、重複は入口で拒む。
 
-次の場合も`blocked`にする。認証accountが`--expected-login`と違う（省略も不可）、認証accountが既存のPR要件のbypass許可に入っている（AIに保護が効かない）、既存の却下の制限が空、または組織以外のrepositoryにある（空の制限を送ると制限が外れるため）、repositoryの同定が合わない、rulesetの読み取りが確認不能、default branchを保護するrulesetがある（rulesetは解釈せず別に判断する）、classic branch protectionを読めない（非公開repositoryの無料planの403を含む）、GETの応答に解釈できない項目がある。
+次の場合も`blocked`にする。認証accountが`--expected-login`と違う（省略も不可）、認証accountが既存のPR要件のbypass許可に入っている、またはbypass許可にteamかappがある（所属を安全に確かめられず、AIに保護が効かない恐れがある）、既存の却下の制限が空、または組織以外のrepositoryにある（空の制限を送ると制限が外れるため）、repositoryの同定が合わない、rulesetの読み取りが確認不能、default branchを保護するrulesetがある（rulesetは解釈せず別に判断する）、classic branch protectionを読めない（非公開repositoryの無料planの403を含む）、GETの応答に解釈できない項目がある。
 
 `overlay`は、上の「取り直した現在値へ承認された項目の変更だけを重ねて1回で送る」手順をclassic branch protectionへ当てたものである。GETとPUTは形が違う（`enforce_admins.enabled`と真偽値、`checks`の`app_id`、push制限の利用者の表し方）ため、変換は関門が行い、変換できない項目があれば落とさずに止める。`app_id`の無い既存の検査は、どのappからでも良い意味の`-1`で保つ。
 
