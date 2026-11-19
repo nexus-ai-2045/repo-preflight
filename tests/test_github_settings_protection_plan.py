@@ -29,6 +29,7 @@ def unprotected_responses():
 
 
 def plan(responses, checks=CHECKS, profile="solo_public", **kwargs):
+    kwargs.setdefault("expected_login", "example")
     get, calls = fake_api(responses)
     result = MODULE.plan_branch_protection(REPO, profile, checks, api_get=get, **kwargs)
     return result, calls
@@ -55,6 +56,7 @@ def get_shape(body):
             ],
         },
         "required_signatures": {"enabled": False},
+        "restrictions": None,
         "enforce_admins": {"enabled": body["enforce_admins"]},
         "required_linear_history": {"enabled": False},
         "allow_force_pushes": {"enabled": body["allow_force_pushes"]},
@@ -91,13 +93,14 @@ def test_unprotected_branch_gets_a_create_plan_with_admins_enforced():
             "allow_deletions": False,
         },
     }
-    assert result["readback"]["expected"] == [
+    assert result["readback"]["expected"][:7] == [
         True,
         0,
         True,
         False,
         False,
         ["gate / preflight", "verify"],
+        False,
     ]
     assert result["external_actions_performed"] is False
     assert PULLS_ENDPOINT in calls
@@ -298,7 +301,15 @@ def test_cli_prints_plan_and_exits_nonzero_when_blocked(capsys):
     get, _ = fake_api(unprotected_responses())
 
     code = MODULE.main(
-        ["protection-plan", "--repository", REPO, "--require-check", "lint"],
+        [
+            "protection-plan",
+            "--repository",
+            REPO,
+            "--require-check",
+            "lint",
+            "--expected-login",
+            "example",
+        ],
         api_get=get,
     )
 
@@ -310,7 +321,15 @@ def test_cli_exits_zero_for_create_plan(capsys):
     get, _ = fake_api(unprotected_responses())
 
     code = MODULE.main(
-        ["protection-plan", "--repository", REPO, "--require-check", "verify"],
+        [
+            "protection-plan",
+            "--repository",
+            REPO,
+            "--require-check",
+            "verify",
+            "--expected-login",
+            "example",
+        ],
         api_get=get,
     )
 
@@ -352,3 +371,170 @@ def test_readback_query_detects_admins_not_enforced():
     ).stdout
 
     assert json.loads(output) != result["readback"]["expected"]
+
+
+def org_responses():
+    responses = unprotected_responses()
+    root = dict(responses[f"repos/{REPO}"])
+    root["owner"] = {"login": "example-org", "type": "Organization"}
+    responses[f"repos/{REPO}"] = root
+    return responses
+
+
+def test_missing_expected_login_blocks():
+    result, _ = plan(unprotected_responses(), expected_login=None)
+
+    assert result["blocked_reasons"] == ["expected_login_not_given"]
+
+
+def test_cli_requires_expected_login():
+    with pytest.raises(SystemExit) as raised:
+        MODULE.main(
+            ["protection-plan", "--repository", REPO, "--require-check", "a"],
+            api_get=None,
+        )
+    assert raised.value.code == 2
+
+
+def test_authenticated_login_in_pull_request_bypass_blocks():
+    responses = unprotected_responses()
+    existing = classic_protection(contexts=CHECKS)
+    existing["required_pull_request_reviews"]["bypass_pull_request_allowances"] = {
+        "users": [{"login": "Example"}],
+        "teams": [],
+        "apps": [],
+    }
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    assert result["blocked_reasons"] == ["authenticated_login_bypasses_pull_request"]
+
+
+def test_dismissal_restrictions_are_converted_for_organization_repository():
+    responses = org_responses()
+    existing = classic_protection(contexts=CHECKS, conversation_resolution=False)
+    existing["required_pull_request_reviews"]["dismissal_restrictions"] = {
+        "users": [{"login": "lead"}],
+        "teams": [{"slug": "core"}],
+    }
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    reviews = result["operation"]["body"]["required_pull_request_reviews"]
+    assert reviews["dismissal_restrictions"] == {
+        "users": ["lead"],
+        "teams": ["core"],
+        "apps": [],
+    }
+    assert result["readback"]["expected"][7]["dismissal"] == {
+        "users": ["lead"],
+        "teams": ["core"],
+        "apps": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("responses", "dismissal", "reason"),
+    [
+        (
+            org_responses,
+            {"users": [], "teams": [], "apps": []},
+            "empty_dismissal_restrictions_not_preserved",
+        ),
+        (
+            unprotected_responses,
+            {"users": [{"login": "lead"}]},
+            "dismissal_restrictions_on_non_organization_repository",
+        ),
+    ],
+)
+def test_dismissal_restrictions_that_would_be_lost_block(responses, dismissal, reason):
+    responses = responses()
+    existing = classic_protection(contexts=CHECKS)
+    existing["required_pull_request_reviews"]["dismissal_restrictions"] = dismissal
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    assert result["blocked_reasons"] == [reason]
+
+
+def test_contexts_only_response_is_converted_to_any_app_checks():
+    responses = unprotected_responses()
+    existing = classic_protection(contexts=CHECKS, conversation_resolution=False)
+    del existing["required_status_checks"]["checks"]
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    assert result["operation"]["body"]["required_status_checks"]["checks"] == [
+        {"context": "verify", "app_id": -1},
+        {"context": "gate / preflight", "app_id": -1},
+    ]
+
+
+def test_team_profile_raises_existing_zero_approvals_to_one():
+    responses = unprotected_responses()
+    responses[CLASSIC_ENDPOINT] = classic_protection(contexts=CHECKS, approvals=0)
+
+    result, _ = plan(responses, profile="team_public")
+
+    assert result["state"] == "overlay"
+    body = result["operation"]["body"]
+    assert body["required_pull_request_reviews"]["required_approving_review_count"] == 1
+
+
+def test_documented_response_metadata_is_ignored():
+    responses = unprotected_responses()
+    existing = classic_protection(contexts=CHECKS)
+    existing.update(enabled=True, name="main", protection_url="https://example.invalid")
+    responses[CLASSIC_ENDPOINT] = existing
+
+    result, _ = plan(responses)
+
+    assert result["state"] == "noop"
+
+
+def test_ruleset_with_uninterpreted_scope_blocks():
+    responses = compliant_responses()
+    ruleset = dict(responses[f"repos/{REPO}/rulesets/7"])
+    ruleset["conditions"] = {"ref_name": {"include": ["~ALL"], "exclude": []}}
+    responses[f"repos/{REPO}/rulesets/7"] = ruleset
+
+    result, _ = plan(responses)
+
+    assert result["blocked_reasons"] == ["rulesets:ruleset_scope_not_interpreted:7"]
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq が無い")
+def test_readback_query_detects_loosened_preserved_items():
+    responses = unprotected_responses()
+    existing = classic_protection(
+        contexts=CHECKS, strict=True, conversation_resolution=False
+    )
+    existing["required_linear_history"] = {"enabled": True}
+    responses[CLASSIC_ENDPOINT] = existing
+    result, _ = plan(responses)
+    read = json.loads(json.dumps(existing))
+    read["enforce_admins"] = {"enabled": True}
+    read["required_conversation_resolution"] = {"enabled": True}
+
+    def evaluate(payload):
+        return json.loads(
+            subprocess.run(
+                ["jq", "-r", result["readback"]["jq"]],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+
+    assert evaluate(read) == result["readback"]["expected"]
+    read["required_status_checks"]["strict"] = False
+    assert evaluate(read) != result["readback"]["expected"]
+    read["required_status_checks"]["strict"] = True
+    read["required_linear_history"] = {"enabled": False}
+    assert evaluate(read) != result["readback"]["expected"]

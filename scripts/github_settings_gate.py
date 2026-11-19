@@ -2156,13 +2156,27 @@ def review_repository(
 
 
 PROTECTION_PLAN_SCHEMA_VERSION = "repo-preflight.branch-protection-plan/v1"
+_READBACK_ACTORS = (
+    "(. // {} | {users: ([.users[]?.login] | sort), teams: ([.teams[]?.slug] | sort),"
+    " apps: ([.apps[]?.slug] | sort)})"
+)
 PROTECTION_READBACK_JQ = (
     "[.enforce_admins.enabled,"
     " .required_pull_request_reviews.required_approving_review_count,"
     " .required_conversation_resolution.enabled,"
     " .allow_force_pushes.enabled,"
     " .allow_deletions.enabled,"
-    " ([(.required_status_checks.checks // [])[].context] | sort)] | tojson"
+    " ([(.required_status_checks.checks // [])[].context] | sort),"
+    " .required_status_checks.strict,"
+    " (.required_pull_request_reviews | if . == null then null else"
+    " {dismiss_stale_reviews, require_code_owner_reviews, require_last_push_approval,"
+    f" bypass: (.bypass_pull_request_allowances | {_READBACK_ACTORS}),"
+    f" dismissal: (.dismissal_restrictions | {_READBACK_ACTORS})}} end),"
+    f" (.restrictions | if . == null then null else {_READBACK_ACTORS} end),"
+    " .required_linear_history.enabled,"
+    " .block_creations.enabled,"
+    " .lock_branch.enabled,"
+    " .allow_fork_syncing.enabled] | tojson"
 )
 PROTECTION_BASIS_DIGEST = (
     "sha256(json.dumps(GET本文, sort_keys=True, separators=(',', ':'), "
@@ -2177,7 +2191,13 @@ _CLASSIC_BOOL_FIELDS = (
     "lock_branch",
     "allow_fork_syncing",
 )
-_CLASSIC_IGNORED_FIELDS = ("url", "required_signatures")
+_CLASSIC_IGNORED_FIELDS = (
+    "url",
+    "required_signatures",
+    "enabled",
+    "name",
+    "protection_url",
+)
 _REVIEW_BOOL_FIELDS = (
     "dismiss_stale_reviews",
     "require_code_owner_reviews",
@@ -2363,14 +2383,32 @@ def overlay_baseline(
     return body
 
 
+def _sorted_actors(node: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    node = node or {}
+    return {kind: sorted(node.get(kind, [])) for kind, _ in _ACTOR_KEYS}
+
+
 def protection_readback(body: dict[str, Any]) -> list[Any]:
+    reviews = body["required_pull_request_reviews"]
+    restrictions = body["restrictions"]
     return [
         body["enforce_admins"],
-        body["required_pull_request_reviews"]["required_approving_review_count"],
+        reviews["required_approving_review_count"],
         body["required_conversation_resolution"],
         body["allow_force_pushes"],
         body["allow_deletions"],
         sorted(item["context"] for item in body["required_status_checks"]["checks"]),
+        body["required_status_checks"]["strict"],
+        {
+            **{key: reviews.get(key, False) for key in _REVIEW_BOOL_FIELDS},
+            "bypass": _sorted_actors(reviews.get("bypass_pull_request_allowances")),
+            "dismissal": _sorted_actors(reviews.get("dismissal_restrictions")),
+        },
+        None if restrictions is None else _sorted_actors(restrictions),
+        body.get("required_linear_history", False),
+        body.get("block_creations", False),
+        body.get("lock_branch", False),
+        body.get("allow_fork_syncing", False),
     ]
 
 
@@ -2415,7 +2453,9 @@ def plan_branch_protection(
     plan["authenticated_login"] = login
     if user_error is not None or not login:
         return _blocked_plan(plan, "authenticated_login_unavailable")
-    if expected_login and login.lower() != expected_login.lower():
+    if not expected_login:
+        return _blocked_plan(plan, "expected_login_not_given")
+    if login.lower() != expected_login.lower():
         return _blocked_plan(plan, "authenticated_login_mismatch")
     root, root_error = _fetch(api_get, f"repos/{repository}")
     if root_error is not None or not isinstance(root, dict):
@@ -2428,7 +2468,7 @@ def plan_branch_protection(
         return _blocked_plan(plan, "default_branch_unknown")
     rulesets, ruleset_unavailable = _read_rulesets(repository, api_get)
     if ruleset_unavailable:
-        return _blocked_plan(plan, f"rulesets_unavailable:{ruleset_unavailable}")
+        return _blocked_plan(plan, f"rulesets:{ruleset_unavailable}")
     if rulesets:
         return _blocked_plan(
             plan,
@@ -2468,6 +2508,21 @@ def plan_branch_protection(
         current = protection_put_body(classic) if classic is not None else None
     except ProtectionShapeError as exc:
         return _blocked_plan(plan, f"protection_shape_not_interpreted:{exc}")
+    reviews = (current or {}).get("required_pull_request_reviews") or {}
+    bypass_users = (reviews.get("bypass_pull_request_allowances") or {}).get(
+        "users", []
+    )
+    if login.lower() in {name.lower() for name in bypass_users}:
+        return _blocked_plan(plan, "authenticated_login_bypasses_pull_request")
+    dismissal = reviews.get("dismissal_restrictions")
+    if dismissal is not None:
+        owner_type = (root.get("owner") or {}).get("type")
+        if owner_type != "Organization":
+            return _blocked_plan(
+                plan, "dismissal_restrictions_on_non_organization_repository"
+            )
+        if not any(dismissal.values()):
+            return _blocked_plan(plan, "empty_dismissal_restrictions_not_preserved")
     desired = overlay_baseline(current, checks, minimum)
     if current == desired:
         state = "noop"
@@ -2507,7 +2562,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         dest="required_checks",
     )
-    plan.add_argument("--expected-login")
+    plan.add_argument("--expected-login", required=True)
     return parser
 
 
