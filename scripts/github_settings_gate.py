@@ -2156,6 +2156,7 @@ def review_repository(
 
 
 PROTECTION_PLAN_SCHEMA_VERSION = "repo-preflight.branch-protection-plan/v1"
+GITHUB_ACTIONS_APP_ID = 15368
 _READBACK_ACTORS = (
     "(. // {} | {users: ([.users[]?.login] | sort), teams: ([.teams[]?.slug] | sort),"
     " apps: ([.apps[]?.slug] | sort)})"
@@ -2166,7 +2167,7 @@ PROTECTION_READBACK_JQ = (
     " .required_conversation_resolution.enabled,"
     " .allow_force_pushes.enabled,"
     " .allow_deletions.enabled,"
-    " ([(.required_status_checks.checks // [])[].context] | sort),"
+    " ([(.required_status_checks.checks // [])[] | {context, app_id: (if (.app_id | type) == \"number\" then .app_id else -1 end)}] | sort_by(.context)),"
     " .required_status_checks.strict,"
     " (.required_pull_request_reviews | if . == null then null else"
     " {dismiss_stale_reviews, require_code_owner_reviews, require_last_push_approval,"
@@ -2379,7 +2380,11 @@ def overlay_baseline(
         status = {"strict": False, "checks": []}
         body["required_status_checks"] = status
     present = {item["context"] for item in status["checks"]}
-    status["checks"].extend({"context": name} for name in checks if name not in present)
+    status["checks"].extend(
+        {"context": name, "app_id": GITHUB_ACTIONS_APP_ID}
+        for name in checks
+        if name not in present
+    )
     return body
 
 
@@ -2397,7 +2402,21 @@ def protection_readback(body: dict[str, Any]) -> list[Any]:
         body["required_conversation_resolution"],
         body["allow_force_pushes"],
         body["allow_deletions"],
-        sorted(item["context"] for item in body["required_status_checks"]["checks"]),
+        sorted(
+            (
+                {
+                    "context": item["context"],
+                    "app_id": (
+                        item["app_id"]
+                        if isinstance(item.get("app_id"), int)
+                        and not isinstance(item.get("app_id"), bool)
+                        else -1
+                    ),
+                }
+                for item in body["required_status_checks"]["checks"]
+            ),
+            key=lambda item: item["context"],
+        ),
         body["required_status_checks"]["strict"],
         {
             **{key: reviews.get(key, False) for key in _REVIEW_BOOL_FIELDS},

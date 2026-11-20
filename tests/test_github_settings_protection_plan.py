@@ -83,7 +83,7 @@ def test_unprotected_branch_gets_a_create_plan_with_admins_enforced():
         "body": {
             "required_status_checks": {
                 "strict": False,
-                "checks": [{"context": "verify"}, {"context": "gate / preflight"}],
+                "checks": [{"context": "verify", "app_id": 15368}, {"context": "gate / preflight", "app_id": 15368}],
             },
             "enforce_admins": True,
             "required_pull_request_reviews": {"required_approving_review_count": 0},
@@ -99,7 +99,10 @@ def test_unprotected_branch_gets_a_create_plan_with_admins_enforced():
         True,
         False,
         False,
-        ["gate / preflight", "verify"],
+        [
+            {"context": "gate / preflight", "app_id": 15368},
+            {"context": "verify", "app_id": 15368},
+        ],
         False,
     ]
     assert result["external_actions_performed"] is False
@@ -157,7 +160,7 @@ def test_existing_protection_is_overlaid_without_loosening_other_items():
         "strict": True,
         "checks": [
             {"context": "verify", "app_id": 15368},
-            {"context": "gate / preflight"},
+            {"context": "gate / preflight", "app_id": 15368},
         ],
     }
     assert body["required_pull_request_reviews"]["required_approving_review_count"] == 2
@@ -356,6 +359,31 @@ def test_readback_query_matches_expected_on_real_get_shape(check_name):
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq が無い")
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq が無い")
+def test_readback_query_detects_lost_check_app_binding():
+    responses = unprotected_responses()
+    existing = classic_protection(contexts=CHECKS)
+    responses[CLASSIC_ENDPOINT] = existing
+    result, _ = plan(responses)
+    assert result["state"] == "noop"
+    read = json.loads(json.dumps(existing))
+
+    def evaluate(payload):
+        return json.loads(
+            subprocess.run(
+                ["jq", "-r", result["readback"]["jq"]],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+
+    assert evaluate(read) == result["readback"]["expected"]
+    read["required_status_checks"]["checks"][0]["app_id"] = None
+    assert evaluate(read) != result["readback"]["expected"]
+
+
 def test_readback_query_detects_admins_not_enforced():
     result, _ = plan(unprotected_responses())
     read = get_shape(result["operation"]["body"])
