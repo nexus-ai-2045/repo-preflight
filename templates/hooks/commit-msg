@@ -14,7 +14,7 @@ done
 [ -n "$PY" ] || {
   echo "Python 3.9 以上が見つからないので commit を止めます（python3 --version で版を確かめ、3.9 以上を入れてください）" >&2; exit 1; }
 export PYTHONUTF8=1  # 子プロセス用（本体は -X utf8）
-# コミット文：署名行は許可名義と完全一致、本文はセッション行・ホームパス・名簿にないメール・鍵の形
+# コミット文：署名行は許可名義と完全一致（共著者行は個人メールのものだけ止める）、本文はホームパス・名簿にないメール・個人メール・鍵の形
 $PY "$G" --public --repo . --message-file "$1" >/dev/null || exit 1
 if [ -x .githooks/commit-msg ]; then exec .githooks/commit-msg "$@"; fi
 exit 0

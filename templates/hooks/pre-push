@@ -14,7 +14,7 @@ done
   echo "Python 3.9 以上が見つからないので push を止めます（python3 --version で版を確かめ、3.9 以上を入れてください）" >&2; exit 1; }
 export PYTHONUTF8=1  # 子プロセス用（本体は -X utf8）
 input=$(cat)
-# (1) 名義と形：作者・記録者・署名行（〜-by:）を許可名義と完全一致で、本文と足した行をセッション行・ホームパス・名簿にないメール・鍵の形で。
+# (1) 名義と形：作者・記録者・署名行（共著者行以外の 〜-by:）を許可名義と完全一致で、本文と足した行をホームパス・名簿にないメール・個人メール・鍵の形で。共著者行（Co-authored-by）は受け入れ、個人メールのものだけ止める。
 #     注釈タグの作者と本文、相手に無い根の commit、固定した gitleaks もここで見る
 printf '%s\n' "$input" | $PY "$RP/scripts/identity_gate.py" --public --pre-push --remote "$remote" || exit 1
 # (2) 秘密情報：送る範囲の gitleaks は (1) の中で、固定した版（references/gitleaks-pins.json のハッシュ）だけを使って見る

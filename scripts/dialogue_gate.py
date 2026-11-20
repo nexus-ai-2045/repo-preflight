@@ -403,7 +403,7 @@ def build_proposals_from_scan(
                 kind="privacy_hold",
                 severity="required",
                 question=(
-                    "名義・共同作者行・コミット本文の検査に合格していません。"
+                    "名義・コミット本文の検査に合格していません。"
                     "値を本文へ書かず、既存の環境自動取得と非公開設定を確認して再検査しますか?"
                     "（無視して進む選択肢はありません）"
                 ),

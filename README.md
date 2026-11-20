@@ -12,7 +12,7 @@ Repo Preflight は、AIにリポジトリの作成や共有を任せるとき、
 
 - APIキーなどの既知の形式と個人パスを、履歴・ファイル・コミット情報から検出します。
 - **必須の文書**（README.md、LICENSE、SECURITY.md、CONTRIBUTING.md、PREFLIGHT.md）と、文書・コマンド・コードの整合性を確認します。
-- 作者・コミッター・共同作者行を、非公開の名義設定やレビュー済みの公開許可一覧と照合します。
+- 作者・コミッターを、非公開の名義設定やレビュー済みの公開許可一覧と照合します。共著者行（Co-authored-by）は受け入れ、個人メールのものだけ止めます。
 - `--intent`で操作前の確認事項をJSONとして返します。GitHub Settingsは実測と変更案の提示まで行います。
 
 現在版は **0.14.0** です。今回の変更と移行事項は[リリースノート](docs/releases/v0.14.0.md)、過去の変更は[CHANGELOG](CHANGELOG.md)を参照してください。
@@ -63,7 +63,7 @@ Python 3.9・3.10のテキストと標準PNG検査は維持します。旧Pillow
 
 | 設定 | 用途 |
 |---|---|
-| `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` | 名義・共同作者行を照合するJSON |
+| `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` | 名義を照合するJSON |
 | `PUBLIC_IDENTITY_DENYLIST` | 操作intentで必須の、個人識別子リストの絶対パス |
 
 設定の形式・適用範囲は[CLI・AI連携の詳細](docs/cli-reference.md)にあります。

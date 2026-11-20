@@ -123,7 +123,7 @@ python /path/to/repo-preflight/scripts/preflight_ratchet.py --repo . --update-ba
 
 数える検査は `clean_worktree`、`required_documents`、`secret_scan`、`personal_path_scan`、`commit_identity`、`dependency_configuration`、`ci_configuration`、`origin`、`repository_consistency` です。件数欄が無い検査は `fail` か `unknown` を1件と数えます。
 
-公開名義の検査`public_attribution`は、この件数比較とは独立した必須検査です。共通CIと`preflight_ratchet.py`は既定で`references/public-commit-identities.json`を使い、全履歴の作者・コミッター・共同作者・署名行を検査します。`REDACTED`等の伏せ字や許可外の名義は、基準値を増やしても免除できず`blocked`（終了コード1）になります。結果が欠ける・検査不能なら終了コード2で止まります。名義やメールの生値は結果に出しません。既定の一覧はこのprojectの公開名義です。別の名義で使う導入先は、レビューした一覧を`--allowed-identities`で指定してください。
+公開名義の検査`public_attribution`は、この件数比較とは独立した必須検査です。共通CIと`preflight_ratchet.py`は既定で`references/public-commit-identities.json`を使い、全履歴の作者・コミッター・署名行を検査します（共著者行は受け入れ、個人メールのものだけ止めます）。`REDACTED`等の伏せ字や許可外の名義は、基準値を増やしても免除できず`blocked`（終了コード1）になります。結果が欠ける・検査不能なら終了コード2で止まります。名義やメールの生値は結果に出しません。既定の一覧はこのprojectの公開名義です。別の名義で使う導入先は、レビューした一覧を`--allowed-identities`で指定してください。
 
 非公開設定を使う`identity_gate`はCIの件数比較には含めません。これは公開名義の検査で個人情報照合全体を代替できるという意味ではありません。手元の公開・共有前検査では、非公開設定を使う両gateを通す必要があります。
 
