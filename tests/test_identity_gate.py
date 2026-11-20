@@ -44,17 +44,34 @@ class Base(unittest.TestCase):
 
 
 class TextTest(Base):
-    def test_共同作者行を拒否(self):
-        self.assertTrue(g.scan_text(self.p, "fix\n\nCo-authored-by: x <a@b.c>", "t"))
-
-    def test_小文字の共同作者行も拒否(self):
-        self.assertTrue(
-            g.scan_text(
-                self.p,
-                "co-authored-by: nexus-bot <1+nexus-bot@users.noreply.github.com>",
-                "t",
-            )
+    def test_共同作者行は受け入れる(self):
+        self.assertEqual(
+            g.scan_text(self.p, "fix\n\nCo-authored-by: x <a@b.example>", "t"), []
         )
+
+    def test_道具の自動の共著者行とセッション行は受け入れる(self):
+        text = (
+            "fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
+            "Claude-Session: https://claude.ai/code/session_" + "0" * 24 + "\n"
+            "🤖 Generated with [Claude Code](https://claude.com/claude-code)\n"
+        )
+        self.assertEqual(g.scan_text(self.p, text, "t"), [])
+
+    def test_個人メールの共同作者行は止める(self):
+        text = "fix\n\nco-authored-by: x <someone@" + "gmail.com>"
+        self.assertTrue(g.scan_text(self.p, text, "t"))
+
+    def test_形が不正な共同作者行は止める(self):
+        self.assertTrue(g.scan_text(self.p, "co-authored-by: broken", "t"))
+
+    def test_署名行は従来どおり許可名義だけ(self):
+        self.assertTrue(g.scan_text(self.p, "Signed-off-by: x <a@b.example>", "t"))
+
+    def test_廃止した旧キーの設定も読める(self):
+        d = dict(POL, reject_all_coauthors=True)
+        os.environ["PREFLIGHT_PRIVATE_PATTERNS"] = json.dumps(d)
+        p = g.load_policy()
+        self.assertEqual(g.scan_text(p, "Co-authored-by: x <a@b.example>", "t"), [])
 
     def test_個人の型(self):
         self.assertTrue(g.scan_text(self.p, "see kasou-kojin/repo", "t"))
@@ -135,9 +152,15 @@ class RangeTest(Base):
             any("コミッター" in i for i in g.check_range(self.p, d, "HEAD"))
         )
 
-    def test_本文の共同作者行(self):
-        d = self._repo([(OK + OK, "a\n\nCo-authored-by: alt <kasou.alt@example.com>")])
+    def test_本文の個人メールの共同作者行(self):
+        d = self._repo([(OK + OK, "a\n\nCo-authored-by: alt <alt@" + "gmail.com>")])
         self.assertTrue(g.check_range(self.p, d, "HEAD"))
+
+    def test_本文の道具の共同作者行は通る(self):
+        d = self._repo(
+            [(OK + OK, "a\n\nCo-Authored-By: Claude <noreply@anthropic.com>")]
+        )
+        self.assertEqual(g.check_range(self.p, d, "HEAD"), [])
 
     def test_全部きれい(self):
         d = self._repo([(OK + OK, "a"), (OK + OK, "b")])

@@ -309,7 +309,7 @@ def test_real_common_message_gate_passes_and_blocks(fixture):
     message = repo / "message"
     message.write_text("Public fixture message\n")
     assert run_hook(repo, "commit-msg", ("message",)).returncode == 0
-    message.write_text("Co-authored-by: unknown <unknown@example.invalid>\n")
+    message.write_text("Signed-off-by: unknown <unknown@example.invalid>\n")
     assert run_hook(repo, "commit-msg", ("message",)).returncode != 0
 
 

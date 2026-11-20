@@ -27,7 +27,7 @@ JSONの最上位は `version: 1` と `entries` 配列だけとする。各entry�
 | `repo` | originのGitHub `owner/name` と完全一致 |
 | `path` | リポジトリ相対のPOSIXパス。絶対パス、逆斜線、`.`/`..`、空要素を禁止 |
 | `content_sha256` | ファイルの生byte全体のSHA-256、小文字64桁 |
-| `rule` | `openai_key` / `github_token` / `github_pat` / `aws_access_key` / `slack_token` / `private_key` / `claude_session` |
+| `rule` | `openai_key` / `github_token` / `github_pat` / `aws_access_key` / `slack_token` / `private_key` |
 | `match_sha256` | 正規表現が検出した文字列をUTF-8にしたSHA-256、小文字64桁 |
 | `occurrence_count` | その内容内の検出件数、正整数 |
 | `review_reason` | 非空の人間レビュー理由。認証情報を保存しない |

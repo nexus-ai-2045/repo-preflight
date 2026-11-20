@@ -140,6 +140,7 @@ DEPENDENCY_FILES = (
 _secrets = _part("readiness_scan_leak_rules")
 SECRET_PATTERNS = _secrets.SECRET_PATTERNS
 SECRET_RULE_IDS = _secrets.SECRET_RULE_IDS
+RETIRED_RULE_IDS = _secrets.RETIRED_RULE_IDS
 _zip_exact = _secrets._zip_exact
 secret_matches = _secrets.secret_matches
 
@@ -225,6 +226,8 @@ class ReviewedSecretExceptions:
                     for key in keys - {"occurrence_count"}
                 ):
                     raise ValueError("type")
+                if entry["rule"] in RETIRED_RULE_IDS:
+                    continue  # 廃止した規則の例外は読み捨てる（もう検出しない）
                 if (
                     not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", entry["id"])
                     or entry["id"] in ids
@@ -686,7 +689,7 @@ def diagnostic_evidence_label(label, private_identity=None):
 def _identity_gate_result(
     repo, base_ref, identity_base_ref=None, *, history_roots=("--all",), head_ref="HEAD"
 ):
-    """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
+    """名義の許可リスト・コミット本文（共著者行は名簿・道具の noreply のメールだけ通す）を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
     try:
         _ig = load_identity_gate()
@@ -769,15 +772,49 @@ def load_allowed_identities(path: Path):
         raise RuntimeError("allowed_identities_invalid") from exc
 
 
+def _is_coauthor_line(line: str) -> bool:
+    """`作者|記録者` の行ではない行は Co-authored-by の署名行（値だけ）。"""
+    return "|" not in line
+
+
+def _coauthor_line_blocked(
+    line: str, policy=None, expected_identity: str | None = None
+) -> bool:
+    """共著者行は受け入れる。止めるのは形不正・伏せ字・個人メール・名簿にないメール。
+
+    通すメールは、名簿（policy）か期待名義にある、道具の noreply・明示の一覧、予約ドメイン。
+    """
+    gate = load_identity_gate()
+    parsed = gate.parse_trailer(line)
+    if not parsed or gate.masked_identity_name(parsed[0]):
+        return True
+    listed = set(policy.emails) if policy is not None else set()
+    if expected_identity:
+        listed.add(expected_identity.rsplit("<", 1)[-1].rstrip(">").casefold())
+    return gate.coauthor_email_problem(parsed[1], listed) is not None
+
+
+def _identity_line_mismatch(
+    line: str, expected_identity: str | None, policy=None
+) -> bool:
+    """期待名義との不一致。共著者行は期待名義と比べず、止める条件だけ見る。"""
+    if _is_coauthor_line(line):
+        return _coauthor_line_blocked(line, policy, expected_identity)
+    return bool(expected_identity) and (
+        line.split("|")[0] != expected_identity
+        or line.split("|")[-1] != expected_identity
+    )
+
+
 def _identity_line_allowed(policy, line: str) -> bool:
     """名義の1行を役割ごとに完全一致で見る（identity_gate.check_public_range と同じ規則）。
 
     `作者|記録者` の行は、作者を「作者」、記録者を「コミッター」として判定する。
-    `|` の無い行は Co-authored-by の署名行なので「作者」として判定する。
+    `|` の無い行は Co-authored-by の署名行。名簿には縛らず、止める条件（形不正・伏せ字・個人メール・名簿にないメール）だけ見る。
     committer_only の名義（GitHub の Web 操作の記録者など）は記録者の位置でだけ通る。
     """
-    if "|" not in line:
-        return policy.allows(line, "作者")
+    if _is_coauthor_line(line):
+        return not _coauthor_line_blocked(line, policy)
     parts = line.split("|")
     return policy.allows(parts[0], "作者") and policy.allows(parts[-1], "コミッター")
 
@@ -3897,11 +3934,7 @@ def scan(
     identity_mismatches = {
         line
         for line in identity_lines
-        if expected_identity
-        and (
-            line.split("|")[0] != expected_identity
-            or line.split("|")[-1] != expected_identity
-        )
+        if _identity_line_mismatch(line, expected_identity, allowed_identity_set)
     }
     if allowed_identity_set is not None:
         identity_mismatches |= {
@@ -3919,11 +3952,7 @@ def scan(
     historical_identity_mismatches = {
         line
         for line in historical_identity_lines
-        if expected_identity
-        and (
-            line.split("|")[0] != expected_identity
-            or line.split("|")[-1] != expected_identity
-        )
+        if _identity_line_mismatch(line, expected_identity, allowed_identity_set)
     }
     # 現在設定の名義はexpected_identity指定時だけ測る。identity未設定環境
     # (CI containerなど) をtool_errorにせず、判定はunknownでfail-closedに保つ

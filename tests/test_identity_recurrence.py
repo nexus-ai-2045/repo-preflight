@@ -21,7 +21,6 @@ def policy(monkeypatch, **extra):
     value = {
         "allow_emails": [EMAIL],
         "allow_names": [],
-        "reject_all_coauthors": False,
         **extra,
     }
     monkeypatch.delenv("PREFLIGHT_PRIVATE_PATTERNS_FILE", raising=False)

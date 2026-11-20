@@ -1,5 +1,20 @@
 # Changelog
 
+## 未リリース
+
+### 開発道具の自動の痕跡を禁止しない
+
+- `Co-Authored-By` の共著者行、セッション行（`Claude-Session` など）、Claude・Codex・Cursor・ChatGPT の作業・セッションURL、PR本文の署名は、検査で止めない（2026-11-20 所有者決定）。個人名義の検査は緩めない。
+- 共著者行のメールが通るのは、名簿（公開許可名義）にあるもの、道具の noreply（`users.noreply.github.com`、local 部に `noreply` / `no-reply`）、明示一覧 `TOOL_COAUTHOR_EMAILS`、予約ドメインだけ。個人メール・照合リストの個人名義・名簿にない会社メール・伏せ字・メールの形でないものは止める（文言は「名簿にないメールの形」「共同作者行が伏せ字」「共同作者行の形が不正」）。
+- 共著者以外の署名行（`Signed-off-by` など）は従来どおり許可名義と完全一致。
+
+#### 移行の注意
+
+- 秘密情報の規則 `claude_session` を廃止した。`reviewed-secret-exceptions` に `rule: claude_session` の既存エントリがあっても、読み捨てて読み込みを壊さない（廃止した規則 ID は `RETIRED_RULE_IDS`）。未知の規則 ID は従来どおり読み込みエラー。
+- 非公開設定の旧キー `reject_all_coauthors` は廃止した。登録済みの設定に残っていても読み捨てる（値は使わない）。
+- `.gitleaks.toml` のセッション行・作業URLの独自規則を削除した。既定の秘密情報の規則だけを使う。
+- `identity_gate.py` の `SESSION_TRACE_RES`・`session_trace_found` と、診断の「セッション行あり」を削除した。
+
 ## 0.14.0 - 2026-11-14
 
 ### 既存のglobalフックを保持して共通AI入口へ導入する

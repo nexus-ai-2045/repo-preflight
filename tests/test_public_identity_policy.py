@@ -64,7 +64,6 @@ def test_policy_rejects_bad_shapes(raw):
     [
         ("場所 " + FAKE_HOME, "実ホームパスの形"),
         ("連絡 " + FAKE_MAIL, "個人メールの形"),
-        ("fix\n\n" + FAKE_SESSION + "\n", "セッション行あり"),
         ("token " + FAKE_KEY, "鍵の形"),
     ],
 )
@@ -78,6 +77,8 @@ def test_shape_findings_block(text, kind):
         fixture_path("linux", "runner", "work", "x"),
         "a@example.invalid",
         "Claude と相談した",
+        "fix\n\n" + FAKE_SESSION + "\n",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
         "README の更新",
     ],
 )
@@ -91,12 +92,49 @@ def test_allow_home_users_is_per_repo():
     assert g.check_public_text(policy(), FAKE_HOME, "本文")
 
 
-def test_unlisted_coauthor_blocks_and_values_are_not_echoed():
-    issues = g.check_public_text(policy(), "fix\n\nCo-authored-by: " + OUTSIDER, "本文")
+def test_unlisted_signoff_blocks_and_values_are_not_echoed():
+    issues = g.check_public_text(policy(), "fix\n\nSigned-off-by: " + OUTSIDER, "本文")
     assert issues and not any("kasou" in i.casefold() for i in issues)
-    assert (
-        g.check_public_text(policy(), "fix\n\nCo-authored-by: " + NEXUS, "本文") == []
+    assert g.check_public_text(policy(), "fix\n\nSigned-off-by: " + NEXUS, "本文") == []
+
+
+@pytest.mark.parametrize(
+    "ident",
+    [
+        OUTSIDER,
+        "Claude <noreply@anthropic.com>",
+        "Claude Sonnet 5.5 <noreply@anthropic.com>",
+        NEXUS,
+    ],
+)
+def test_coauthor_lines_are_accepted_even_outside_the_roster(ident):
+    for key in ("Co-authored-by", "Co-Authored-By", "co-authored-by"):
+        assert g.check_public_text(policy(), f"fix\n\n{key}: {ident}", "本文") == []
+
+
+def test_personal_mail_coauthor_blocks_and_values_are_not_echoed():
+    issues = g.check_public_text(
+        policy(), "fix\n\nCo-authored-by: Hito <" + FAKE_MAIL + ">", "本文"
     )
+    assert "本文: 個人メールの形" in issues
+    assert not any("zz0000" in i for i in issues)
+
+
+def test_masked_coauthor_blocks():
+    issues = g.check_public_text(
+        policy(), "fix\n\nCo-authored-by: REDACTED <a@example.invalid>", "本文"
+    )
+    assert issues
+
+
+def test_tool_traces_in_public_text_are_accepted():
+    text = (
+        "fix\n\n"
+        + FAKE_SESSION
+        + "\nCo-Authored-By: Claude <noreply@anthropic.com>\n"
+        + "🤖 Generated with [Claude Code](https://claude.com/claude-code)\n"
+    )
+    assert g.check_public_text(policy(), text, "本文") == []
 
 
 def _git(repo, *args, ident=NEXUS):
@@ -133,7 +171,6 @@ def _repo(tmp_path, message="初回", ident=NEXUS):
 
 # カナリア：ダミーのセッション行、ダミーのホームパス、一覧に無い名義は必ず赤。
 CANARY = [
-    pytest.param("更新\n\n" + FAKE_SESSION, NEXUS, id="セッション行"),
     pytest.param("更新 " + FAKE_HOME, NEXUS, id="ホームパス"),
     pytest.param("更新", OUTSIDER, id="一覧に無い名義"),
 ]
@@ -147,6 +184,14 @@ def test_canary_turns_red(tmp_path, message, ident):
 
 def test_canary_control_is_green(tmp_path):
     repo = _repo(tmp_path)
+    assert g.check_public_range(policy(), str(repo), "HEAD") == []
+
+
+def test_tool_trace_commit_message_is_green(tmp_path):
+    message = (
+        "更新\n\n" + FAKE_SESSION + "\nCo-Authored-By: Claude <noreply@anthropic.com>"
+    )
+    repo = _repo(tmp_path, message)
     assert g.check_public_range(policy(), str(repo), "HEAD") == []
 
 
@@ -285,8 +330,8 @@ GOOD_BODY = "## 変更点\n\n- 説明を直した\n"
 
 @pytest.mark.parametrize(
     "secret",
-    [FAKE_SESSION, FAKE_HOME, FAKE_MAIL, FAKE_KEY],
-    ids=["セッション行", "ホームパス", "個人メール", "鍵"],
+    [FAKE_HOME, FAKE_MAIL, FAKE_KEY],
+    ids=["ホームパス", "個人メール", "鍵"],
 )
 def test_pr_body_shapes_turn_red_on_edited(tmp_path, secret):
     """edited の事象でも、本文の形を同じ入口で赤にする。値は出さない。"""
@@ -298,6 +343,26 @@ def test_pr_body_shapes_turn_red_on_edited(tmp_path, secret):
     proc = _cli(tmp_path, "--public", "--pr-event", str(event))
     assert proc.returncode == 1 and '"status": "fail"' in proc.stdout
     assert secret not in proc.stdout + proc.stderr
+
+
+def test_pr_body_tool_footer_and_session_url_are_accepted(tmp_path):
+    event = tmp_path / "e.json"
+    body = (
+        GOOD_BODY
+        + "\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n"
+        + "https://"
+        + "claude.ai/code/"
+        + "session_"
+        + "0" * 24
+        + "\n"
+    )
+    pr = {"title": "説明を直す", "body": body}
+    event.write_text(
+        json.dumps({"action": "edited", "pull_request": pr}), encoding="utf-8"
+    )
+    proc = _cli(tmp_path, "--public", "--pr-event", str(event))
+    assert proc.returncode == 0, proc.stderr
+    assert '"status": "pass"' in proc.stdout
 
 
 @pytest.mark.parametrize(
