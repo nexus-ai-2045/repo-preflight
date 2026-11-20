@@ -686,7 +686,7 @@ def diagnostic_evidence_label(label, private_identity=None):
 def _identity_gate_result(
     repo, base_ref, identity_base_ref=None, *, history_roots=("--all",), head_ref="HEAD"
 ):
-    """名義の許可リスト・共同作者行・コミット本文を検査し必須判定へ返す。
+    """名義の許可リスト・コミット本文（共著者行は個人名義のものだけ止める）を検査し必須判定へ返す。
     非公開の型設定が無ければ fail（任意にしない）。"""
     try:
         _ig = load_identity_gate()
