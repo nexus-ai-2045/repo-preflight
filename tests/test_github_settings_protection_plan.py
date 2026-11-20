@@ -83,7 +83,10 @@ def test_unprotected_branch_gets_a_create_plan_with_admins_enforced():
         "body": {
             "required_status_checks": {
                 "strict": False,
-                "checks": [{"context": "verify", "app_id": 15368}, {"context": "gate / preflight", "app_id": 15368}],
+                "checks": [
+                    {"context": "verify", "app_id": 15368},
+                    {"context": "gate / preflight", "app_id": 15368},
+                ],
             },
             "enforce_admins": True,
             "required_pull_request_reviews": {"required_approving_review_count": 0},

@@ -2167,7 +2167,7 @@ PROTECTION_READBACK_JQ = (
     " .required_conversation_resolution.enabled,"
     " .allow_force_pushes.enabled,"
     " .allow_deletions.enabled,"
-    " ([(.required_status_checks.checks // [])[] | {context, app_id: (if (.app_id | type) == \"number\" then .app_id else -1 end)}] | sort_by(.context)),"
+    ' ([(.required_status_checks.checks // [])[] | {context, app_id: (if (.app_id | type) == "number" then .app_id else -1 end)}] | sort_by(.context)),'
     " .required_status_checks.strict,"
     " (.required_pull_request_reviews | if . == null then null else"
     " {dismiss_stale_reviews, require_code_owner_reviews, require_last_push_approval,"
