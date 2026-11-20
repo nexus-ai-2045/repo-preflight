@@ -1182,27 +1182,82 @@ def _check_names(check_runs: Any, statuses: Any) -> set[str]:
     return names
 
 
+def _check_provider_bindings(
+    check_runs: Any, statuses: Any
+) -> dict[str, set[int | None]]:
+    """検査名ごとに、観測した提供元の app_id を集める。
+
+    check-run の app.id が整数ならその値、commit status はどの app でも良い
+    意味の -1、check-run に提供元が無いときは None（未解決）。
+    """
+    bindings: dict[str, set[int | None]] = {}
+
+    def add(name: str, app_id: int | None) -> None:
+        bindings.setdefault(name, set()).add(app_id)
+
+    for item in (check_runs or {}).get("check_runs") or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        app = item.get("app")
+        app_id = app.get("id") if isinstance(app, dict) else None
+        if isinstance(app_id, int) and not isinstance(app_id, bool):
+            add(str(item["name"]), app_id)
+        else:
+            add(str(item["name"]), None)
+    for item in (statuses or {}).get("statuses") or []:
+        if not isinstance(item, dict) or not item.get("context"):
+            continue
+        add(str(item["context"]), -1)
+    return bindings
+
+
+def _resolved_new_check_app_ids(
+    names: tuple[str, ...], providers: dict[str, set[int | None]]
+) -> tuple[dict[str, int], list[str]]:
+    bindings: dict[str, int] = {}
+    reasons: list[str] = []
+    for name in names:
+        observed = providers.get(name, set())
+        specific = {
+            item
+            for item in observed
+            if isinstance(item, int) and not isinstance(item, bool) and item != -1
+        }
+        if len(specific) > 1:
+            reasons.append(f"check_provider_ambiguous:{name}")
+            continue
+        if len(specific) == 1:
+            bindings[name] = next(iter(specific))
+            continue
+        if -1 in observed:
+            bindings[name] = -1
+            continue
+        reasons.append(f"check_provider_not_resolved:{name}")
+    reasons.sort()
+    return bindings, reasons
+
+
 def _merged_pr_check_evidence(
     api_get: Callable[[str], Any],
     repository: str,
     default_branch: str | None,
     required: set[str],
-) -> tuple[set[str], list[dict[str, Any]], list[str]]:
+) -> tuple[set[str], list[dict[str, Any]], list[str], dict[str, set[int | None]]]:
     """直近にmergeされたPRのhead commitが出したcheck名を集める。
 
     PRでしか走らないcheckがあるため、default branchのHEADは根拠にしない。
     """
     if not default_branch:
-        return set(), [], ["default_branch_unknown"]
+        return set(), [], ["default_branch_unknown"], {}
     pulls, error = _fetch(
         api_get,
         f"repos/{repository}/pulls?state=closed&base={quote(default_branch, safe='')}"
         "&sort=updated&direction=desc&per_page=30",
     )
     if error is not None:
-        return set(), [], [error.reason]
+        return set(), [], [error.reason], {}
     if not isinstance(pulls, list):
-        return set(), [], ["invalid_pull_list_response"]
+        return set(), [], ["invalid_pull_list_response"], {}
     merged = sorted(
         (
             pull
@@ -1218,10 +1273,11 @@ def _merged_pr_check_evidence(
         reverse=True,
     )[:MAX_MERGED_PRS_FOR_CHECK_EVIDENCE]
     if not merged:
-        return set(), [], ["no_recent_merged_pull_request"]
+        return set(), [], ["no_recent_merged_pull_request"], {}
     observed: set[str] = set()
     evidence: list[dict[str, Any]] = []
     errors: list[str] = []
+    providers: dict[str, set[int | None]] = {}
     for pull in merged:
         sha = pull["head"]["sha"]
         evidence.append({"number": pull.get("number"), "head_sha": sha})
@@ -1240,9 +1296,15 @@ def _merged_pr_check_evidence(
                 None if statuses_error else statuses,
             )
         )
+        if runs_error is None or statuses_error is None:
+            for name, ids in _check_provider_bindings(
+                None if runs_error else check_runs,
+                None if statuses_error else statuses,
+            ).items():
+                providers.setdefault(name, set()).update(ids)
         if required <= observed:
             break
-    return observed, evidence, errors
+    return observed, evidence, errors, providers
 
 
 def _branch_protection_observations(
@@ -1412,8 +1474,10 @@ def _branch_protection_observations(
     if not required_contexts:
         checks_matches = None if sources.unavailable else False
     else:
-        observed_names, evidence, evidence_errors = _merged_pr_check_evidence(
-            api_get, repository, default_branch, required_contexts
+        observed_names, evidence, evidence_errors, _providers = (
+            _merged_pr_check_evidence(
+                api_get, repository, default_branch, required_contexts
+            )
         )
         if required_contexts <= observed_names:
             checks_matches = None if sources.unavailable else True
@@ -2167,7 +2231,11 @@ PROTECTION_READBACK_JQ = (
     " .required_conversation_resolution.enabled,"
     " .allow_force_pushes.enabled,"
     " .allow_deletions.enabled,"
-    ' ([(.required_status_checks.checks // [])[] | {context, app_id: (if (.app_id | type) == "number" then .app_id else -1 end)}] | sort_by(.context)),'
+    " ([(if .required_status_checks.checks != null then"
+    " .required_status_checks.checks[] |"
+    ' {context, app_id: (if (.app_id | type) == "number" then .app_id else -1 end)}'
+    " else (.required_status_checks.contexts // [])[] |"
+    " {context: ., app_id: -1} end)] | sort_by(.context)),"
     " .required_status_checks.strict,"
     " (.required_pull_request_reviews | if . == null then null else"
     " {dismiss_stale_reviews, require_code_owner_reviews, require_last_push_approval,"
@@ -2352,7 +2420,10 @@ def protection_put_body(read: dict[str, Any]) -> dict[str, Any]:
 
 
 def overlay_baseline(
-    current: dict[str, Any] | None, checks: tuple[str, ...], minimum_approvals: int
+    current: dict[str, Any] | None,
+    checks: tuple[str, ...],
+    minimum_approvals: int,
+    new_check_app_ids: dict[str, int],
 ) -> dict[str, Any]:
     body = (
         json.loads(json.dumps(current))
@@ -2381,7 +2452,7 @@ def overlay_baseline(
         body["required_status_checks"] = status
     present = {item["context"] for item in status["checks"]}
     status["checks"].extend(
-        {"context": name, "app_id": GITHUB_ACTIONS_APP_ID}
+        {"context": name, "app_id": new_check_app_ids[name]}
         for name in checks
         if name not in present
     )
@@ -2507,7 +2578,7 @@ def plan_branch_protection(
         "sha256": protection_digest(classic) if classic is not None else None,
         "digest": PROTECTION_BASIS_DIGEST,
     }
-    observed, evidence, evidence_errors = _merged_pr_check_evidence(
+    observed, evidence, evidence_errors, providers = _merged_pr_check_evidence(
         api_get, repository, default_branch, set(checks)
     )
     missing = sorted(set(checks) - observed)
@@ -2542,7 +2613,18 @@ def plan_branch_protection(
             )
         if not any(dismissal.values()):
             return _blocked_plan(plan, "empty_dismissal_restrictions_not_preserved")
-    desired = overlay_baseline(current, checks, minimum)
+    present = {
+        item["context"]
+        for item in ((current or {}).get("required_status_checks") or {}).get("checks")
+        or []
+    }
+    new_names = tuple(name for name in checks if name not in present)
+    new_check_app_ids, provider_reasons = _resolved_new_check_app_ids(
+        new_names, providers
+    )
+    if provider_reasons:
+        return _blocked_plan(plan, *provider_reasons)
+    desired = overlay_baseline(current, checks, minimum, new_check_app_ids)
     if current == desired:
         state = "noop"
     else:

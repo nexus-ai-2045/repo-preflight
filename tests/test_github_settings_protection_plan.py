@@ -14,6 +14,7 @@ from github_settings_fixtures import (
     classic_protection,
     compliant_responses,
     fake_api,
+    status_endpoint,
 )
 
 CHECKS = ("verify", "gate / preflight")
@@ -23,7 +24,10 @@ def unprotected_responses():
     responses = compliant_responses()
     responses[RULESETS_ENDPOINT] = []
     responses[check_runs_endpoint(PR_HEAD_SHA)] = {
-        "check_runs": [{"name": name} for name in (*CHECKS, "validate")]
+        "check_runs": [
+            {"name": name, "app": {"id": MODULE.GITHUB_ACTIONS_APP_ID}}
+            for name in (*CHECKS, "validate")
+        ]
     }
     return responses
 
@@ -346,7 +350,11 @@ def test_cli_exits_zero_for_create_plan(capsys):
 @pytest.mark.parametrize("check_name", ["verify", "検査 / 題"])
 def test_readback_query_matches_expected_on_real_get_shape(check_name):
     responses = unprotected_responses()
-    responses[check_runs_endpoint(PR_HEAD_SHA)] = {"check_runs": [{"name": check_name}]}
+    responses[check_runs_endpoint(PR_HEAD_SHA)] = {
+        "check_runs": [
+            {"name": check_name, "app": {"id": MODULE.GITHUB_ACTIONS_APP_ID}}
+        ]
+    }
     result, _ = plan(responses, checks=(check_name,))
     read = get_shape(result["operation"]["body"])
 
@@ -583,3 +591,76 @@ def test_team_or_app_pull_request_bypass_blocks(bypass):
     result, _ = plan(responses)
 
     assert result["blocked_reasons"] == ["pull_request_bypass_membership_not_resolved"]
+
+
+def test_create_plan_from_commit_status_evidence_uses_any_app_binding():
+    responses = unprotected_responses()
+    responses[check_runs_endpoint(PR_HEAD_SHA)] = {"check_runs": []}
+    responses[status_endpoint(PR_HEAD_SHA)] = {
+        "statuses": [{"context": name, "state": "success"} for name in CHECKS]
+    }
+
+    result, _ = plan(responses)
+
+    assert result["state"] == "create"
+    assert result["operation"]["body"]["required_status_checks"]["checks"] == [
+        {"context": "verify", "app_id": -1},
+        {"context": "gate / preflight", "app_id": -1},
+    ]
+
+
+def test_create_plan_preserves_observed_check_run_app_binding():
+    responses = unprotected_responses()
+    other_app = 119527
+    responses[check_runs_endpoint(PR_HEAD_SHA)] = {
+        "check_runs": [{"name": name, "app": {"id": other_app}} for name in CHECKS]
+    }
+
+    result, _ = plan(responses)
+
+    assert result["state"] == "create"
+    assert result["operation"]["body"]["required_status_checks"]["checks"] == [
+        {"context": "verify", "app_id": other_app},
+        {"context": "gate / preflight", "app_id": other_app},
+    ]
+
+
+def test_create_plan_blocks_when_check_run_provider_is_not_resolved():
+    responses = unprotected_responses()
+    responses[check_runs_endpoint(PR_HEAD_SHA)] = {
+        "check_runs": [{"name": name} for name in CHECKS]
+    }
+
+    result, _ = plan(responses)
+
+    assert result["state"] == "blocked"
+    assert result["operation"] is None
+    assert result["blocked_reasons"] == [
+        "check_provider_not_resolved:gate / preflight",
+        "check_provider_not_resolved:verify",
+    ]
+
+
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq が無い")
+def test_readback_query_uses_contexts_when_checks_are_missing():
+    responses = unprotected_responses()
+    existing = classic_protection(contexts=CHECKS)
+    del existing["required_status_checks"]["checks"]
+    responses[CLASSIC_ENDPOINT] = existing
+    result, _ = plan(responses)
+    assert result["state"] == "noop"
+    read = json.loads(json.dumps(existing))
+
+    output = subprocess.run(
+        ["jq", "-r", result["readback"]["jq"]],
+        input=json.dumps(read),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+    assert json.loads(output) == result["readback"]["expected"]
+    assert result["readback"]["expected"][5] == [
+        {"context": "gate / preflight", "app_id": -1},
+        {"context": "verify", "app_id": -1},
+    ]
