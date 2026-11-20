@@ -769,15 +769,41 @@ def load_allowed_identities(path: Path):
         raise RuntimeError("allowed_identities_invalid") from exc
 
 
+def _is_coauthor_line(line: str) -> bool:
+    """`作者|記録者` の行ではない行は Co-authored-by の署名行（値だけ）。"""
+    return "|" not in line
+
+
+def _coauthor_line_blocked(line: str) -> bool:
+    """共著者行は受け入れる。形が不正・伏せ字・個人メールのものだけ止める。"""
+    gate = load_identity_gate()
+    parsed = gate.parse_trailer(line)
+    return (
+        not parsed
+        or gate.masked_identity_name(parsed[0])
+        or gate.personal_mail_domain(parsed[1].rsplit("@", 1)[-1])
+    )
+
+
+def _identity_line_mismatch(line: str, expected_identity: str | None) -> bool:
+    """期待名義との不一致。共著者行は期待名義と比べず、個人名義の形だけ止める。"""
+    if _is_coauthor_line(line):
+        return _coauthor_line_blocked(line)
+    return bool(expected_identity) and (
+        line.split("|")[0] != expected_identity
+        or line.split("|")[-1] != expected_identity
+    )
+
+
 def _identity_line_allowed(policy, line: str) -> bool:
     """名義の1行を役割ごとに完全一致で見る（identity_gate.check_public_range と同じ規則）。
 
     `作者|記録者` の行は、作者を「作者」、記録者を「コミッター」として判定する。
-    `|` の無い行は Co-authored-by の署名行なので「作者」として判定する。
+    `|` の無い行は Co-authored-by の署名行。名簿には縛らず、個人名義の形だけ止める。
     committer_only の名義（GitHub の Web 操作の記録者など）は記録者の位置でだけ通る。
     """
-    if "|" not in line:
-        return policy.allows(line, "作者")
+    if _is_coauthor_line(line):
+        return not _coauthor_line_blocked(line)
     parts = line.split("|")
     return policy.allows(parts[0], "作者") and policy.allows(parts[-1], "コミッター")
 
@@ -3897,11 +3923,7 @@ def scan(
     identity_mismatches = {
         line
         for line in identity_lines
-        if expected_identity
-        and (
-            line.split("|")[0] != expected_identity
-            or line.split("|")[-1] != expected_identity
-        )
+        if _identity_line_mismatch(line, expected_identity)
     }
     if allowed_identity_set is not None:
         identity_mismatches |= {
@@ -3919,11 +3941,7 @@ def scan(
     historical_identity_mismatches = {
         line
         for line in historical_identity_lines
-        if expected_identity
-        and (
-            line.split("|")[0] != expected_identity
-            or line.split("|")[-1] != expected_identity
-        )
+        if _identity_line_mismatch(line, expected_identity)
     }
     # 現在設定の名義はexpected_identity指定時だけ測る。identity未設定環境
     # (CI containerなど) をtool_errorにせず、判定はunknownでfail-closedに保つ

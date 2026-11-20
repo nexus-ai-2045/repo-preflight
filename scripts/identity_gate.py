@@ -42,32 +42,6 @@ GENERIC_PATH_RES = [
     re.compile(rf"/{LINUX_DIRECTORY_COMPONENT}/[^/\s]+"),
     re.compile(r"~[A-Za-z0-9_.-]+/"),  # ホームの省略記法
 ]
-# 開発道具が本文へ付けるセッション行とセッションURL。公開してよい汎用の型で、
-# 個人の型（非公開設定）とは別に常に止める。値は出さず種類だけ返す。
-# readiness_scan.py の claude_session 規則と同じ型にそろえる。
-# 敵対的レビュー H1: 行頭に限らず、箇条書き・強調・空白区切り・全角コロン（NFKC で半角へ）も見る。
-# レビュー3C 高7: 「:」の後ろが ID の形（数字を含む英数字の塊）のときだけ。英語の文（Start a Claude session: run …）は通す。
-SESSION_TRACE_RES = (
-    re.compile(
-        # レビュー3C 中以下: key = value と JSON のキー（"claude_session_id": …・claudeSessionId）も見る
-        r"(?:claude|codex|cursor|chatgpt|copilot)[\s_*-]*session(?:[\s_-]*id)?[\s*\"']*[:=]"
-        r"[\s*`'\"]*(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{4,}",
-        re.I,
-    ),
-    # Claude の作業 URL。レビュー3C 高2: claude.ai と claude.com の project・chat・share・code を見る。
-    # ファイル名に写した形（/ を _ に置き換えた名前。高1）も同じ型で止める。
-    # session_だけではIDがなく、検査ルール自身も一致する。汎用code分岐も専用分岐へ委ねる。
-    re.compile(
-        r"claude[.](?:ai|com)[/_](?:code[/_](?:session_[A-Za-z0-9_-]|projects?[/_])"
-        r"|(?:projects?|chat|share)/[A-Za-z0-9_-]|code/(?!session_)[A-Za-z0-9_-])",
-        re.I,
-    ),
-    re.compile(
-        r"(?:chatgpt[.]com|chat[.]openai[.]com)/(?:codex/tasks|c|share|g)/", re.I
-    ),
-    re.compile(r"cursor[.](?:com|sh)/(?:agents|background-agent|bc)[/?#]", re.I),
-)
-
 # 伏せた書き方（[at]・(dot) など）と、文字列の連結（"…" + "…"）
 _AT_FORM_RE = re.compile(r"\s*[\[({<]\s*at\s*[\])}>]\s*", re.I)
 # レビュー3C 中以下: 括弧で囲んだ点（[.]・(.)・{.}）も伏せた点として戻す
@@ -174,15 +148,6 @@ def _text_variants(text: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))
 
 
-def session_trace_found(text: str, variants: list[str] | None = None) -> bool:
-    """セッション行・URLの有無だけ返す。符号化・全角・強調の写しも見る。"""
-    return any(
-        r.search(candidate)
-        for candidate in (variants or text_variants(text))
-        for r in SESSION_TRACE_RES
-    )
-
-
 # 誰のものかに関係なく、形だけで止めるもの（非公開の照合値は要らない）。
 # 個人のメールドメイン。会社・組織のドメインや noreply は対象外。
 PERSONAL_MAIL_DOMAINS = frozenset(
@@ -246,7 +211,7 @@ MAIL_RE = re.compile(
     r"([A-Za-z0-9-]+(?:[.][A-Za-z0-9-]+)*[.](?:[A-Za-z]{2,}|xn--[A-Za-z0-9-]+))"
     r"(?![A-Za-z0-9-])"
 )
-# 鍵の形。readiness_scan.py の SECRET_PATTERNS（claude_session 以外）と同じ型。
+# 鍵の形。readiness_scan.py の SECRET_PATTERNS と同じ型。
 KEY_SHAPE_RES = (
     # レビュー3C 高6: 単語の途中（risk-・desk-）では当てず、本体に数字を1つ以上求める
     re.compile(r"(?<![A-Za-z0-9])sk-(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{20,}"),
@@ -396,8 +361,6 @@ def shape_findings(text: str, allow_home_users=DEFAULT_ALLOWED_HOME_USERS) -> li
         for m in MAIL_RE.finditer(c)
     ):
         kinds.append("個人メールの形")
-    if session_trace_found(text, candidates):
-        kinds.append("セッション行あり")
     if any(r.search(c) for c in candidates for r in KEY_SHAPE_RES):
         kinds.append("鍵の形")
     return kinds
@@ -502,7 +465,6 @@ class Policy:
     allow_path_res: list[re.Pattern] = field(
         default_factory=list
     )  # 箱の作業場など許す型
-    reject_all_coauthors: bool = True
     deny_email_sha256s: list[str] = field(default_factory=list)
 
 
@@ -525,7 +487,7 @@ def load_policy() -> Policy:
         "allow_names",
         "deny_patterns",
         "allow_path_patterns",
-        "reject_all_coauthors",
+        "reject_all_coauthors",  # 廃止した旧キー。登録済みの設定を壊さないよう読み捨てる
         "deny_email_sha256s",
     }:
         raise ValueError("private_policy_unknown_key")
@@ -542,8 +504,6 @@ def load_policy() -> Policy:
             not isinstance(value, str) or not value.strip() for value in values
         ):
             raise ValueError("private_policy_list_invalid")
-    if type(d.get("reject_all_coauthors", True)) is not bool:
-        raise ValueError("private_policy_boolean_required")
     if not d.get("allow_emails") and not d.get("allow_email_patterns"):
         raise ValueError("private_policy_email_allowlist_required")
     if any(
@@ -558,7 +518,6 @@ def load_policy() -> Policy:
         allow_names=d.get("allow_names", []),
         deny_res=c(d.get("deny_patterns", [])),
         allow_path_res=c(d.get("allow_path_patterns", [])),
-        reject_all_coauthors=d.get("reject_all_coauthors", True),
         deny_email_sha256s=[v.lower() for v in d.get("deny_email_sha256s", [])],
     )
 
@@ -600,8 +559,16 @@ def scan_text(pol: Policy, text: str, where: str) -> list[str]:
         parsed = parse_trailer(val)
         if parsed and masked_identity_name(parsed[0]):
             out.append(f"{where}: {kind}の名義が伏せ字")
-        if kind == "co-authored-by" and pol.reject_all_coauthors:
-            out.append(f"{where}: 共同作者行あり")
+        if kind == "co-authored-by":
+            # 共著者行は受け入れる（開発道具の自動の共著者行も含む）。
+            # 個人名義（照合リストの個人メール）だけ止める。個人メールの形・個人の型は本文全体の検査が見る。
+            if not parsed:
+                out.append(f"{where}: 共同作者行の形が不正")
+            elif (
+                hashlib.sha256(parsed[1].strip().casefold().encode("utf-8")).hexdigest()
+                in pol.deny_email_sha256s
+            ):
+                out.append(f"{where}: 共同作者行が個人名義")
         elif (
             not parsed
             or not email_ok(pol, parsed[1])
@@ -1098,13 +1065,19 @@ def check_public_text(allowed_identities, text: str, where: str) -> list[str]:
     policy = _public_policy(allowed_identities)
     issues = []
     normal = unicodedata.normalize("NFKC", text)
-    # 署名行（Co-authored-by など）は下で名簿と完全一致を見るので、二重に数えない
+    # 署名行（〜-by:）は下で見るので、名簿にないメールの数え方から外す
     if unlisted_mail_found(PUBLIC_TRAILER_RE.sub("", normal), policy):
         issues.append(f"{where}: 名簿にないメールの形")
     if SKIP_CI_RE.search(normal):
         issues.append(f"{where}: CI を飛ばす指示")
     for trailer in PUBLIC_TRAILER_RE.finditer(normal):
         parsed = parse_trailer(trailer.group(2))
+        if trailer.group(1).casefold() == "co-authored-by":
+            # 共著者行は名簿に無くても受け入れる。形が不正なものと伏せ字だけ止める。
+            # 個人メールの形は下の shape_findings が本文全体で見る。
+            if not parsed or masked_identity_name(parsed[0]):
+                issues.append(f"{where}: 作者情報の行が公開許可名義と不一致")
+            continue
         if (
             not parsed
             or masked_identity_name(parsed[0])

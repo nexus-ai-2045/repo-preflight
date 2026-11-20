@@ -432,8 +432,7 @@
         "tests/test_runtime_deployment.py",
         "tests/test_runtime_support.py",
         "tests/test_scan_diagnostics.py",
-        "tests/test_session_trace_deny.py",
-        "tests/test_session_url_prefix.py",
+        "tests/test_tool_traces_allowed.py",
         "tests/test_type1_identity.py"
       ],
       "dependency_mode": "mapped"

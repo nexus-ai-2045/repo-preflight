@@ -117,10 +117,6 @@ RED = {
     "重大1 項目番号 1./": f"1./{U}/alice/x",
     "重大1 下線の直後 _/": f"_/{U}/alice",
     # 高2 Claude のプロジェクト URL
-    "高2 ai の project": "https://" + J(["claude", ".ai/project/00000000-0000"]),
-    "高2 ai の chat": "https://" + J(["claude", ".ai/chat/zz-0000"]),
-    "高2 com の chat": "https://" + J(["claude", ".com/chat/00000000-0000"]),
-    "高2 ai の code projects": "https://" + J(["claude", ".ai/code/projects/0000"]),
     # 高3 符号化したホームと道具のリンク
     "高3 Claude 符号化 -Users-": f"~/.claude/projects/-{U}-alice-proj/",
     "高3 Claude 符号化 C--Users-": f"C--{U}-alice-proj",
@@ -138,14 +134,19 @@ RED = {
     "高5 名簿にない会社メール": "alice" + AT + "corp.example-co.jp",
     "高6 鍵の形 sk-": "sk-" + "a0" * 12,
     "高6 鍵の形 sk-proj-": "sk-proj-" + "0" * 40,
-    "高7 セッション行": J(["Claude", "-Session"]) + ": 00000000-0000",
-    "高7 セッション行 強調": "- **" + J(["Claude", "-Session"]) + "**: zz-0000",
     "高7 /users/ の実名": f"/{U.lower()}/alice/x",
     "高8 例示の記号の後ろの実名": f"/{H}/alice/<x>",
 }
 
 # ---- 通すべきもの（誤検出の対照） ----
 GREEN = {
+    "許可 高2 ai の project": "https://" + J(["claude", ".ai/project/00000000-0000"]),
+    "許可 高2 ai の chat": "https://" + J(["claude", ".ai/chat/zz-0000"]),
+    "許可 高2 com の chat": "https://" + J(["claude", ".com/chat/00000000-0000"]),
+    "許可 高2 ai の code projects": "https://"
+    + J(["claude", ".ai/code/projects/0000"]),
+    "許可 高7 セッション行": J(["Claude", "-Session"]) + ": 00000000-0000",
+    "許可 高7 セッション行 強調": "- **" + J(["Claude", "-Session"]) + "**: zz-0000",
     "対照 README の文": "このツールは手元で動きます。",
     "高2 ai のトップ": "https://" + J(["claude", ".ai/"]),
     "高2 ai の download": "https://" + J(["claude", ".ai/download"]),
@@ -238,9 +239,6 @@ def _rename(repo, rel):
 NAMES = {
     "メールのファイル名": lambda r: _add(r, "alice" + AT + GM + ".txt"),
     "符号化ホームのフォルダ名": lambda r: _add(r, f"C--{U}-alice-proj/a.txt"),
-    "セッション名のファイル": lambda r: _add(
-        r, J(["claude", ".ai_code_session_0000.txt"])
-    ),
     "git mv での改名": lambda r: _rename(r, "d/alice" + AT + GM + ".txt"),
 }
 
@@ -297,12 +295,8 @@ def test_h1_image_scale_followed_by_domain_shape_is_red(policy, repo):
     assert result.returncode == 1, result.stderr
 
 
-def test_gitleaks_rules_follow_session_shapes():
-    """`.gitleaks.toml` の作業 URL とセッション行も同じ形にそろえる（高2・高7）。"""
+def test_gitleaks_config_has_no_tool_trace_rules():
+    """`.gitleaks.toml` は既定の秘密情報の規則だけ。開発道具のセッション行・作業 URL は止めない。"""
     text = (ROOT / ".gitleaks.toml").read_text(encoding="utf-8")
-    assert "(?:ai|com)" in text
-    assert "projects?|chat|share|code" in text
-    assert (
-        "[0-9]"
-        in text.split('id = "claude-session-trailer"', 1)[1].split("[[rules]]", 1)[0]
-    )
+    assert "useDefault = true" in text
+    assert "[[rules]]" not in text
