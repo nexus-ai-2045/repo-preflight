@@ -14,6 +14,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 CLIS = [
     "github_pr_review_snapshot.py",
+    "github_settings_gate.py",
     "identity_gate.py",
     "install_runtime_skills.py",
     "local_identity_guard.py",

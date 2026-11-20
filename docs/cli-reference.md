@@ -125,6 +125,8 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
   --github-settings-profile solo_public --human
 ```
 
+既定の枝に保護を当てる中身（計画）は、`scripts/github_settings_gate.py protection-plan` が同じくGETだけで出します。基準の項目、`noop` / `create` / `overlay` / `blocked` の意味、当てる側が守る手順は [GitHub repository設定ガイド](../references/github-settings.md) の「既定の枝に保護を当てる計画」にあります。引数もそこに書いています。
+
 **認証情報や個人のパスが見つかったときは、「無視して進む」という選択肢を出しません。**
 
 範囲の絞り込み、同じ質問を次回から出さない設定、GitHub設定ガイドの鮮度は [intent 対話の運用オプション](intent-dialogue-options.md) にあります。

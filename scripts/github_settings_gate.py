@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1179,27 +1182,82 @@ def _check_names(check_runs: Any, statuses: Any) -> set[str]:
     return names
 
 
+def _check_provider_bindings(
+    check_runs: Any, statuses: Any
+) -> dict[str, set[int | None]]:
+    """検査名ごとに、観測した提供元の app_id を集める。
+
+    check-run の app.id が整数ならその値、commit status はどの app でも良い
+    意味の -1、check-run に提供元が無いときは None（未解決）。
+    """
+    bindings: dict[str, set[int | None]] = {}
+
+    def add(name: str, app_id: int | None) -> None:
+        bindings.setdefault(name, set()).add(app_id)
+
+    for item in (check_runs or {}).get("check_runs") or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        app = item.get("app")
+        app_id = app.get("id") if isinstance(app, dict) else None
+        if isinstance(app_id, int) and not isinstance(app_id, bool):
+            add(str(item["name"]), app_id)
+        else:
+            add(str(item["name"]), None)
+    for item in (statuses or {}).get("statuses") or []:
+        if not isinstance(item, dict) or not item.get("context"):
+            continue
+        add(str(item["context"]), -1)
+    return bindings
+
+
+def _resolved_new_check_app_ids(
+    names: tuple[str, ...], providers: dict[str, set[int | None]]
+) -> tuple[dict[str, int], list[str]]:
+    bindings: dict[str, int] = {}
+    reasons: list[str] = []
+    for name in names:
+        observed = providers.get(name, set())
+        specific = {
+            item
+            for item in observed
+            if isinstance(item, int) and not isinstance(item, bool) and item != -1
+        }
+        if len(specific) > 1:
+            reasons.append(f"check_provider_ambiguous:{name}")
+            continue
+        if len(specific) == 1:
+            bindings[name] = next(iter(specific))
+            continue
+        if -1 in observed:
+            bindings[name] = -1
+            continue
+        reasons.append(f"check_provider_not_resolved:{name}")
+    reasons.sort()
+    return bindings, reasons
+
+
 def _merged_pr_check_evidence(
     api_get: Callable[[str], Any],
     repository: str,
     default_branch: str | None,
     required: set[str],
-) -> tuple[set[str], list[dict[str, Any]], list[str]]:
+) -> tuple[set[str], list[dict[str, Any]], list[str], dict[str, set[int | None]]]:
     """直近にmergeされたPRのhead commitが出したcheck名を集める。
 
     PRでしか走らないcheckがあるため、default branchのHEADは根拠にしない。
     """
     if not default_branch:
-        return set(), [], ["default_branch_unknown"]
+        return set(), [], ["default_branch_unknown"], {}
     pulls, error = _fetch(
         api_get,
         f"repos/{repository}/pulls?state=closed&base={quote(default_branch, safe='')}"
         "&sort=updated&direction=desc&per_page=30",
     )
     if error is not None:
-        return set(), [], [error.reason]
+        return set(), [], [error.reason], {}
     if not isinstance(pulls, list):
-        return set(), [], ["invalid_pull_list_response"]
+        return set(), [], ["invalid_pull_list_response"], {}
     merged = sorted(
         (
             pull
@@ -1215,10 +1273,11 @@ def _merged_pr_check_evidence(
         reverse=True,
     )[:MAX_MERGED_PRS_FOR_CHECK_EVIDENCE]
     if not merged:
-        return set(), [], ["no_recent_merged_pull_request"]
+        return set(), [], ["no_recent_merged_pull_request"], {}
     observed: set[str] = set()
     evidence: list[dict[str, Any]] = []
     errors: list[str] = []
+    providers: dict[str, set[int | None]] = {}
     for pull in merged:
         sha = pull["head"]["sha"]
         evidence.append({"number": pull.get("number"), "head_sha": sha})
@@ -1237,9 +1296,15 @@ def _merged_pr_check_evidence(
                 None if statuses_error else statuses,
             )
         )
+        if runs_error is None or statuses_error is None:
+            for name, ids in _check_provider_bindings(
+                None if runs_error else check_runs,
+                None if statuses_error else statuses,
+            ).items():
+                providers.setdefault(name, set()).update(ids)
         if required <= observed:
             break
-    return observed, evidence, errors
+    return observed, evidence, errors, providers
 
 
 def _branch_protection_observations(
@@ -1409,8 +1474,10 @@ def _branch_protection_observations(
     if not required_contexts:
         checks_matches = None if sources.unavailable else False
     else:
-        observed_names, evidence, evidence_errors = _merged_pr_check_evidence(
-            api_get, repository, default_branch, required_contexts
+        observed_names, evidence, evidence_errors, _providers = (
+            _merged_pr_check_evidence(
+                api_get, repository, default_branch, required_contexts
+            )
         )
         if required_contexts <= observed_names:
             checks_matches = None if sources.unavailable else True
@@ -2150,3 +2217,479 @@ def review_repository(
             "設定ごとにpreviewし、現在会話で承認されたものだけ別工程で変更・再測定する"
         ),
     }
+
+
+PROTECTION_PLAN_SCHEMA_VERSION = "repo-preflight.branch-protection-plan/v1"
+GITHUB_ACTIONS_APP_ID = 15368
+_READBACK_ACTORS = (
+    "(. // {} | {users: ([.users[]?.login] | sort), teams: ([.teams[]?.slug] | sort),"
+    " apps: ([.apps[]?.slug] | sort)})"
+)
+PROTECTION_READBACK_JQ = (
+    "[.enforce_admins.enabled,"
+    " .required_pull_request_reviews.required_approving_review_count,"
+    " .required_conversation_resolution.enabled,"
+    " .allow_force_pushes.enabled,"
+    " .allow_deletions.enabled,"
+    " ([(if .required_status_checks.checks != null then"
+    " .required_status_checks.checks[] |"
+    ' {context, app_id: (if (.app_id | type) == "number" then .app_id else -1 end)}'
+    " else (.required_status_checks.contexts // [])[] |"
+    " {context: ., app_id: -1} end)] | sort_by(.context)),"
+    " .required_status_checks.strict,"
+    " (.required_pull_request_reviews | if . == null then null else"
+    " {dismiss_stale_reviews, require_code_owner_reviews, require_last_push_approval,"
+    f" bypass: (.bypass_pull_request_allowances | {_READBACK_ACTORS}),"
+    f" dismissal: (.dismissal_restrictions | {_READBACK_ACTORS})}} end),"
+    f" (.restrictions | if . == null then null else {_READBACK_ACTORS} end),"
+    " .required_linear_history.enabled,"
+    " .block_creations.enabled,"
+    " .lock_branch.enabled,"
+    " .allow_fork_syncing.enabled] | tojson"
+)
+PROTECTION_BASIS_DIGEST = (
+    "sha256(json.dumps(GET本文, sort_keys=True, separators=(',', ':'), "
+    "ensure_ascii=False).encode('utf-8'))"
+)
+_CLASSIC_BOOL_FIELDS = (
+    "required_linear_history",
+    "allow_force_pushes",
+    "allow_deletions",
+    "block_creations",
+    "required_conversation_resolution",
+    "lock_branch",
+    "allow_fork_syncing",
+)
+_CLASSIC_IGNORED_FIELDS = (
+    "url",
+    "required_signatures",
+    "enabled",
+    "name",
+    "protection_url",
+)
+_REVIEW_BOOL_FIELDS = (
+    "dismiss_stale_reviews",
+    "require_code_owner_reviews",
+    "require_last_push_approval",
+)
+_REVIEW_IGNORED_FIELDS = ("url",)
+_ACTOR_KEYS = (("users", "login"), ("teams", "slug"), ("apps", "slug"))
+
+
+class ProtectionShapeError(ValueError):
+    pass
+
+
+def validate_required_checks(names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    if not names:
+        raise ValueError("必須にする検査名を1つ以上指定する")
+    if any(
+        not isinstance(name, str) or not name or name != name.strip() for name in names
+    ):
+        raise ValueError("検査名に空の名前か前後の空白がある")
+    if len(set(names)) != len(names):
+        raise ValueError("検査名が重複している")
+    return tuple(names)
+
+
+def protection_digest(read: Any) -> str:
+    canonical = json.dumps(
+        read, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _enabled_flag(read: dict[str, Any], key: str) -> bool:
+    node = read[key]
+    if not isinstance(node, dict) or not isinstance(node.get("enabled"), bool):
+        raise ProtectionShapeError(f"{key}.enabled")
+    return node["enabled"]
+
+
+def _actor_names(node: Any, field: str) -> dict[str, list[str]]:
+    if not isinstance(node, dict):
+        raise ProtectionShapeError(field)
+    result: dict[str, list[str]] = {}
+    for kind, key in _ACTOR_KEYS:
+        entries = node.get(kind) or []
+        if not isinstance(entries, list) or not all(
+            isinstance(entry, dict) and isinstance(entry.get(key), str)
+            for entry in entries
+        ):
+            raise ProtectionShapeError(f"{field}.{kind}")
+        result[kind] = [entry[key] for entry in entries]
+    return result
+
+
+def _status_checks_body(node: Any) -> dict[str, Any]:
+    if not isinstance(node, dict) or not isinstance(node.get("strict"), bool):
+        raise ProtectionShapeError("required_status_checks")
+    checks = node.get("checks")
+    if checks is None:
+        contexts = node.get("contexts") or []
+        if not all(isinstance(name, str) for name in contexts):
+            raise ProtectionShapeError("required_status_checks.contexts")
+        checks = [{"context": name, "app_id": None} for name in contexts]
+    if not isinstance(checks, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("context"), str)
+        for item in checks
+    ):
+        raise ProtectionShapeError("required_status_checks.checks")
+    return {
+        "strict": node["strict"],
+        "checks": [
+            {
+                "context": item["context"],
+                "app_id": item["app_id"] if isinstance(item.get("app_id"), int) else -1,
+            }
+            for item in checks
+        ],
+    }
+
+
+def _reviews_body(node: Any) -> dict[str, Any]:
+    if not isinstance(node, dict):
+        raise ProtectionShapeError("required_pull_request_reviews")
+    known = (
+        set(_REVIEW_BOOL_FIELDS)
+        | set(_REVIEW_IGNORED_FIELDS)
+        | {
+            "required_approving_review_count",
+            "dismissal_restrictions",
+            "bypass_pull_request_allowances",
+        }
+    )
+    unknown = sorted(set(node) - known)
+    if unknown:
+        raise ProtectionShapeError("required_pull_request_reviews." + ",".join(unknown))
+    count = node.get("required_approving_review_count", 0)
+    if not isinstance(count, int) or isinstance(count, bool):
+        raise ProtectionShapeError(
+            "required_pull_request_reviews.required_approving_review_count"
+        )
+    body: dict[str, Any] = {"required_approving_review_count": count}
+    for key in _REVIEW_BOOL_FIELDS:
+        if key in node:
+            if not isinstance(node[key], bool):
+                raise ProtectionShapeError(f"required_pull_request_reviews.{key}")
+            body[key] = node[key]
+    for key in ("dismissal_restrictions", "bypass_pull_request_allowances"):
+        if key in node:
+            body[key] = _actor_names(node[key], f"required_pull_request_reviews.{key}")
+    return body
+
+
+def protection_put_body(read: dict[str, Any]) -> dict[str, Any]:
+    known = (
+        set(_CLASSIC_BOOL_FIELDS)
+        | set(_CLASSIC_IGNORED_FIELDS)
+        | {
+            "required_status_checks",
+            "enforce_admins",
+            "required_pull_request_reviews",
+            "restrictions",
+        }
+    )
+    unknown = sorted(set(read) - known)
+    if unknown:
+        raise ProtectionShapeError(",".join(unknown))
+    body: dict[str, Any] = {
+        "required_status_checks": (
+            _status_checks_body(read["required_status_checks"])
+            if read.get("required_status_checks") is not None
+            else None
+        ),
+        "enforce_admins": (
+            _enabled_flag(read, "enforce_admins") if "enforce_admins" in read else False
+        ),
+        "required_pull_request_reviews": (
+            _reviews_body(read["required_pull_request_reviews"])
+            if read.get("required_pull_request_reviews") is not None
+            else None
+        ),
+        "restrictions": (
+            _actor_names(read["restrictions"], "restrictions")
+            if read.get("restrictions") is not None
+            else None
+        ),
+    }
+    for key in _CLASSIC_BOOL_FIELDS:
+        if key in read:
+            body[key] = _enabled_flag(read, key)
+    return body
+
+
+def overlay_baseline(
+    current: dict[str, Any] | None,
+    checks: tuple[str, ...],
+    minimum_approvals: int,
+    new_check_app_ids: dict[str, int],
+) -> dict[str, Any]:
+    body = (
+        json.loads(json.dumps(current))
+        if current is not None
+        else {
+            "required_status_checks": None,
+            "enforce_admins": False,
+            "required_pull_request_reviews": None,
+            "restrictions": None,
+        }
+    )
+    body["enforce_admins"] = True
+    reviews = body.get("required_pull_request_reviews")
+    if reviews is None:
+        body["required_pull_request_reviews"] = {
+            "required_approving_review_count": minimum_approvals
+        }
+    elif reviews["required_approving_review_count"] < minimum_approvals:
+        reviews["required_approving_review_count"] = minimum_approvals
+    body["required_conversation_resolution"] = True
+    body["allow_force_pushes"] = False
+    body["allow_deletions"] = False
+    status = body.get("required_status_checks")
+    if status is None:
+        status = {"strict": False, "checks": []}
+        body["required_status_checks"] = status
+    present = {item["context"] for item in status["checks"]}
+    status["checks"].extend(
+        {"context": name, "app_id": new_check_app_ids[name]}
+        for name in checks
+        if name not in present
+    )
+    return body
+
+
+def _sorted_actors(node: dict[str, list[str]] | None) -> dict[str, list[str]]:
+    node = node or {}
+    return {kind: sorted(node.get(kind, [])) for kind, _ in _ACTOR_KEYS}
+
+
+def protection_readback(body: dict[str, Any]) -> list[Any]:
+    reviews = body["required_pull_request_reviews"]
+    restrictions = body["restrictions"]
+    return [
+        body["enforce_admins"],
+        reviews["required_approving_review_count"],
+        body["required_conversation_resolution"],
+        body["allow_force_pushes"],
+        body["allow_deletions"],
+        sorted(
+            (
+                {
+                    "context": item["context"],
+                    "app_id": (
+                        item["app_id"]
+                        if isinstance(item.get("app_id"), int)
+                        and not isinstance(item.get("app_id"), bool)
+                        else -1
+                    ),
+                }
+                for item in body["required_status_checks"]["checks"]
+            ),
+            key=lambda item: item["context"],
+        ),
+        body["required_status_checks"]["strict"],
+        {
+            **{key: reviews.get(key, False) for key in _REVIEW_BOOL_FIELDS},
+            "bypass": _sorted_actors(reviews.get("bypass_pull_request_allowances")),
+            "dismissal": _sorted_actors(reviews.get("dismissal_restrictions")),
+        },
+        None if restrictions is None else _sorted_actors(restrictions),
+        body.get("required_linear_history", False),
+        body.get("block_creations", False),
+        body.get("lock_branch", False),
+        body.get("allow_fork_syncing", False),
+    ]
+
+
+def _blocked_plan(base: dict[str, Any], *reasons: str) -> dict[str, Any]:
+    return {
+        **base,
+        "state": "blocked",
+        "blocked_reasons": list(reasons),
+        "operation": None,
+        "readback": None,
+    }
+
+
+def plan_branch_protection(
+    repository: str,
+    profile: str,
+    required_checks: list[str] | tuple[str, ...],
+    *,
+    api_get: Callable[[str], Any] = gh_api_get,
+    expected_login: str | None = None,
+) -> dict[str, Any]:
+    if profile not in PROFILES:
+        raise ValueError(f"unknown profile: {profile}")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError("repository must be OWNER/REPO")
+    checks = validate_required_checks(required_checks)
+    minimum = 0 if profile == "solo_public" else 1
+    plan: dict[str, Any] = {
+        "schema_version": PROTECTION_PLAN_SCHEMA_VERSION,
+        "repository": repository,
+        "profile": profile,
+        "required_checks": list(checks),
+        "default_branch": None,
+        "authenticated_login": None,
+        "basis": None,
+        "check_evidence": None,
+        "blocked_reasons": [],
+        "external_actions_performed": False,
+    }
+    user, user_error = _fetch(api_get, "user")
+    login = user.get("login") if isinstance(user, dict) else None
+    plan["authenticated_login"] = login
+    if user_error is not None or not login:
+        return _blocked_plan(plan, "authenticated_login_unavailable")
+    if not expected_login:
+        return _blocked_plan(plan, "expected_login_not_given")
+    if login.lower() != expected_login.lower():
+        return _blocked_plan(plan, "authenticated_login_mismatch")
+    root, root_error = _fetch(api_get, f"repos/{repository}")
+    if root_error is not None or not isinstance(root, dict):
+        return _blocked_plan(plan, "repository_unavailable")
+    if str(root.get("full_name") or "").lower() != repository.lower():
+        return _blocked_plan(plan, "repository_identity_mismatch")
+    default_branch = str(root.get("default_branch") or "") or None
+    plan["default_branch"] = default_branch
+    if default_branch is None:
+        return _blocked_plan(plan, "default_branch_unknown")
+    rulesets, ruleset_unavailable = _read_rulesets(repository, api_get)
+    if ruleset_unavailable:
+        return _blocked_plan(plan, f"rulesets:{ruleset_unavailable}")
+    if rulesets:
+        return _blocked_plan(
+            plan,
+            "ruleset_protects_default_branch:"
+            + ",".join(str(item.get("id")) for item in rulesets),
+        )
+    classic, classic_state, classic_unavailable, endpoint = _read_classic_protection(
+        repository, api_get, default_branch
+    )
+    if classic_state == "unavailable":
+        return _blocked_plan(
+            plan, f"classic_protection_unavailable:{classic_unavailable}"
+        )
+    plan["basis"] = {
+        "endpoint": endpoint,
+        "state": classic_state,
+        "sha256": protection_digest(classic) if classic is not None else None,
+        "digest": PROTECTION_BASIS_DIGEST,
+    }
+    observed, evidence, evidence_errors, providers = _merged_pr_check_evidence(
+        api_get, repository, default_branch, set(checks)
+    )
+    missing = sorted(set(checks) - observed)
+    plan["check_evidence"] = {
+        "observed_on_recent_merged_pr_heads": sorted(observed),
+        "evidence_pull_requests": evidence,
+        "missing": missing,
+    }
+    if missing:
+        reason = (
+            "check_evidence_unavailable:" + ",".join(sorted(set(evidence_errors)))
+            if evidence_errors
+            else "checks_not_observed_on_recent_merged_pr_heads:" + ",".join(missing)
+        )
+        return _blocked_plan(plan, reason)
+    try:
+        current = protection_put_body(classic) if classic is not None else None
+    except ProtectionShapeError as exc:
+        return _blocked_plan(plan, f"protection_shape_not_interpreted:{exc}")
+    reviews = (current or {}).get("required_pull_request_reviews") or {}
+    bypass = reviews.get("bypass_pull_request_allowances") or {}
+    if login.lower() in {name.lower() for name in bypass.get("users", [])}:
+        return _blocked_plan(plan, "authenticated_login_bypasses_pull_request")
+    if bypass.get("teams") or bypass.get("apps"):
+        return _blocked_plan(plan, "pull_request_bypass_membership_not_resolved")
+    dismissal = reviews.get("dismissal_restrictions")
+    if dismissal is not None:
+        owner_type = (root.get("owner") or {}).get("type")
+        if owner_type != "Organization":
+            return _blocked_plan(
+                plan, "dismissal_restrictions_on_non_organization_repository"
+            )
+        if not any(dismissal.values()):
+            return _blocked_plan(plan, "empty_dismissal_restrictions_not_preserved")
+    present = {
+        item["context"]
+        for item in ((current or {}).get("required_status_checks") or {}).get("checks")
+        or []
+    }
+    new_names = tuple(name for name in checks if name not in present)
+    new_check_app_ids, provider_reasons = _resolved_new_check_app_ids(
+        new_names, providers
+    )
+    if provider_reasons:
+        return _blocked_plan(plan, *provider_reasons)
+    desired = overlay_baseline(current, checks, minimum, new_check_app_ids)
+    if current == desired:
+        state = "noop"
+    else:
+        state = "overlay" if current is not None else "create"
+    return {
+        **plan,
+        "state": state,
+        "operation": (
+            None
+            if state == "noop"
+            else {"method": "PUT", "endpoint": endpoint, "body": desired}
+        ),
+        "readback": {
+            "endpoint": endpoint,
+            "jq": PROTECTION_READBACK_JQ,
+            "expected": protection_readback(desired),
+        },
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="GitHub設定の読み取り専用の関門。設定は変更しない。"
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser(
+        "protection-plan",
+        help="既定の枝の保護で当てる中身を、取り直した現在値から計算して出す",
+    )
+    plan.add_argument("--repository", required=True, metavar="OWNER/REPO")
+    plan.add_argument("--profile", choices=PROFILES, default="solo_public")
+    plan.add_argument(
+        "--require-check",
+        action="append",
+        default=[],
+        metavar="NAME",
+        dest="required_checks",
+    )
+    plan.add_argument("--expected-login", required=True)
+    return parser
+
+
+def main(
+    argv: list[str] | None = None, *, api_get: Callable[[str], Any] = gh_api_get
+) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        checks = validate_required_checks(args.required_checks)
+    except ValueError as exc:
+        parser.error(f"--require-check: {exc}")
+    plan = plan_branch_protection(
+        args.repository,
+        args.profile,
+        checks,
+        api_get=api_get,
+        expected_login=args.expected_login,
+    )
+    json.dump(plan, sys.stdout, ensure_ascii=False, indent=2)
+    sys.stdout.write("\n")
+    return 1 if plan["state"] == "blocked" else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
