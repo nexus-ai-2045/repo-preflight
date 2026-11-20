@@ -107,7 +107,7 @@ def message(policy, tmp_path, text):
     return gate(policy, "--repo", str(tmp_path), "--message-file", str(path))
 
 
-# ---- H1 セッション行・作業 URL ----
+# ---- H1 セッション行・作業 URL（2026-11-20 に禁止をやめた。通ることを確かめる） ----
 SESSION = J(["Claude", "-Session"])
 H1_FORMS = {
     "箇条書き": f"試験\n\n- {SESSION}: zz-0000\n",
@@ -133,11 +133,9 @@ H1_FORMS = {
 
 
 @pytest.mark.parametrize("form", sorted(H1_FORMS))
-def test_h1_session_forms_are_red(policy, tmp_path, form):
+def test_h1_session_forms_are_allowed(policy, tmp_path, form):
     result = message(policy, tmp_path, H1_FORMS[form])
-    assert result.returncode == 1, form
-    assert "セッション行あり" in result.stderr
-    assert "zz-0000" not in result.stdout + result.stderr  # 値は出さない
+    assert result.returncode == 0, (form, result.stderr)
 
 
 def test_h1_control_plain_text_passes(policy, tmp_path):
@@ -147,11 +145,10 @@ def test_h1_control_plain_text_passes(policy, tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-def test_h1_session_line_in_added_file_is_red(policy, repo):
+def test_h1_session_line_in_added_file_is_allowed(policy, repo):
     _commit(repo, {"notes.md": f"- {SESSION}: zz-0000\n"})
     result = gate(policy, "--repo", str(repo), "--range", "HEAD~1..HEAD")
-    assert result.returncode == 1
-    assert "差分にセッション行あり" in result.stderr
+    assert result.returncode == 0, result.stderr
 
 
 # ---- H2 メール ----
@@ -338,7 +335,7 @@ def test_h7_annotated_tag_tagger_and_message_are_checked(policy, repo, pushed):
     result = pre_push(policy, repo, [f"refs/tags/v9 {tag} refs/tags/v9 {ZERO}"])
     assert result.returncode == 1
     assert "タグの作者が公開許可名義と不一致" in result.stderr
-    assert "セッション行あり" in result.stderr
+    assert "セッション行" not in result.stderr  # 本文のセッション行は止めない
 
 
 @needs_gitleaks

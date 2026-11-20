@@ -127,7 +127,7 @@ def test_audit_tool_and_policy_changes_trigger_main_scan(path):
     [
         "README.md",
         "docs/cli-reference.md",
-        "tests/test_session_url_prefix.py",
+        "tests/test_tool_traces_allowed.py",
         ".github/workflows/ci.yml",
         "scripts/install_runtime_skills.py",
         "scripts/preferences.py",
@@ -536,7 +536,7 @@ def test_annotated_tag_with_personal_identity_in_message_is_red(tmp_path, origin
     tag = make_tag(
         origin,
         "v0.0.2",
-        f"公開用のタグ {PERSONAL}\n\nCo-authored-by: {UNLISTED}\n",
+        f"公開用のタグ {PERSONAL}\n\nSigned-off-by: {UNLISTED}\n",
     )
     result = run_scan(tmp_path, origin)
     assert result.returncode == 1

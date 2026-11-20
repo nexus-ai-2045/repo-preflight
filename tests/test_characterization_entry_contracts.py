@@ -166,7 +166,7 @@ def test_characterization_public_message_clean_passes(tmp_path):
     assert '"status": "pass"' in result.stdout
 
 
-def test_characterization_public_message_session_line_blocks(tmp_path):
+def test_characterization_public_message_session_line_passes(tmp_path):
     policy = _policy(tmp_path)
     message = tmp_path / "msg.txt"
     message.write_text(f"試験\n\n{FAKE_SESSION}\n", encoding="utf-8")
@@ -179,10 +179,8 @@ def test_characterization_public_message_session_line_blocks(tmp_path):
         "--message-file",
         str(message),
     )
-    assert result.returncode == 1
-    assert "セッション行あり" in result.stderr
-    assert '"status": "fail"' in result.stdout
-    assert "zz-0000" not in _combined(result)
+    assert result.returncode == 0, result.stderr
+    assert '"status": "pass"' in result.stdout
 
 
 # ---- identity_gate --public --pr-event（日本語見出しの CLI 契約） ----

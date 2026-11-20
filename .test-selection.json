@@ -427,13 +427,13 @@
         "tests/test_readiness_scan.py",
         "tests/test_readiness_scan_bundle.py",
         "tests/test_release_identity_repair.py",
+        "tests/test_retired_rule_exceptions.py",
         "tests/test_review_3c.py",
         "tests/test_review_3c_runner.py",
         "tests/test_runtime_deployment.py",
         "tests/test_runtime_support.py",
         "tests/test_scan_diagnostics.py",
-        "tests/test_session_trace_deny.py",
-        "tests/test_session_url_prefix.py",
+        "tests/test_tool_traces_allowed.py",
         "tests/test_type1_identity.py"
       ],
       "dependency_mode": "mapped"

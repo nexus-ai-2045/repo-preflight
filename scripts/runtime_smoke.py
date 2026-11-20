@@ -71,7 +71,6 @@ def sample_policy_environment(base: Path) -> dict:
             {
                 "allow_emails": ["smoke@example.invalid"],
                 "allow_names": ["Smoke Author"],
-                "reject_all_coauthors": True,
             }
         ),
         encoding="utf-8",

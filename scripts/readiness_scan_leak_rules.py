@@ -17,8 +17,6 @@ SECRET_PATTERNS = (
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
     re.compile(r"BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY"),
-    # 開発道具のセッション行・セッションURL。全履歴の数を比べるので型は広げない（新しく足すものは identity_gate.SESSION_TRACE_RES がより広く見る）。
-    re.compile(r"(?im)^[ \t]*claude-session[ \t]*:|claude[.]ai/code/session_"),
 )
 SECRET_RULE_IDS = (
     "openai_key",
@@ -27,8 +25,9 @@ SECRET_RULE_IDS = (
     "aws_access_key",
     "slack_token",
     "private_key",
-    "claude_session",
 )
+# 廃止した規則の ID。登録済みのレビュー済み例外にあっても、ファイル全体を壊さず読み捨てる。
+RETIRED_RULE_IDS = frozenset({"claude_session"})
 
 
 def _zip_exact(first, second):

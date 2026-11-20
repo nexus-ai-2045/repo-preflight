@@ -75,7 +75,7 @@ def test_shared_transport_does_not_authorize_identity_roles(monkeypatch, role):
     allowed = gate.PublicPolicy(frozenset({"Fixture <" + allowed_address + ">"}))
     if role == "trailer":
         issues = gate.check_public_text(
-            allowed, "Co-authored-by: Fixture <" + endpoint + ">", "body"
+            allowed, "Signed-off-by: Fixture <" + endpoint + ">", "body"
         )
     else:
         author = endpoint if role == "author" else allowed_address
