@@ -417,3 +417,9 @@ def test_moved_report_names_are_republished_by_the_facade():
         "report_exit_code",
     ):
         assert getattr(MODULE, name) is getattr(REPORT, name)
+
+
+def test_secret_rules_are_published_by_the_facade():
+    part = MODULE._secrets
+    for name in ("SECRET_PATTERNS", "SECRET_RULE_IDS", "_zip_exact", "secret_matches"):
+        assert getattr(MODULE, name) is getattr(part, name)

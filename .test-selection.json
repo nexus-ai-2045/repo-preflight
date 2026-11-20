@@ -227,6 +227,7 @@
         "scripts/media_identity.py",
         "scripts/mp4_identity.py",
         "scripts/readiness_scan.py",
+        "scripts/readiness_scan_leak_rules.py",
         "scripts/type1_identity.py"
       ],
       "tests": [
