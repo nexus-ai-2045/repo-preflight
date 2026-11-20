@@ -14,7 +14,7 @@ EMAIL = "91+fixture-owner@users.noreply.github.com"
 
 
 @pytest.mark.parametrize(
-    "failure", ["masked_author", "masked_coauthor", "foreign_coauthor"]
+    "failure", ["masked_author", "masked_coauthor", "foreign_signoff"]
 )
 def test_real_pre_push_stops_bad_commit_and_preserves_remote(tmp_path, failure):
     repo = tmp_path / "target"
@@ -95,7 +95,7 @@ def test_real_pre_push_stops_bad_commit_and_preserves_remote(tmp_path, failure):
     elif failure == "masked_coauthor":
         message += f"\n\nCo-authored-by: REDACTED <{EMAIL}>"
     else:
-        message += "\n\nCo-authored-by: Different Name <92+other-fixture@users.noreply.github.com>"
+        message += "\n\nSigned-off-by: Different Name <92+other-fixture@users.noreply.github.com>"
     git("commit", "--allow-empty", "-m", message, extra=extra)
     result = git("push", "origin", "main", check=False)
     assert result.returncode != 0

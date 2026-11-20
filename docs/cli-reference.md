@@ -149,27 +149,27 @@ python scripts/readiness_scan.py --repo PATH --intent configure_settings \
 
 持ち主の個人名義を人に書かせずに照合する `scripts/local_identity_guard.py` の使い方は [docs/local-identity-guard.md](local-identity-guard.md) を参照してください。
 
-名義・共同作者行・コミット本文の `identity_gate` も必須判定です。非公開設定 `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` が欠ければ停止します。型・正規表現・入力ファイルが不正な場合は、値を出さず検査不能として止めます。通常は全参照、差分操作は指定した比較元以降の全コミットを検査します。リリース時の `--identity-base-ref` は名義だけを今回範囲へ限定し、本文の全参照検査を狭めません。設定や個人名義をプルリクエスト・チャットへ貼らないでください。
+名義・コミット本文の `identity_gate` も必須判定です。非公開設定 `PREFLIGHT_PRIVATE_PATTERNS_FILE` または `PREFLIGHT_PRIVATE_PATTERNS` が欠ければ停止します。型・正規表現・入力ファイルが不正な場合は、値を出さず検査不能として止めます。通常は全参照、差分操作は指定した比較元以降の全コミットを検査します。リリース時の `--identity-base-ref` は名義だけを今回範囲へ限定し、本文の全参照検査を狭めません。設定や個人名義をプルリクエスト・チャットへ貼らないでください。
 
-`REDACTED`という伏せ字は、作者・コミッター・共同作者等の登録名義として拒否します。ログの伏せ字表示と、Gitに保存する名義は別です。非公開設定の`deny_email_sha256s`には、メールを前後の空白除去・大小文字の正規化後にSHA-256へ変換した値を登録できます。禁止メールの判定は許可リストより優先し、表示名を変えても拒否します。ハッシュは匿名性の保証ではなく、公開設定へ個人の照合値を載せないための入力形式です。禁止リスト自体も非公開で管理してください。
+`REDACTED`という伏せ字は、作者・コミッター等の登録名義として拒否します（共著者行の伏せ字も止めます）。ログの伏せ字表示と、Gitに保存する名義は別です。非公開設定の`deny_email_sha256s`には、メールを前後の空白除去・大小文字の正規化後にSHA-256へ変換した値を登録できます。禁止メールの判定は許可リストより優先し、表示名を変えても拒否します。ハッシュは匿名性の保証ではなく、公開設定へ個人の照合値を載せないための入力形式です。禁止リスト自体も非公開で管理してください。
 
 操作intentでは、名義検査に加えて正規化した個人識別子・履歴object・ファイル名も `private_identity_scan` で検査します。`PUBLIC_IDENTITY_DENYLIST` には、検査対象の外で管理する非公開UTF-8リストの絶対パスを指定してください。検出器は同梱の正本を使い、別の採用済み検出器を指定する場合だけ `PUBLIC_IDENTITY_GUARD_SCRIPT` を渡します。入力不足・内容変更・検査不能は停止し、報告には値を含めず入力のhashと検査状態を記録します。
 
 同梱の検出器を使うとき、作業treeの本文検査で合格した内容はSHA-256だけを `${XDG_CACHE_HOME:-~/.cache}/repo-preflight/identity-scan/`（ディレクトリ0700・ファイル0600）に控え、次回から同じ内容の本文検査を省きます（ファイル名の検査は毎回行い、報告の `worktree_files_cache_reused` に省いた数が出ます）。検査器（`scripts/readiness_scan.py` と、それが読み込む `scripts/readiness_scan_*.py` の全体。[ADR-0022](adr/0022-readiness-scan-facade-and-parts.md)）・方針・正規化器・reviewed例外・remote・Pythonのどれかが変わる、控えが壊れている、repo内にある、のいずれかなら全体を読み直します。控えのフォルダの権限が0700より緩いときは自動で直さず、控えを読みも書きもしません（直すときは手で `chmod 700` してください）。控えを使わないときは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` を渡します。控えには署名が無く、同じユーザーの権限で動くコードは書き換えられるため、CIでキャッシュのフォルダを復元・共有する設定や、信頼できないPRを検査するジョブでは `REPO_PREFLIGHT_IDENTITY_SCAN_CACHE=off` にしてください。
 
-このリストと名義用の `PREFLIGHT_PRIVATE_PATTERNS_FILE` のJSONは、責務と形式が異なります。名義・共同作者行を確認する既存gateと、正本の正規化検査を両方通してください。非公開のリストやJSONを公開リポジトリへコピーしないでください。
+このリストと名義用の `PREFLIGHT_PRIVATE_PATTERNS_FILE` のJSONは、責務と形式が異なります。名義を確認する既存gateと、正本の正規化検査を両方通してください。非公開のリストやJSONを公開リポジトリへコピーしないでください。
 
 ### 非公開送信の承認済みcommit名義
 
 個人用の非公開repoで承認したGit名義を維持する場合は、`scripts/readiness_scan.py`の`--allow-expected-private-commit-identity`を明示できます。`--private-submission`、originの比較元を示す`--base-ref`、`--expected-identity`が必要です。対象intentは`push`・`open_pr`・`merge`に限ります。
 
-liveのPRIVATE・実送信先・固定base/headを照合し、既存の型付き名義policyが成功し、期待名義と完全一致したauthor/committer欄だけを、個人情報検査へ渡す派生viewで同byte長の空白に置換します。元のcommit bytes・OID・本文・未知headerは保持し、秘密情報と正規化pathは元bytesでも検査します。共同作者、本文、ファイル名、素材の許可には使えません。PUBLIC・不明な公開範囲・名義不一致・検査中のref変更は停止します。
+liveのPRIVATE・実送信先・固定base/headを照合し、既存の型付き名義policyが成功し、期待名義と完全一致したauthor/committer欄だけを、個人情報検査へ渡す派生viewで同byte長の空白に置換します。元のcommit bytes・OID・本文・未知headerは保持し、秘密情報と正規化pathは元bytesでも検査します。本文、ファイル名、素材の許可には使えません。PUBLIC・不明な公開範囲・名義不一致・検査中のref変更は停止します。
 
 報告の`approved_private_commit_identity_fields`に扱った欄数、`approved_private_commit_identity_sha256`に期待名義のhash、`approved_private_commit_identity_scope`に適用範囲を記録します。名義の実値や設定値を公開文書へ加えません。この指定で既存の非公開policyを省略したり、push・PR・mergeの実行承認を発行したりはしません。
 
-共通CIと`preflight_ratchet.py`は、既定で`references/public-commit-identities.json`を使い、作者・コミッター・共同作者等を検査します。伏せ字や許可外の名義は`public_attribution`で失敗し、件数の基準値では免除しません。別の運用名義を使う導入先は、レビューした一覧を`--allowed-identities IDENTITIES.json`で明示してください。
+共通CIと`preflight_ratchet.py`は、既定で`references/public-commit-identities.json`を使い、作者・コミッター・署名行を検査します。共著者行（`Co-authored-by`）は開発道具が自動で付けるものも含めて受け入れます。メールが名簿にある、道具の noreply（`users.noreply.github.com`、local 部に `noreply` / `no-reply`）、明示一覧 `TOOL_COAUTHOR_EMAILS`、予約ドメインのどれかのときだけ通し、個人メール・名簿にない会社メール・伏せ字・メールの形でないものは止めます。伏せ字や許可外の作者・コミッターの名義は`public_attribution`で失敗し、件数の基準値では免除しません。別の運用名義を使う導入先は、レビューした一覧を`--allowed-identities IDENTITIES.json`で明示してください。
 
-開発道具が本文へ付ける `Claude-Session` 行と、Claude Code のセッションURLも止めます。コミット本文は `public_attribution` と `identity_gate`、PR題名・本文・コメントは `identity_gate.py` のPRイベント検査、ファイルの中身は `secret_scan`（規則 `claude_session`）で数えます。値は出しません。
+開発道具が自動で付ける痕跡（`Claude-Session` 行、作業・セッションURL、`Co-Authored-By` の共著者行、「Generated with …」の署名行）は止めません。止めるのは個人名・個人メール・OSアカウント名・端末名・ホームのパス・秘密情報と、コミット名義が公開名義でないことです。共著者行のメールが個人メール（gmail など）、照合リストの個人名義、名簿にない人のメールなら、個人名義として止めます。
 
 ## CIから使う
 

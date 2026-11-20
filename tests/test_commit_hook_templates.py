@@ -122,16 +122,32 @@ def test_対照_commit_aの一時索引でも通る(repo):
     "body",
     [
         "連絡先 taro@" "zz-dummy-corp.co.jp",
-        "Claude-" "Session: 00000000-0000-0000-0000-000000000000",
         "p=" + fixture_path("linux", "zzzz", "x"),
-        "Co-authored-by: unlisted <unlisted@example.invalid>",
+        "Co-authored-by: person <person@" "gmail.com>",
+        "Signed-off-by: unlisted <unlisted@example.invalid>",
     ],
-    ids=["会社メール", "セッション行", "ホームパス", "名簿にない共著行"],
+    ids=["会社メール", "ホームパス", "個人メールの共著行", "名簿にない署名行"],
 )
 def test_commit_msgが本文の形で止める(repo, body):
     result, _ = _commit(repo, "-m", "試験", "-m", body)
     assert result.returncode != 0
     assert _git(repo, "rev-list", "--count", "HEAD").stdout.strip() == "1"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "Claude-" "Session: https://claude.ai/code/session_" + "0" * 24,
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+        "Co-authored-by: unlisted <unlisted@example.invalid>",
+        "🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+    ],
+    ids=["セッション行", "道具の共著者行", "名簿にない共著行", "道具の署名行"],
+)
+def test_commit_msgは道具の痕跡を止めない(repo, body):
+    result, _ = _commit(repo, "-m", "試験", "-m", body)
+    assert result.returncode == 0, result.stderr
+    assert _git(repo, "rev-list", "--count", "HEAD").stdout.strip() == "2"
 
 
 # pre-commit -------------------------------------------------------------------

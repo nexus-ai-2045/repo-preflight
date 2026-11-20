@@ -28,7 +28,6 @@ def approved(submission, monkeypatch):
             {
                 "allow_names": ["Fixture Private Author"],
                 "allow_emails": ["fixture-person@example.invalid"],
-                "reject_all_coauthors": True,
             }
         ),
     )

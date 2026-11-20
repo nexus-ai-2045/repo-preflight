@@ -26,6 +26,7 @@ python .repo-operating-contracts\check.py
 - 値を表示するコマンド（`whoami`、`id -F`、`echo $HOME`、`git config user.email` など）の出力をチャットやファイルへ貼らない。比べる必要があるときは一致・不一致だけを出す。
 - コミットの作成者とコミッターは公開用の名義（nexus-ai-2045 の GitHub noreply）だけにする。書き込み前に `python <repo-preflight>/scripts/local_identity_guard.py --public-name nexus-ai-2045 --public-name nexus_ai config` で確かめ、push 前は同じスクリプトの `check` を使う。
 - push 前検査や identity guard を緩めない・回避しない（`--no-verify`、`core.hooksPath` の付け替え、照合リストの無効化をしない）。止まったら、値を出さずに原因の箇所を直す。
+- 開発道具が自動で付ける痕跡（`Co-Authored-By` の共著者行・セッション行・作業URL・PR本文の署名）は禁止しない（2026-11-20 所有者決定）。緩めたのはこの痕跡の検査だけで、個人名義（個人メール・照合リスト・名簿外の人のメール・伏せ字・形不正の共著者行）と、上の identity guard・個人情報・秘密情報の検査は今までどおり止める。道具の noreply と `TOOL_COAUTHOR_EMAILS` の明示一覧だけが名簿なしで通る。
 
 ## 規則と強制手段
 

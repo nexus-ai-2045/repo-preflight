@@ -1284,7 +1284,7 @@ def test_allowed_identities_committer_only_fails_as_author(tmp_path: Path):
     assert report["checks"]["commit_identity"]["mismatch_count"] == 1
 
 
-def test_allowed_identities_committer_only_fails_as_co_author(tmp_path: Path):
+def test_allowed_identities_accepts_co_author_outside_the_list(tmp_path: Path):
     repo = make_repo(tmp_path)
     commit_extra(repo, f"extra\n\nCo-authored-by: {WEB_COMMITTER}")
 
@@ -1292,7 +1292,19 @@ def test_allowed_identities_committer_only_fails_as_co_author(tmp_path: Path):
         repo, allowed_identities=write_policy_with_committer_only(tmp_path)
     )
 
-    assert report["status"] == "blocked"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 0
+
+
+def test_allowed_identities_blocks_personal_mail_co_author(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    commit_extra(
+        repo, "extra\n\nCo-authored-by: Someone <someone" + chr(64) + "gmail.com>"
+    )
+
+    report = MODULE.scan(
+        repo, allowed_identities=write_policy_with_committer_only(tmp_path)
+    )
+
     assert report["checks"]["commit_identity"]["mismatch_count"] == 1
 
 
@@ -3184,14 +3196,30 @@ def test_private_identity_provider_checks_real_git_objects(
     assert email not in json.dumps(report)
 
 
-def test_expected_identity_includes_coauthor_trailer(tmp_path):
+def test_expected_identity_accepts_tool_coauthor_trailer(tmp_path):
     repo = make_repo(tmp_path)
     git(
         repo,
         "commit",
         "--allow-empty",
         "-m",
-        "fixture\n\nCo-authored-by: Fixture <other@example.invalid>",
+        "fixture\n\nCo-Authored-By: Claude <noreply" + chr(64) + "anthropic.com>",
+    )
+    report = MODULE.scan(
+        repo, expected_identity="Test Author <test-author@example.invalid>"
+    )
+    assert report["checks"]["commit_identity"]["status"] == "pass"
+    assert report["checks"]["commit_identity"]["mismatch_count"] == 0
+
+
+def test_expected_identity_blocks_personal_mail_coauthor_trailer(tmp_path):
+    repo = make_repo(tmp_path)
+    git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "fixture\n\nCo-authored-by: Fixture <fixture" + chr(64) + "gmail.com>",
     )
     report = MODULE.scan(
         repo, expected_identity="Test Author <test-author@example.invalid>"
