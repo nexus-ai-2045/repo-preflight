@@ -3087,6 +3087,22 @@ def test_self_review_owner_mapping_preserves_other_dependency_uncertainty(
         assert any(item["file"] == opaque for item in plan["unresolved"])
 
 
+def test_github_settings_protection_plan_test_change_resolves_without_unresolved():
+    """main 上で保護計画試験だけを変えたとき、未解決の対応づけが残らない。"""
+    root = local_check.ROOT
+    config = json.loads((root / ".test-selection.json").read_text(encoding="utf-8"))
+    plan = local_check.select_tests(
+        root, ["tests/test_github_settings_protection_plan.py"], config
+    )
+    required = {
+        "tests/test_github_settings_protection_plan.py",
+        "tests/test_identity_fixture_exceptions.py",
+    }
+    assert plan["unresolved"] == [], plan["unresolved"]
+    assert plan["status"] == "selected"
+    assert required <= set(plan["selected_tests"])
+
+
 def test_core_selection_policy_keeps_known_cli_consumers_and_unknown_sources(
     monkeypatch,
 ):
