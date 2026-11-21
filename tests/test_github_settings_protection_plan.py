@@ -1,6 +1,8 @@
 import json
+import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 from github_settings_fixtures import (
@@ -395,6 +397,7 @@ def test_readback_query_detects_lost_check_app_binding():
     assert evaluate(read) != result["readback"]["expected"]
 
 
+@pytest.mark.skipif(shutil.which("jq") is None, reason="jq が無い")
 def test_readback_query_detects_admins_not_enforced():
     result, _ = plan(unprotected_responses())
     read = get_shape(result["operation"]["body"])
@@ -664,3 +667,31 @@ def test_readback_query_uses_contexts_when_checks_are_missing():
         {"context": "gate / preflight", "app_id": -1},
         {"context": "verify", "app_id": -1},
     ]
+
+
+def test_readback_query_tests_skip_when_jq_is_missing():
+    path = os.pathsep.join(
+        part
+        for part in os.environ.get("PATH", "").split(os.pathsep)
+        if part and shutil.which("jq", path=part) is None
+    )
+    assert shutil.which("jq", path=path) is None
+    env = os.environ.copy()
+    env["PATH"] = path
+    env.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--tb=line",
+            "-k",
+            "test_readback_query and not test_readback_query_tests_skip_when_jq_is_missing",
+            __file__,
+        ],
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
