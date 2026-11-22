@@ -104,11 +104,15 @@
     {
       "changes": [
         ".github/workflows/all-refs-scan.yml",
+        "docs/adr/0021-public-fixture-policy-trust.md",
         "scripts/ci_all_refs_scan.sh",
+        "scripts/ci_all_refs_identity.py",
+        "tests/test_ci_all_refs_identity.py",
         "tests/test_all_refs_scan_workflow.py"
       ],
       "tests": [
-        "tests/test_all_refs_scan_workflow.py"
+        "tests/test_all_refs_scan_workflow.py",
+        "tests/test_ci_all_refs_identity.py"
       ],
       "dependency_mode": "mapped"
     },
@@ -292,6 +296,7 @@
         ".repo-preflight/identity-fixture-exceptions.txt"
       ],
       "tests": [
+        "tests/test_ci_all_refs_identity.py",
         "tests/test_all_refs_scan_workflow.py",
         "tests/test_identity_fixture_exceptions.py",
         "tests/test_manage_git_hooks.py"
