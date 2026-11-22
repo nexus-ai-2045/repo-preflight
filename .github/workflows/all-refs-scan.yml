@@ -5,7 +5,7 @@ name: all-refs-scan
 # 日に1回・手動・監査器や規則を変えたmainへのpushで検査する。取得するのは refs/heads・refs/tags・refs/pull/*/head だけで、
 # refs/notes やそれ以外の名前空間（任意の refs/*、refs/pull/*/merge など）は取得せず、検査の対象外。
 # 新しい検査は作らず、preflight-gate と同じ入口を ref ごとに呼ぶ。
-# - 名義・本文・足した行の形：scripts/identity_gate.py --public（デフォルト枝に無い commit）
+# - 名義・本文・足した行の形：scripts/ci_all_refs_identity.py（デフォルト枝に無い commit）
 # - 秘密・個人パス・名義の件数：scripts/preflight_ratchet.py（基準値はデフォルト枝の版より緩められない）
 # - 鍵：固定した gitleaks（全履歴）
 # - 注釈付きタグ：タグの作者（tagger）と注釈文（入れ子のタグも）を identity_gate.check_pushed_tags で見る
@@ -43,6 +43,7 @@ on:
       - "scripts/readme_release_gate.py"
       - "scripts/install_pinned_gitleaks.py"
       - "scripts/ci_all_refs_scan.sh"
+      - "scripts/ci_all_refs_identity.py"
       - "references/public-commit-identities.json"
       - "references/gitleaks-pins.json"
       - ".repo-preflight/identity-fixture-exceptions.txt"

@@ -261,7 +261,8 @@ for sha in $commits; do
   # 名義・本文・足した行の形。例外一覧は tool 側（デフォルト枝の版）だけを読む。
   # デフォルト枝の commit は、その push の CI（preflight-gate）が当時の固定した版で見ている。
   # 例外一覧はファイルの最新の中身の SHA256 だけを持つので、今の一覧で古い中身を見直すと必ず赤になる。
-  if ! python "$tool/scripts/identity_gate.py" --public --repo "$scan" --allowed-identities "$policy" --range "$id_range" > "$work/identity.out" 2>&1; then
+  # 監査専用入口が扱うPR #84の6行は、コミットと内容の照合がすべて一致した場合に限る。
+  if ! python "$tool/scripts/ci_all_refs_identity.py" --repo "$scan" --allowed-identities "$policy" --range "$id_range" > "$work/identity.out" 2>&1; then
     python "$work/summarize.py" issues "$work/identity.out" "${where}: identity_gate"
     failed=1
   fi

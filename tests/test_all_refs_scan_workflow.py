@@ -108,6 +108,7 @@ def test_triggers_are_schedule_manual_and_scoped_main_push():
         "scripts/readme_release_gate.py",
         "scripts/install_pinned_gitleaks.py",
         "scripts/ci_all_refs_scan.sh",
+        "scripts/ci_all_refs_identity.py",
         "references/public-commit-identities.json",
         "references/gitleaks-pins.json",
         ".repo-preflight/identity-fixture-exceptions.txt",
@@ -199,7 +200,7 @@ def test_logs_only_counts_and_kinds():
     # 検査道具の出力はそのままログへ流さない（行の継続はつないで見る）
     joined = re.sub(r"\\\n\s*", " ", script)
     for call in (
-        'identity_gate.py" --public',
+        'ci_all_refs_identity.py" --repo',
         'preflight_ratchet.py" "${ratchet_args[@]}"',
         "gitleaks git ",
     ):
