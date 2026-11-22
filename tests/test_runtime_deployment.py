@@ -189,6 +189,44 @@ def test_batch_install_checks_every_destination_before_writing(tmp_path):
     assert not (claude / "run_preflight.py").exists()
 
 
+@pytest.mark.parametrize("source_failure", ["missing_adapter", "unreadable_adapter"])
+def test_batch_install_requires_every_source_before_writing(tmp_path, source_failure):
+    source = tmp_path / "source"
+    for name in (
+        "SKILL.md",
+        "runtime/claude-code/SKILL.md",
+        "runtime/shared/run_preflight.py",
+    ):
+        entry = source / name
+        entry.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, entry)
+    if source_failure == "unreadable_adapter":
+        agents = source / "runtime/grok/SKILL.md"
+        agents.parent.mkdir()
+        agents.write_bytes(b"\xff")
+    home = tmp_path / "home"
+    claude = home / ".claude/skills/repo-preflight"
+    claude.mkdir(parents=True)
+    (claude / "SKILL.md").write_text("old adapter\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/install_runtime_skills.py"),
+            "--repo",
+            str(source),
+            "--home",
+            str(home),
+            "--apply",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert source_failure in result.stdout
+    assert (claude / "SKILL.md").read_text(encoding="utf-8") == "old adapter\n"
+    assert not (claude / "run_preflight.py").exists()
+
+
 def test_hook_management_never_executes_cwd_root_after_checkout_loss(tmp_path):
     installed = tmp_path / "installed"
     installed.mkdir()
