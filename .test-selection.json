@@ -375,11 +375,14 @@
     {
       "changes": [
         "docs/test-efficiency.md",
-        "docs/runtime-support.md"
+        "docs/runtime-support.md",
+        "scripts/install_runtime_skills.py",
+        "tests/test_runtime_deployment.py"
       ],
       "tests": [
         "tests/test_public_narrative_contract.py",
         "tests/test_consistency_gate.py",
+        "tests/test_runtime_deployment.py",
         "tests/test_runtime_support.py"
       ],
       "dependency_mode": "mapped"

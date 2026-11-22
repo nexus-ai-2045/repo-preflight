@@ -125,15 +125,6 @@ def link_checkout(dest_checkout: Path, repo: Path) -> str:
     return "path-file"
 
 
-def enhance_run_preflight_for_path_file(run_src: Path, dest: Path) -> None:
-    """path-file fallback でも動くよう、run_preflight をそのままコピー。
-
-    discover は checkout/ に readiness が無い場合 ROOT_PATH.txt を読むよう本体を拡張済みにする。
-    """
-    text = run_src.read_text(encoding="utf-8")
-    (dest / "run_preflight.py").write_text(text, encoding="utf-8")
-
-
 def project_skill_body(body: str) -> str:
     """install 先へ書く SKILL.md 本文を作る。
 
@@ -194,43 +185,41 @@ def _read_installed(path: Path) -> str | None:
         return None
 
 
-def install_one(
-    *,
-    repo: Path,
-    runtime: str,
-    dest: Path,
-    apply: bool,
-) -> dict:
+def _prepare_install(repo: Path, runtime: str, dest: Path):
     source = adapter_source(repo, runtime)
-    run_src = repo / "runtime" / "shared" / "run_preflight.py"
-    if not source.is_file():
-        return {"runtime": runtime, "dest": str(dest), "status": "missing_adapter"}
-    if not run_src.is_file():
-        return {"runtime": runtime, "dest": str(dest), "status": "missing_adapter"}
+    launcher = repo / "runtime" / "shared" / "run_preflight.py"
+    action = {"runtime": runtime, "dest": str(dest)}
+    if not source.is_file() or not launcher.is_file():
+        return {**action, "status": "missing_adapter"}, None
 
     validate_checkout_node(dest / "checkout")
-    action = {
-        "runtime": runtime,
-        "dest": str(dest),
-        "source": str(source.relative_to(repo)),
-        "status": "would_write" if not apply else "written",
-        "link": "pending",
-    }
-    if not apply:
-        action["link"] = "would_link_checkout"
-        return action
+    body, script = _read_installed(source), _read_installed(launcher)
+    if body is None or script is None:
+        return {**action, "status": "unreadable_adapter"}, None
 
+    action.update(
+        source=str(source.relative_to(repo)),
+        status="would_write",
+        link="would_link_checkout",
+    )
+    return action, (project_skill_body(body), script)
+
+
+def _write_install(repo: Path, dest: Path, action: dict, contents) -> dict:
+    body, launcher = contents
+    validate_checkout_node(dest / "checkout")
     _ensure_dest_dir(dest)
-    # 絶対 path を焼かない adapter 本文 (check 側と同じ射影を通す)
-    body = source.read_text(encoding="utf-8")
-    (dest / "SKILL.md").write_text(project_skill_body(body), encoding="utf-8")
+    (dest / "SKILL.md").write_text(body, encoding="utf-8")
+    (dest / "run_preflight.py").write_text(launcher, encoding="utf-8")
+    link = link_checkout(dest / "checkout", repo)
+    (dest / "README.md").write_text(render_readme(link), encoding="utf-8")
+    return {**action, "status": "written", "link": link}
 
-    enhance_run_preflight_for_path_file(run_src, dest)
-    link_mode = link_checkout(dest / "checkout", repo)
-    action["link"] = link_mode
 
-    # README にも個人 path / 絶対 path を書かない
-    (dest / "README.md").write_text(render_readme(link_mode), encoding="utf-8")
+def install_one(*, repo: Path, runtime: str, dest: Path, apply: bool) -> dict:
+    action, contents = _prepare_install(repo, runtime, dest)
+    if apply and contents is not None:
+        return _write_install(repo, dest, action, contents)
     return action
 
 
@@ -451,11 +440,26 @@ def main() -> int:
             )
         )
         return 1
-    results = []
-    for runtime, dest in targets:
-        results.append(
-            install_one(repo=repo, runtime=runtime, dest=dest, apply=args.apply)
+    plans = [
+        (dest, *_prepare_install(repo, runtime, dest)) for runtime, dest in targets
+    ]
+    source_failed = any(contents is None for _, _, contents in plans)
+    results = [
+        (
+            _write_install(repo, dest, action, contents)
+            if args.apply and not source_failed
+            else action
         )
+        for dest, action, contents in plans
+    ]
+    if source_failed:
+        next_action = "restore readable source files before installing"
+    elif args.apply:
+        next_action = (
+            'run: python "<skill>/run_preflight.py" --intent create_repo --human'
+        )
+    else:
+        next_action = "re-run with --apply to write"
 
     payload = {
         "schema": "repo-preflight.install-runtime-skills/v1",
@@ -463,16 +467,10 @@ def main() -> int:
         "repo": str(repo),
         "portable": True,
         "results": results,
-        "next": (
-            "re-run with --apply to write"
-            if not args.apply
-            else 'run: python "<skill>/run_preflight.py" --intent create_repo --human'
-        ),
+        "next": next_action,
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))
-    if any(item.get("status") == "missing_adapter" for item in results):
-        return 1
-    return 0
+    return 1 if source_failed else 0
 
 
 if __name__ == "__main__":
