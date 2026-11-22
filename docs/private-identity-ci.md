@@ -8,7 +8,12 @@
 
 先に検査器とactionをmainへ取り込み、その後の確定版を利用側へ接続します。このrepo内の [公開workflowテンプレート](../templates/github-actions/public-privacy-preflight.yml) と [非公開照合テンプレート](../templates/github-actions/private-identity-guard.yml) は、配置しただけでは動かない導入用素材です。
 
-`__REPO_PREFLIGHT_MAIN_SHA__` は、実際にmain上に残るレビュー済み完全SHAへ置き換えてから `.github/workflows/` に配置します。未マージの作業branchのSHAを導入版にしません。利用側へ投入する差分と固定先の実体は、マージ・設定適用前に確認します。
+各テンプレートの次の値を、repo-preflight の `main` に取り込み済みの、レビューを経た40桁のコミット SHA に置き換えてから、利用側の `.github/workflows/` に配置します。
+
+- 公開プリフライトでは、`uses` と `preflight-ref` の `__REPO_PREFLIGHT_SHA__` 2か所に同じ SHA を入れます。前者は再利用ワークフロー、後者はそのワークフローが取得して実行する検査器の版です。
+- 非公開照合では、`uses` の `__REPO_PREFLIGHT_MAIN_SHA__` 1か所に同じ版の SHA を入れます。
+
+マージ・設定適用前に、利用側の差分で置換漏れがないことと、参照先の内容を確認します。
 
 ## 検査する範囲
 
@@ -37,7 +42,9 @@
 
 ## 検査器の更新
 
-公開／非公開の二つの composite action は、それぞれ `uses: nexus-ai-2045/repo-preflight/.github/actions/...@<完全 SHA>` の一か所でソースを選びます。従来の reusable workflow の `uses` と `preflight-ref` の二重指定を、新規接続では使いません。別の公開名義一覧を使う利用側は、公開actionの `allowed-identities` にレビュー済みのtarget内JSONの相対pathを指定できる。絶対path・target外への参照・symlinkでの逸脱は拒否する。非公開側の名義policyも管理者が確認して揃える。
+この手順で導入した検査器を更新する場合は、公開側の `uses` と `preflight-ref`、非公開側の `uses` を同じレビュー済み SHA に揃えます。Dependabot の更新 PR に対しても、3か所が同じ版を参照することを確認します。
+
+公開プリフライトを composite action の `.github/actions/preflight` で個別に組み込んでいる利用側は、レビュー済みの公開名義ポリシーを `allowed-identities` に指定できます。指定できるのは対象リポジトリ内の JSON への相対パスです。絶対パス、対象外への参照、シンボリックリンクで対象外へ出る参照は拒否します。非公開側の名義ポリシーも管理者が確認して揃えます。
 
 利用側の Dependabot `github-actions` で更新 PR を作り、テストとレビュー後に採用します。自動 PR の作成は無審査の更新適用ではありません。
 

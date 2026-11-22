@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from identity_test_inputs import fixture_email
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -24,22 +25,21 @@ SCAN = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader
 SPEC.loader.exec_module(SCAN)
 
-AT = chr(
-    64
-)  # メールの字面をそのまま書かない（差分検査が試験の仮データを読まないよう組み立てる）
 FAKE_URL = "https://" + "claude.ai/code/" + "session_" + "0" * 24
 SESSION_LINE = "Claude-" + "Session: " + FAKE_URL
-CLAUDE_COAUTHOR = "Co-Authored-By: Claude Sonnet 5.5 <noreply" + AT + "anthropic.com>"
+CLAUDE_NOREPLY = fixture_email("noreply", "anthropic.com")
+CLAUDE_COAUTHOR = f"Co-Authored-By: Claude Sonnet 5.5 <{CLAUDE_NOREPLY}>"
 FOOTER = "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 OTHER_URLS = [
     "https://" + "chatgpt.com/codex/tasks/task_0000",
     "https://" + "cursor.com/agents/bc-0000",
     "https://" + "claude.ai/project/0000",
 ]
-PERSONAL_COAUTHOR = "Co-authored-by: Someone <someone" + AT + "gmail.com>"
+PERSONAL_MAIL = fixture_email("someone", "gmail.com")
+PERSONAL_COAUTHOR = f"Co-authored-by: Someone <{PERSONAL_MAIL}>"
 IDENTITY = "Test Author <test-author@example.invalid>"
 
-TRACES = [
+ALLOWED_TOOL_TRACES = [
     pytest.param(SESSION_LINE, id="セッション行"),
     pytest.param(FAKE_URL, id="セッションURL"),
     pytest.param(CLAUDE_COAUTHOR, id="Claudeの共著者行"),
@@ -47,20 +47,20 @@ TRACES = [
     pytest.param("\n".join(OTHER_URLS), id="他の道具の作業URL"),
     pytest.param("\n".join([SESSION_LINE, CLAUDE_COAUTHOR, FOOTER]), id="全部まとめて"),
     pytest.param(
-        "Co-authored-by: Cursor Agent <cursoragent" + AT + "cursor.com>", id="Cursor"
+        f"Co-authored-by: Cursor Agent <{fixture_email('cursoragent', 'cursor.com')}>",
+        id="Cursorの明示許可アドレス",
     ),
     pytest.param(
-        "Co-authored-by: bot <1+bot" + AT + "users.noreply.github.com>",
+        f"Co-authored-by: bot <{fixture_email('1+bot', 'users.noreply.github.com')}>",
         id="GitHubのnoreply",
     ),
     pytest.param(
-        "Co-authored-by: dependabot[bot] <49699333+dependabot[bot]"
-        + AT
-        + "users.noreply.github.com>",
+        f"Co-authored-by: dependabot[bot] <{fixture_email('49699333+dependabot[bot]', 'users.noreply.github.com')}>",
         id="GitHubのbotの角括弧つきnoreply",
     ),
     pytest.param(
-        "Co-authored-by: Bot <no-reply" + AT + "tool.example.org>", id="no-reply"
+        f"Co-authored-by: Bot <{fixture_email('no-reply', 'tool.example.org')}>",
+        id="no-reply形式",
     ),
 ]
 
@@ -69,18 +69,20 @@ TRACES = [
 def policy(monkeypatch):
     monkeypatch.setenv(
         "PREFLIGHT_PRIVATE_PATTERNS",
-        json.dumps({"allow_emails": ["1+nexus-bot" + AT + "users.noreply.github.com"]}),
+        json.dumps(
+            {"allow_emails": [fixture_email("1+nexus-bot", "users.noreply.github.com")]}
+        ),
     )
     monkeypatch.delenv("PREFLIGHT_PRIVATE_PATTERNS_FILE", raising=False)
     return g.load_policy()
 
 
-@pytest.mark.parametrize("trace", TRACES)
+@pytest.mark.parametrize("trace", ALLOWED_TOOL_TRACES)
 def test_非公開policyの本文検査は道具の痕跡を通す(policy, trace):
     assert g.scan_text(policy, "fix\n\n" + trace + "\n", "t") == []
 
 
-@pytest.mark.parametrize("trace", TRACES)
+@pytest.mark.parametrize("trace", ALLOWED_TOOL_TRACES)
 def test_公開の本文検査は道具の痕跡を通す(trace):
     pol = g.parse_public_policy(
         json.dumps(
@@ -91,7 +93,7 @@ def test_公開の本文検査は道具の痕跡を通す(trace):
     assert g.shape_findings("fix\n\n" + trace + "\n") == []
 
 
-@pytest.mark.parametrize("trace", TRACES)
+@pytest.mark.parametrize("trace", ALLOWED_TOOL_TRACES)
 def test_秘密の型は道具の痕跡を数えない(trace):
     data = trace.encode("utf-8")
     assert not SCAN.text_has(SCAN.SECRET_PATTERNS, data)
@@ -105,7 +107,7 @@ def test_個人メールの共著者行は個人名義として止める(policy)
 
 
 def test_照合リストの個人メールの共著者行は止める(monkeypatch):
-    email = "private-person" + AT + "corp.example.invalid"
+    email = fixture_email("private-person", "corp.example.invalid")
     import hashlib
 
     digest = hashlib.sha256(email.encode("utf-8")).hexdigest()
@@ -219,10 +221,11 @@ def test_gitleaksの設定は道具の痕跡の規則を持たない():
 
 
 # ---- 共著者のメールは、名簿・道具のnoreply・道具の明示一覧・予約ドメインだけ通す ----
-BIGCORP = "Co-authored-by: Real Name <real.name" + AT + "bigcorp.co.jp>"
+UNLISTED_COMPANY_MAIL = fixture_email("real.name", "bigcorp.co.jp")
+UNLISTED_COMPANY_COAUTHOR = f"Co-authored-by: Real Name <{UNLISTED_COMPANY_MAIL}>"
 BAD_SHAPE = ["Co-authored-by: Real Name <realname>", "Co-authored-by: Real Name <>"]
-MASKED = "Co-authored-by: REDACTED <a" + AT + "example.invalid>"
-ROSTER_MAIL = "Roster Person <roster" + AT + "bigcorp.co.jp>"
+MASKED = f"Co-authored-by: REDACTED <{fixture_email('a', 'example.invalid')}>"
+ROSTER_MAIL = f"Roster Person <{fixture_email('roster', 'bigcorp.co.jp')}>"
 
 
 def _public_policy(*identities):
@@ -237,7 +240,9 @@ def _public_policy(*identities):
 
 
 def test_名簿外の会社メールの共著者行は公開検査で止まる():
-    out = g.check_public_text(_public_policy(), "fix\n\n" + BIGCORP, "t")
+    out = g.check_public_text(
+        _public_policy(), "fix\n\n" + UNLISTED_COMPANY_COAUTHOR, "t"
+    )
     assert out == ["t: 名簿にないメールの形"]
     assert "bigcorp" not in json.dumps(out)
 
@@ -248,14 +253,19 @@ def test_名簿にある会社メールの共著者行は通る():
 
 
 def test_名簿外の会社メールの共著者行は非公開policyの検査で止まる(policy):
-    out = g.scan_text(policy, "fix\n\n" + BIGCORP, "t")
+    out = g.scan_text(policy, "fix\n\n" + UNLISTED_COMPANY_COAUTHOR, "t")
     assert out == ["t: 名簿にないメールの形"]
     assert "bigcorp" not in json.dumps(out)
 
 
-def test_許可メールの共著者行は非公開policyの検査で通る(policy):
-    text = "fix\n\nCo-authored-by: Bot <1+nexus-bot" + AT + "users.noreply.github.com>"
-    assert g.scan_text(policy, text, "t") == []
+def test_許可した会社メールの共著者行は非公開policyの検査で通る(monkeypatch):
+    monkeypatch.setenv(
+        "PREFLIGHT_PRIVATE_PATTERNS",
+        json.dumps({"allow_emails": [UNLISTED_COMPANY_MAIL]}),
+    )
+    monkeypatch.delenv("PREFLIGHT_PRIVATE_PATTERNS_FILE", raising=False)
+    message = "fix\n\n" + UNLISTED_COMPANY_COAUTHOR
+    assert g.scan_text(g.load_policy(), message, "t") == []
 
 
 @pytest.mark.parametrize("line", BAD_SHAPE)
@@ -278,42 +288,44 @@ def test_伏せ字の共著者行は専用の文言で止まる(policy):
 
 def test_道具のnoreplyと明示一覧は名簿外でも通る():
     for email in (
-        "noreply" + AT + "anthropic.com",
-        "No-Reply" + AT + "tool.example.org",
-        "12+bot" + AT + "users.noreply.github.com",
-        "cursoragent" + AT + "cursor.com",
+        CLAUDE_NOREPLY,
+        fixture_email("No-Reply", "tool.example.org"),
+        fixture_email("12+bot", "users.noreply.github.com"),
+        fixture_email("cursoragent", "cursor.com"),
     ):
         assert not g.coauthor_email_problem(email, set()), email
+    assert g.coauthor_email_problem(UNLISTED_COMPANY_MAIL, set()) == "unlisted"
+    assert g.coauthor_email_problem(PERSONAL_MAIL, set()) == "personal"
     assert (
-        g.coauthor_email_problem("real.name" + AT + "bigcorp.co.jp", set())
-        == "unlisted"
+        g.coauthor_email_problem(fixture_email("noreply", "gmail.com"), set())
+        == "personal"
     )
-    assert g.coauthor_email_problem("someone" + AT + "gmail.com", set()) == "personal"
-    assert g.coauthor_email_problem("noreply" + AT + "gmail.com", set()) == "personal"
     assert g.coauthor_email_problem("realname", set()) == "shape"
-    assert "cursoragent" + AT + "cursor.com" in g.TOOL_COAUTHOR_EMAILS
+    assert fixture_email("cursoragent", "cursor.com") in g.TOOL_COAUTHOR_EMAILS
 
 
 def test_履歴の共著者行は名簿外の会社メールで止まりnoreplyは通る():
     policy_ = _public_policy(ROSTER_MAIL)
-    assert SCAN._coauthor_line_blocked(BIGCORP.split(": ", 1)[1], policy_)
+    assert SCAN._coauthor_line_blocked(
+        UNLISTED_COMPANY_COAUTHOR.split(": ", 1)[1], policy_
+    )
     for ok in (
-        "Claude <noreply" + AT + "anthropic.com>",
-        "bot <1+bot" + AT + "users.noreply.github.com>",
+        f"Claude <{CLAUDE_NOREPLY}>",
+        f"bot <{fixture_email('1+bot', 'users.noreply.github.com')}>",
         ROSTER_MAIL,
     ):
         assert not SCAN._coauthor_line_blocked(ok, policy_), ok
-    assert not SCAN._identity_line_allowed(policy_, BIGCORP.split(": ", 1)[1])
-    assert SCAN._identity_line_allowed(
-        policy_, "Claude <noreply" + AT + "anthropic.com>"
+    assert not SCAN._identity_line_allowed(
+        policy_, UNLISTED_COMPANY_COAUTHOR.split(": ", 1)[1]
     )
+    assert SCAN._identity_line_allowed(policy_, f"Claude <{CLAUDE_NOREPLY}>")
 
 
 def test_会社メールの共著者行つきのコミットは全履歴の検査で止まる(tmp_path):
     repo, allowed = _make_repo(tmp_path)
     (repo / "note.txt").write_text("直し\n", encoding="utf-8")
     _run_git(repo, "add", "note.txt")
-    _run_git(repo, "commit", "-q", "-m", "直し\n\n" + BIGCORP)
+    _run_git(repo, "commit", "-q", "-m", "直し\n\n" + UNLISTED_COMPANY_COAUTHOR)
 
     report = SCAN.scan(
         repo,

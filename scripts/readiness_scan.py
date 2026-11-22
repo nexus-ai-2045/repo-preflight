@@ -1962,9 +1962,11 @@ def history_hits(
     check_repository_names: bool = False,
     approved_private_commit_identity: str | None = None,
     check_raw_commit_payloads: bool = False,
+    check_full_history_metadata: bool = False,
     initial_private_save: bool = False,
 ) -> tuple[list[str], list[str]]:
     revisions = fixed_history_revisions(repo, rev_args)
+    check_history_names = initial_private_save or check_full_history_metadata
     if private_identity is not None:
         private_identity.report["closure_revisions_sha256"] = hashlib.sha256(
             "\n".join(revisions).encode("ascii")
@@ -2049,8 +2051,10 @@ def history_hits(
             raise RuntimeError("git_history_inventory_failed") from exc
         if fields[1] not in {"blob", "commit", "tree", "tag"} or size < 0:
             raise RuntimeError("git_history_inventory_failed")
-        if fields[1] == "blob" or (
-            private_identity is not None and fields[1] in {"commit", "tag", "tree"}
+        if (
+            fields[1] == "blob"
+            or (check_full_history_metadata and fields[1] in {"commit", "tag"})
+            or (private_identity is not None and fields[1] in {"commit", "tag", "tree"})
         ):
             submitted_names = tuple(
                 entry[2] for entry in entries_by_blob.get(object_id, ())
@@ -2070,6 +2074,8 @@ def history_hits(
                 continue
             if size <= _HISTORY_BATCH_BUDGET_BYTES:
                 eligible.append((object_id, name, size, fields[1]))
+            elif check_full_history_metadata and fields[1] in {"commit", "tag"}:
+                raise RuntimeError("git_history_inventory_failed")
             elif private_identity is not None:
                 if (
                     fields[1] == "blob"
@@ -2083,7 +2089,11 @@ def history_hits(
     path_hits: set[str] = set()
     checked_names: set[bytes] = set()
     aliases: dict[str, set[str]] = {}
-    if reviewed_exceptions is not None or private_identity is not None:
+    if (
+        check_history_names
+        or reviewed_exceptions is not None
+        or private_identity is not None
+    ):
         # rev-list --objectsでは同一blobの別pathが失われる。全到達treeをNUL区切りで読む。
         roots = run_subprocess(
             ["git", "log", "--format=%T", *revisions], cwd=repo, capture_output=True
@@ -2110,7 +2120,7 @@ def history_hits(
                     "git",
                     "ls-tree",
                     "-r",
-                    *(["-t"] if initial_private_save else []),
+                    *(["-t"] if check_history_names else []),
                     "-z",
                     tree.decode("ascii"),
                 ],
@@ -2126,7 +2136,7 @@ def history_hits(
                 fields = metadata.split()
                 if not sep or len(fields) != 3:
                     raise RuntimeError("git_history_inventory_failed")
-                if initial_private_save and private_identity is not None:
+                if check_history_names:
                     path = raw_path.decode("utf-8", errors="surrogateescape")
                     stem = (
                         PurePosixPath(path)
@@ -2136,19 +2146,21 @@ def history_hits(
                     )
                     for candidate in {raw_path, stem} - checked_names:
                         checked_names.add(candidate)
-                        before = private_identity.findings
-                        private_identity.check(candidate, repository_name=True)
                         label = "history:" + tree.decode("ascii")[:12]
-                        if private_identity.findings > before:
-                            private_identity.record_location(
-                                "filename", field="filename"
-                            )
+                        if initial_private_save and private_identity is not None:
+                            before = private_identity.findings
+                            private_identity.check(candidate, repository_name=True)
+                            if private_identity.findings > before:
+                                private_identity.record_location(
+                                    "filename", field="filename"
+                                )
                         if secret_matches(candidate):
                             secret_hits.add(label)
-                        if personal_path_matches(
-                            candidate
-                        ) or normalized_personal_path_matches(
-                            candidate, private_identity.path_normalizer
+                        if personal_path_matches(candidate) or (
+                            private_identity is not None
+                            and normalized_personal_path_matches(
+                                candidate, private_identity.path_normalizer
+                            )
                         ):
                             path_hits.add(label)
                 if fields[1] == b"blob":
@@ -2324,8 +2336,15 @@ def history_hits(
                             if path_found:
                                 path_hits.add(f"history:{object_id[:12]}")
                         continue
-                if (object_type == "commit" and check_raw_commit_payloads) or (
-                    initial_private_save and object_type in {"commit", "tag", "tree"}
+                if (
+                    (object_type == "commit" and check_raw_commit_payloads)
+                    or (
+                        initial_private_save
+                        and object_type in {"commit", "tag", "tree"}
+                    )
+                    or (
+                        check_full_history_metadata and object_type in {"commit", "tag"}
+                    )
                 ):
                     # Inspect immutable payload even when another identity gate fails.
                     if secret_matches(data):
@@ -3894,6 +3913,7 @@ def scan(
             private_identity if private_identity.checker is not None else None,
             **({"check_repository_names": True} if private_submission else {}),
             **({"initial_private_save": True} if initial_private_save else {}),
+            check_full_history_metadata=not private_submission and not base_ref,
             **(
                 {"approved_private_commit_identity": approved_private_commit_identity}
                 if approved_private_commit_identity is not None
@@ -4490,27 +4510,9 @@ def build_intent_dialogue(options: ScanOptions) -> dict:
                 )
             ):
                 scope["existing_push_destination"] = proof
-        scan_report = enrich_report(
-            scan_report,
-            ScanOptions(
-                repo=options.repo,
-                release=release,
-                expected_identity=options.expected_identity,
-                audience=options.audience,
-                interactive=options.interactive,
-                show_json=options.show_json,
-                intent=options.intent,
-                base_ref=options.base_ref,
-                private_submission=options.private_submission,
-                initial_private_save=options.initial_private_save,
-                allow_expected_private_commit_identity=options.allow_expected_private_commit_identity,
-                consistency_base_ref=options.consistency_base_ref,
-                identity_base_ref=options.identity_base_ref,
-                github_settings_profile=options.github_settings_profile,
-                reviewed_secret_exceptions=options.reviewed_secret_exceptions,
-                allowed_identities=options.allowed_identities,
-            ),
-        )
+        report_options = copy.copy(options)
+        report_options.release = release
+        scan_report = enrich_report(scan_report, report_options)
     elif needs_scan and options.repo is None:
         scan_report = None
     preferences = prefs_mod.load_preferences(options.repo)

@@ -1,5 +1,7 @@
 """Live-verified private delivery scans committed objects, including transient history."""
 
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +44,34 @@ def run_scan(repo, base, **kwargs):
         require_private_identity=True,
         **kwargs,
     )
+
+
+def test_private_submission_dialogue_reports_the_actual_media_policy(submission):
+    repo, base, _, _ = submission
+    commit(repo)
+    output = io.StringIO()
+    MODULE.main(
+        [
+            "--repo",
+            str(repo),
+            "--intent",
+            "open_pr",
+            "--base-ref",
+            base,
+            "--private-submission",
+            "--media-inspection",
+            "metadata",
+        ],
+        stdin_is_tty=False,
+        stdout=output,
+        console=io.StringIO(),
+    )
+
+    scan = json.loads(output.getvalue())["scan"]
+    assert scan["checks"]["private_identity_scan"]["media_inspection"] == (
+        "metadata_private_only"
+    )
+    assert scan["options"]["media_inspection"] == "metadata"
 
 
 @pytest.mark.parametrize("scoped", [False, True])
