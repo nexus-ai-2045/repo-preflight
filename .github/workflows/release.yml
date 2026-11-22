@@ -62,17 +62,30 @@ jobs:
           BRANCHES: ${{ inputs.delete-branches }}
         run: |
           set -euo pipefail
-          for branch in $BRANCHES; do
+          read -r -d '' -a requested < <(printf '%s\0' "$BRANCHES")
+          pending=()
+          for branch in "${requested[@]+"${requested[@]}"}"; do
             [[ "$branch" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "invalid branch name"; exit 1; }
             [ "$branch" != "main" ] || { echo "refusing to delete main"; exit 1; }
             open=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq length)
             [ "$open" = "0" ] || { echo "$branch has an open PR"; exit 1; }
             if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
-              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch"
-              echo "deleted $branch"
+              case " ${pending[*]-} " in
+                *" $branch "*) continue ;;
+              esac
+              pending+=("$branch")
             else
+              status=$?
+              if [ "$status" -ne 2 ]; then
+                echo "remote branch lookup failed"
+                exit "$status"
+              fi
               echo "$branch is already gone"
             fi
+          done
+          for branch in "${pending[@]+"${pending[@]}"}"; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$branch"
+            echo "deleted $branch"
           done
 
       - name: 承認済みタグからGitHub Releaseを作成

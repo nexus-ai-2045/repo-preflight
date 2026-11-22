@@ -357,3 +357,20 @@ def test_zero_before_reuses_only_single_complete_root_contract(fixture, tmp_path
     args = json.loads(result.stdout)
     assert "--baseline-base-ref" not in args and "--consistency-base-ref" not in args
     assert "--allowed-identities" in args
+
+
+def test_repository_preflight_calls_the_gate_for_each_merge_path():
+    import yaml
+
+    workflow = yaml.safe_load(
+        (ROOT / ".github/workflows/repository-preflight.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    events = workflow.get("on", workflow.get(True))
+    assert "edited" in events["pull_request"]["types"]
+    assert "merge_group" in events
+    assert "main" in events["push"]["branches"]
+    preflight = workflow["jobs"]["preflight"]
+    assert preflight["uses"] == "./.github/workflows/preflight-gate.yml"
+    assert preflight["with"]["preflight-ref"] == "${{ github.sha }}"

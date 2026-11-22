@@ -181,3 +181,44 @@ def test_release_publication_requires_remote_tag(tmp_path):
     assert "--verify-tag" in args
     assert args[args.index("--target") + 1] == env["GITHUB_SHA"]
     assert args[args.index("--repo") + 1] == "owner/repo"
+
+
+def test_cleanup_rejects_unverifiable_branch_before_deleting(tmp_path):
+    import os
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if os.name == "nt" or not shutil.which("bash"):
+        pytest.skip("releaseのUbuntu用shellを実行する検査")
+    env = dict(os.environ, BRANCHES="first second", GITHUB_REPOSITORY="example/repo")
+    runner = r"""
+gh() {
+    if [ "$1" = pr ]; then echo 0; else echo delete_called; fi
+}
+git() {
+    case "${!#}" in
+        refs/heads/first) return 0 ;;
+        refs/heads/second) return 128 ;;
+        *) return 2 ;;
+    esac
+}
+"""
+    cleanup = next(
+        step
+        for step in _release_steps()
+        if step.get("name") == "Delete stale remote branches"
+    )
+    result = subprocess.run(
+        ["bash", "-c", runner + cleanup["run"]],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 128
+    assert "remote branch lookup failed" in result.stdout
+    assert "delete_called" not in result.stdout
+    assert "already gone" not in result.stdout

@@ -9,7 +9,7 @@
 | CLI (直接) | 一次対応 | `python scripts/readiness_scan.py` | pytest + `runtime_smoke` + CI |
 | Claude Code | 対応 | `runtime/claude-code/SKILL.md` または root `SKILL.md` | skill 存在・trigger 語・smoke |
 | Grok (Grok Build / agents skills) | 対応 | `runtime/grok/SKILL.md` または root `SKILL.md` | 同上 |
-| Codex / OpenAI agents | 対応 | `runtime/agents/openai.yaml` + root `SKILL.md` | metadata 検査 |
+| Codex / OpenAI agents | 共有 agents に接続して使う | `install_runtime_skills.py` が配る共有 agents 用の入口 → root `SKILL.md` | 配布ファイルとメタデータの確認。Codex 内での読み込みは別途確認 |
 
 「対応」は **手順と CLI が同じ契約で動く** こと。各製品の内部モデル挙動そのものは保証しない。
 
@@ -32,7 +32,7 @@
    macos-latest で Python 3.9 を検証します。各環境で `PYTHONUTF8=1` を設定し、変更箇所に対応する pytest と `runtime_smoke` を実行します。
    整形規則は全環境で共通なので、Ubuntu / Python 3.11 で `black --check scripts/ tests/` を1回実行します。
    止まった試験で実行機を6時間占有しないよう、ci.yml の試験ジョブは30分で打ち切ります（Windows の試験ジョブは直近30回で中央値約7分、最長約12分）。試験が1件で300秒を超えると、CI の `PYTEST_ADDOPTS` で設定した pytest の `faulthandler_timeout` が全スレッドのスタックをログへ書き出し、どこで止まったかを打ち切りの前に残します。
-   リポジトリ方針の検査には `requirements-tools.txt` の SHA-256 で固定した同梱 wheel を使います。Ubuntu / Python 3.11 の検査は専用ワークフロー、Ubuntu と Windows の Python 3.13 は互換性ジョブが担当します。
+   リポジトリ方針の検査には `requirements-tools.txt` の SHA-256 で固定した同梱 wheel を使います。Ubuntu / Python 3.11 の検査は専用ワークフロー、Ubuntu と Windows の Python 3.13 は互換性ジョブが担当します。 通常のUbuntu / Python 3.11 互換性ジョブでは wheel を事前導入せず、wheel 自体の試験が必要なときは試験が一時環境に導入します。
    秘密情報検査の試験は本物の gitleaks を要るため、各ジョブ（Windows・macOS を含む）は最初に `scripts/install_pinned_gitleaks.py` で `references/gitleaks-pins.json` の版（preflight-gate と同じ 8.30.1）を入れる。OS ごとの配布物の SHA-256 と、取り出した本体の SHA-256 の両方が固定値と一致したときだけ置き、合わなければジョブを止める。  
    workflow の一覧は `jobs` の外では block 形式、matrix は `include` 形式で書く。consistency gate の Action 参照読み取り器は流れ形式やスカラーの列を読まずに免除を断るため、こう書かないと Dependabot の Action SHA 更新が関連 docs 不足で止まる。
 5. **発火は skill 遵守前提**  
