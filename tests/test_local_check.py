@@ -3177,6 +3177,18 @@ def test_core_selection_policy_keeps_known_cli_consumers_and_unknown_sources(
     plan = local_check.select_tests(root, [sources[0], unknown], config)
     assert unknown in {item["file"] for item in plan["unresolved"]}
 
+    for workflow, required_test in (
+        ("release", "release_metadata"),
+        ("ai-ratchet-gate", "ci_policy_ownership"),
+        ("repository-preflight", "preflight_reusable_workflow"),
+        ("documentation-contract", "ci_policy_ownership"),
+    ):
+        plan = local_check.select_tests(
+            root, [f".github/workflows/{workflow}.yml"], config
+        )
+        assert plan["unresolved"] == [], (workflow, plan["unresolved"])
+        assert test_file(required_test) in plan["selected_tests"]
+
 
 @pytest.fixture
 def ci_plan(monkeypatch):

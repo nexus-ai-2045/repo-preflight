@@ -124,8 +124,44 @@
         "tests/test_gate_protection.py"
       ],
       "tests": [
+        "tests/test_ci_policy_ownership.py",
         "tests/test_gate_protection.py",
         "tests/test_public_narrative_contract.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/release.yml",
+        "tests/test_release_metadata.py"
+      ],
+      "tests": [
+        "tests/test_release_metadata.py",
+        "tests/test_github_settings_actions_policy.py",
+        "tests/test_github_settings_fail_closed.py",
+        "tests/test_github_settings_gate.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/ai-ratchet-gate.yml"
+      ],
+      "tests": [
+        "tests/test_ci_policy_ownership.py",
+        "tests/test_tool_wheel.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
+        ".github/workflows/repository-preflight.yml",
+        "tests/test_preflight_reusable_workflow.py"
+      ],
+      "tests": [
+        "tests/test_preflight_reusable_workflow.py",
+        "tests/test_preflight_gitleaks_install.py",
+        "tests/test_publish_gate.py"
       ],
       "dependency_mode": "mapped"
     },
