@@ -15,6 +15,7 @@ import pytest
 
 from urllib.parse import quote
 from identity_provider_fixture import configure_private_provider
+from identity_test_inputs import fixture_email
 from path_input_fixture import (
     fixture_path,
     fixture_root,
@@ -1284,9 +1285,19 @@ def test_allowed_identities_committer_only_fails_as_author(tmp_path: Path):
     assert report["checks"]["commit_identity"]["mismatch_count"] == 1
 
 
-def test_allowed_identities_accepts_co_author_outside_the_list(tmp_path: Path):
+@pytest.mark.parametrize(
+    "coauthor",
+    [
+        pytest.param(WEB_COMMITTER, id="listed-committer"),
+        pytest.param(
+            f"Claude <{fixture_email('noreply', 'anthropic.com')}>",
+            id="unlisted-tool-noreply",
+        ),
+    ],
+)
+def test_allowed_identities_accepts_permitted_coauthors(tmp_path: Path, coauthor: str):
     repo = make_repo(tmp_path)
-    commit_extra(repo, f"extra\n\nCo-authored-by: {WEB_COMMITTER}")
+    commit_extra(repo, f"extra\n\nCo-authored-by: {coauthor}")
 
     report = MODULE.scan(
         repo, allowed_identities=write_policy_with_committer_only(tmp_path)
@@ -1298,7 +1309,8 @@ def test_allowed_identities_accepts_co_author_outside_the_list(tmp_path: Path):
 def test_allowed_identities_blocks_personal_mail_co_author(tmp_path: Path):
     repo = make_repo(tmp_path)
     commit_extra(
-        repo, "extra\n\nCo-authored-by: Someone <someone" + chr(64) + "gmail.com>"
+        repo,
+        f"extra\n\nCo-authored-by: Someone <{fixture_email('someone', 'gmail.com')}>",
     )
 
     report = MODULE.scan(
@@ -1330,6 +1342,45 @@ def test_deleted_history_secret_blocks_without_echoing_value(tmp_path: Path):
     report = MODULE.scan(repo)
     assert report["checks"]["secret_scan"]["status"] == "fail"
     assert token not in str(report)
+
+
+@pytest.mark.parametrize("location", ["commit", "tag", "deleted_path"])
+def test_full_history_checks_git_metadata_without_echoing_value(tmp_path, location):
+    repo = make_repo(tmp_path)
+    token = "github_pat_" + "A" * 30
+    if location == "commit":
+        git(repo, "commit", "--allow-empty", "-m", token)
+    elif location == "tag":
+        git(repo, "tag", "-a", "fixture", "-m", token)
+    else:
+        filename = f"{token}.txt"
+        (repo / filename).write_text("fixture\n", encoding="utf-8")
+        git(repo, "add", filename)
+        git(repo, "commit", "-m", "add file")
+        git(repo, "rm", filename)
+        git(repo, "commit", "-m", "remove file")
+
+    report = MODULE.scan(repo)
+    assert report["status"] == "blocked"
+    assert report["checks"]["secret_scan"]["status"] == "fail"
+    assert token not in json.dumps(report)
+
+
+@pytest.mark.parametrize("location", ["commit", "tag"])
+def test_full_history_never_passes_with_oversized_metadata(
+    tmp_path, monkeypatch, location
+):
+    repo = make_repo(tmp_path)
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 1024)
+    message = "test " + "x" * 2048
+    if location == "commit":
+        git(repo, "commit", "--allow-empty", "-m", message)
+    else:
+        git(repo, "tag", "-a", "fixture", "-m", message)
+
+    report = MODULE.scan(repo)
+    assert report["status"] == "tool_error"
+    assert report["issues"] == ["git_history_inventory_failed"]
 
 
 def shallow_clone_with_deleted_secret(tmp_path: Path) -> tuple[Path, Path, str]:
@@ -3203,7 +3254,7 @@ def test_expected_identity_accepts_tool_coauthor_trailer(tmp_path):
         "commit",
         "--allow-empty",
         "-m",
-        "fixture\n\nCo-Authored-By: Claude <noreply" + chr(64) + "anthropic.com>",
+        f"fixture\n\nCo-Authored-By: Claude <{fixture_email('noreply', 'anthropic.com')}>",
     )
     report = MODULE.scan(
         repo, expected_identity="Test Author <test-author@example.invalid>"
@@ -3219,7 +3270,7 @@ def test_expected_identity_blocks_personal_mail_coauthor_trailer(tmp_path):
         "commit",
         "--allow-empty",
         "-m",
-        "fixture\n\nCo-authored-by: Fixture <fixture" + chr(64) + "gmail.com>",
+        f"fixture\n\nCo-authored-by: Fixture <{fixture_email('fixture', 'gmail.com')}>",
     )
     report = MODULE.scan(
         repo, expected_identity="Test Author <test-author@example.invalid>"

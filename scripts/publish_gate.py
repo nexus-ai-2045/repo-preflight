@@ -154,12 +154,20 @@ def checked_remote_refs(run: Runner, repo: Path, default_branch: str) -> Checked
 
 
 GATE_USES_RE = re.compile(
-    r"^\s*uses:\s*['\"]?(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|\.)"
-    r"/\.github/workflows/preflight-gate\.ya?ml(?:@\S+)?['\"]?\s*(?:#.*)?$",
-    re.M,
+    r"(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|\.)"
+    r"/\.github/workflows/preflight-gate\.ya?ml(?:@[^\s]+)?"
 )
-BASELINE_INPUT_RE = re.compile(r"^\s*baseline:\s*['\"]?([^'\"#\s]+)", re.M)
 DEFAULT_BASELINE = ".repo-preflight/ratchet-baseline.json"
+
+
+def read_workflow(run: Runner, repo: Path, head: str, path: str, yaml):
+    shown = git(run, repo, "show", f"{head}:{path}")
+    if shown.returncode:
+        raise GateStop("tool_error", "workflow_read_failed")
+    try:
+        return yaml.load(shown.stdout, Loader=yaml.BaseLoader)
+    except yaml.YAMLError as exc:
+        raise GateStop("tool_error", "workflow_yaml_unreadable") from exc
 
 
 def check_ci_gate(run: Runner, repo: Path, head: str) -> str:
@@ -167,24 +175,54 @@ def check_ci_gate(run: Runner, repo: Path, head: str) -> str:
 
     publish_gate を通しても、ゲートが無ければ公開後の push / PR では検査が一度も走らない。
     """
+    try:
+        import yaml
+    except ImportError as exc:
+        raise GateStop("tool_error", "workflow_yaml_parser_unavailable") from exc
+
     listed = git(
         run, repo, "ls-tree", "-r", "--name-only", head, "--", ".github/workflows"
     )
     if listed.returncode != 0:
         raise GateStop("tool_error", "workflow_list_failed")
-    for path in sorted(listed.stdout.splitlines()):
+    paths = sorted(listed.stdout.splitlines())
+    for path in paths:
         if not path.endswith((".yml", ".yaml")):
             continue
-        shown = git(run, repo, "show", f"{head}:{path}")
-        if shown.returncode != 0:
-            raise GateStop("tool_error", "workflow_read_failed")
-        if not GATE_USES_RE.search(shown.stdout):
+        workflow = read_workflow(run, repo, head, path, yaml)
+        if not isinstance(workflow, dict) or not workflow.get("on"):
             continue
-        match = BASELINE_INPUT_RE.search(shown.stdout)
-        baseline = match.group(1) if match else DEFAULT_BASELINE
-        if git(run, repo, "cat-file", "-e", f"{head}:{baseline}").returncode != 0:
-            raise GateStop("blocked", "ratchet_baseline_missing")
-        return path
+        jobs = workflow.get("jobs")
+        if not isinstance(jobs, dict):
+            continue
+        for job in jobs.values():
+            if not isinstance(job, dict):
+                continue
+            uses = job.get("uses")
+            if not isinstance(uses, str) or not GATE_USES_RE.fullmatch(uses):
+                continue
+            if uses.startswith("./"):
+                local_path = uses[2:]
+                if local_path not in paths:
+                    continue
+                called = read_workflow(run, repo, head, local_path, yaml)
+                triggers = called.get("on") if isinstance(called, dict) else None
+                if triggers != "workflow_call" and not (
+                    isinstance(triggers, (list, dict)) and "workflow_call" in triggers
+                ):
+                    continue
+            inputs = job.get("with", {})
+            if not isinstance(inputs, dict):
+                raise GateStop("blocked", "ratchet_baseline_invalid")
+            baseline = inputs.get("baseline", DEFAULT_BASELINE)
+            if not isinstance(baseline, str) or not baseline:
+                raise GateStop("blocked", "ratchet_baseline_invalid")
+            baseline_object = git(run, repo, "cat-file", "-t", f"{head}:{baseline}")
+            if baseline_object.returncode:
+                raise GateStop("blocked", "ratchet_baseline_missing")
+            if baseline_object.stdout.strip() != "blob":
+                raise GateStop("blocked", "ratchet_baseline_invalid")
+            return path
     raise GateStop("blocked", "ci_gate_missing")
 
 

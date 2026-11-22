@@ -192,6 +192,16 @@
     },
     {
       "changes": [
+        "tests/identity_test_inputs.py"
+      ],
+      "tests": [
+        "tests/test_readiness_scan.py",
+        "tests/test_tool_traces_allowed.py"
+      ],
+      "dependency_mode": "mapped"
+    },
+    {
+      "changes": [
         "tests/conftest.py"
       ],
       "tests": [
@@ -341,13 +351,16 @@
     },
     {
       "changes": [
+        "docs/private-identity-ci.md",
         "docs/publish-and-ci-gate.md",
         "scripts/publish_gate.py",
         "scripts/publish_guard_hook.py",
         "tests/test_publish_gate.py"
       ],
       "tests": [
+        "tests/test_adv_identity.py",
         "tests/test_cli_utf8_stdio.py",
+        "tests/test_github_privacy_check.py",
         "tests/test_consistency_gate.py",
         "tests/test_preflight_reusable_workflow.py",
         "tests/test_public_narrative_contract.py",

@@ -14,6 +14,8 @@ repo-preflightの失敗を後続操作の中止につなげる導入手順です
 
 ## 1. 公開コマンド
 
+公開コマンドはワークフローを YAML として読みます。repo-preflight のチェックアウトで `python -m pip install '.[publish]'` を実行し、同じ Python で公開コマンドを起動してください。
+
 ```bash
 # 何も変えずに判定だけ（既定）
 python scripts/publish_gate.py --repo /path/to/clone
@@ -27,7 +29,7 @@ python scripts/publish_gate.py --repo /path/to/clone --apply --confirm OWNER/NAM
 1. 公開するowner/repository名とbranch・tag名の非公開名義照合が通る。名前の照合を実行できなければ停止する。origin が GitHub で、`--github OWNER/NAME` を付けたならそれと一致する
 2. 手元が origin の default branch と同じ commit で、origin の全 branch / tag を取得済み。各branch・tagの先端OIDをローカルrefまたはHEADから照合する
 3. `readiness_scan.py` の全体検査（削除済みを含む全履歴）が `pass`
-4. HEAD に共通 CI ゲート（`preflight-gate.yml` を `uses:` で呼ぶ workflow、「2.」）と、その基準値ファイル（既定 `.repo-preflight/ratchet-baseline.json`、`baseline:` を渡していればその path）がある。無ければ `ci_gate_missing` / `ratchet_baseline_missing` で止まる。ここで確かめるのはHEADにあるファイルです。対象branchでの起動、実行結果、必須チェックの設定はGitHub上で確認します
+4. HEAD に共通 CI ゲート（`preflight-gate.yml` を job の `uses` で呼ぶ workflow、「2.」）と、同じ job が使う基準値ファイル（既定 `.repo-preflight/ratchet-baseline.json`、`baseline:` を渡していればその path）がある。無ければ `ci_gate_missing` / `ratchet_baseline_missing` で止まる。ここで確かめるのはHEADにあるファイルです。対象branchでの起動、実行結果、必須チェックの設定はGitHub上で確認します
 5. 人が確認したdry-runの `next` に従い、`--apply`、対象名、`reviewed_snapshot` を渡す。対象名だけを渡す従来の呼び出しは停止する
 6. 切り替えの直前に対象のリポジトリID、公開範囲、archive状態、default branch、branch・tagの名前と先端OIDを再取得し、検査前と一致する
 

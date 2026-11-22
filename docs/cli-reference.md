@@ -171,6 +171,8 @@ liveのPRIVATE・実送信先・固定base/headを照合し、既存の型付き
 
 開発道具が自動で付ける痕跡（`Claude-Session` 行、作業・セッションURL、`Co-Authored-By` の共著者行、「Generated with …」の署名行）は止めません。止めるのは個人名・個人メール・OSアカウント名・端末名・ホームのパス・秘密情報と、コミット名義が公開名義でないことです。共著者行のメールが個人メール（gmail など）、照合リストの個人名義、名簿にない人のメールなら、個人名義として止めます。
 
+共著者行の回帰テストでは、許可するツールの署名と、拒否する個人メール風・名簿外の会社メールを区別して試します。テストで使うアドレスは、コード上でアカウント部分とドメインを分けて持ち、試験時に組み立てます。定期の全参照監査は閉じたPRの履歴も読むため、旧版のテストに完成した入力例が残っている場合は検出されます。
+
 ## CIから使う
 
 `--repo` だけを渡すと、質問をせずに検査結果だけを返します。CIから使うときはこの形です。
@@ -260,7 +262,7 @@ flowchart TD
 | 正本 | [SKILL.md](../SKILL.md) |
 | Claude Code | [runtime/claude-code/SKILL.md](../runtime/claude-code/SKILL.md) |
 | Grok | [runtime/grok/SKILL.md](../runtime/grok/SKILL.md) |
-| Codex | [runtime/agents/openai.yaml](../runtime/agents/openai.yaml) |
+| Codex | [共有 agents 向けの配布手順](runtime-support.md)から配置した skill |
 
 ```bash
 python scripts/runtime_smoke.py --repo .

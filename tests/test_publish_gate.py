@@ -15,6 +15,7 @@ SLUG = "example-owner/example-repo"
 HEAD = "a" * 40
 REPO = Path("/nonexistent/repo")
 GATE_WORKFLOW = """name: preflight
+on: pull_request
 jobs:
   gate:
     uses: example-owner/repo-preflight/.github/workflows/preflight-gate.yml@0123abc # v0.7.0
@@ -54,6 +55,7 @@ class FakeRunner:
         edit_ok=True,
         visibility_after="PUBLIC",
         workflows=None,
+        object_types=None,
     ):
         self.workflows = (
             workflows
@@ -65,6 +67,7 @@ class FakeRunner:
         self.archived = archived
         self.refs = refs if refs is not None else [(HEAD, "refs/heads/main")]
         self.missing = set(missing)
+        self.object_types = object_types or {}
         self.head = head
         self.scan_status = scan_status
         self.edit_ok = edit_ok
@@ -125,7 +128,9 @@ class FakeRunner:
         if args[0] == "show":
             return self.done(0, self.workflows[args[1].split(":", 1)[1]])
         if args[0] == "cat-file":
-            return self.done(1 if args[-1] in self.missing else 0)
+            if args[-1] in self.missing:
+                return self.done(1)
+            return self.done(0, self.object_types.get(args[-1], "blob") + "\n")
         if args[0] == "rev-parse":
             return self.done(0, self.head + "\n")
         raise AssertionError(args)
@@ -374,3 +379,98 @@ def test_コメント中のゲート名だけではゲートとみなさない()
     )
     result = p.evaluate(REPO, apply=False, confirm=None, run=run)
     assert result["issue"] == "ci_gate_missing"
+
+
+def test_shell_text_does_not_count_as_a_reusable_workflow():
+    workflow = """name: example
+on: pull_request
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          cat <<'END'
+          uses: example-owner/repo-preflight/.github/workflows/preflight-gate.yml@0123abc
+          END
+"""
+    runner = FakeRunner(workflows={".github/workflows/ci.yml": workflow})
+    result = run(runner, apply=True, confirm=SLUG)
+    assert (result["status"], result["issue"]) == ("blocked", "ci_gate_missing")
+    assert not runner.edit_calls()
+
+
+def test_gate_checks_the_baseline_of_the_same_job():
+    workflow = """name: preflight
+on: pull_request
+jobs:
+  unrelated:
+    uses: example-owner/repo-preflight/.github/workflows/example.yml@0123abc
+    with:
+      baseline: ci/other.json
+""" + GATE_WORKFLOW.split("jobs:\n", 1)[1]
+    runner = FakeRunner(
+        workflows={".github/workflows/ci.yml": workflow},
+        missing={f"{HEAD}:.repo-preflight/ratchet-baseline.json"},
+    )
+    result = run(runner, apply=True, confirm=SLUG)
+    assert (result["status"], result["issue"]) == (
+        "blocked",
+        "ratchet_baseline_missing",
+    )
+    assert not runner.edit_calls()
+
+
+def test_workflow_name_is_read_as_a_yaml_string():
+    workflow = GATE_WORKFLOW.replace("name: preflight", "name: 2026-02-30")
+    runner = FakeRunner(workflows={".github/workflows/ci.yml": workflow})
+    assert run(runner)["status"] == "ready"
+    assert not runner.edit_calls()
+
+
+def test_baseline_directory_does_not_count_as_a_file():
+    runner = FakeRunner(object_types={f"{HEAD}:{p.DEFAULT_BASELINE}": "tree"})
+    result = run(runner, apply=True, confirm=SLUG)
+    assert (result["status"], result["issue"]) == (
+        "blocked",
+        "ratchet_baseline_invalid",
+    )
+    assert not runner.edit_calls()
+
+
+def test_local_reusable_workflow_must_exist():
+    path = ".github/workflows/preflight-gate.yml"
+    workflow = GATE_WORKFLOW.replace(
+        f"example-owner/repo-preflight/{path}@0123abc", f"./{path}"
+    )
+    runner = FakeRunner(
+        workflows={".github/workflows/ci.yml": workflow}, missing={f"{HEAD}:{path}"}
+    )
+    result = run(runner, apply=True, confirm=SLUG)
+    assert (result["status"], result["issue"]) == ("blocked", "ci_gate_missing")
+    assert not runner.edit_calls()
+
+
+@pytest.mark.parametrize(
+    "trigger,expected", [("workflow_call", "ready"), ("push", "blocked")]
+)
+def test_local_workflow_must_support_reusable_calls(trigger, expected):
+    path = ".github/workflows/preflight-gate.yml"
+    caller = GATE_WORKFLOW.replace(
+        f"example-owner/repo-preflight/{path}@0123abc", f"./{path}"
+    )
+    runner = FakeRunner(
+        workflows={
+            ".github/workflows/ci.yml": caller,
+            path: f"name: gate\non: {trigger}\n",
+        }
+    )
+    result = run(runner)
+    assert result["status"] == expected
+    assert not runner.edit_calls()
+
+
+def test_workflow_without_trigger_does_not_count_as_gate():
+    caller = GATE_WORKFLOW.replace("on: pull_request\n", "")
+    runner = FakeRunner(workflows={".github/workflows/ci.yml": caller})
+    assert run(runner)["issue"] == "ci_gate_missing"
+    assert not runner.edit_calls()
