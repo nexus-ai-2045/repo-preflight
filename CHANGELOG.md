@@ -40,6 +40,10 @@
 - pypdf 7 で削除されたモジュール定数 `pypdf.filters.ZLIB_MAX_OUTPUT_LENGTH` の代わりに、`pypdf.overwrite_configuration(zlib_maximum_output_length=...)` で Flate 展開の上限を同じ値に設定する。
 - pypdf 7.0.0 は Python 3.10 以上を要するので、両方の依存に `python_version >= '3.10'` を付けた。Python 3.9 の PDF 検査はこれまでどおり dependency unavailable で止まる。3.9 では pypdf で合成 PDF を作るテストを飛ばす。3.9 で止まることの確認は、pypdf を読み込まずに走る試験に分けて残した。
 
+### readiness_scan の媒体の判定を部品に移す
+
+- `scripts/readiness_scan.py` から、媒体の種類の判定（`media_kind`・`media_candidate`）・`.cmo3` の展開（`cmo3_contents_xml`）・履歴の媒体メタデータ検査（`_inspect_history_media`・`_metadata_media_names`）・コミット済み媒体の一覧（`changed_committed_media_entries`）を部品 `scripts/readiness_scan_media.py` に移した（ADR-0022）。部品は git を直接呼ばず、窓口が呼ぶたびに作る `GitPort` を引数で受け取る。`GitPort.run_subprocess` は、呼ばれた時点の窓口の `run_subprocess` へ転送するので、試験が窓口の名前を差し替えても部品の奥まで届く。兄弟ファイルの読み込み（`media_metadata.py`・`media_identity.py`・`caff_archive.py`）と、試験が差し替える `CMO3_MAX_XML_BYTES`・`_MEDIA_METADATA_DECODED_BUDGET_BYTES` は窓口に残り、呼ぶたびに部品へ渡す。呼ぶパス・引数・終了コード・出力の JSON は変わらない。部品が 1 つ増えるので、名義検査の合格控えは 1 回だけ全部外れる。
+
 ### readiness_scan の引数と対話入力を部品に移す
 
 - `scripts/readiness_scan.py` から、引数の定義・検査オプションの解決・対話入力・`ScanOptions` を部品 `scripts/readiness_scan_cli.py` に移した（ADR-0022）。部品は兄弟ファイルを読まないので、窓口の `build_parser`・`resolve_options`・`collect_interactive_options` が、`dialogue_gate` を読み込む関数と境界文を作る関数を渡す薄い関数として同じ名前・同じ引数で残る。呼ぶパス・引数・`--help` の出力・終了コード・出力の JSON は変わらない。部品が 1 つ増えるので、名義検査の合格控えは 1 回だけ全部外れる。

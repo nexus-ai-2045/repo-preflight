@@ -14,11 +14,9 @@ import importlib.util
 import json
 import os
 import re
-import struct
 import subprocess
 import tempfile
 import sys
-import zlib
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
@@ -108,6 +106,15 @@ prompt_from_stdin = _cli.prompt_from_stdin
 prompt_text = _cli.prompt_text
 prompt_choice = _cli.prompt_choice
 prompt_yes_no = _cli.prompt_yes_no
+
+_media = _part("readiness_scan_media")
+CMO3_SUFFIX = _media.CMO3_SUFFIX
+CMO3_ENTRY_NAME = _media.CMO3_ENTRY_NAME
+_CMO3_XOR_TABLE = _media._CMO3_XOR_TABLE
+_ZIP_LOCAL_HEADER = _media._ZIP_LOCAL_HEADER
+media_kind = _media.media_kind
+media_candidate = _media.media_candidate
+_metadata_media_names = _media._metadata_media_names
 
 REQUIRED = ("README.md", "LICENSE", "SECURITY.md", "CONTRIBUTING.md", "PREFLIGHT.md")
 # PREFLIGHT.md は一般的な語のため、deployment preflight 手順書のような無関係な
@@ -486,14 +493,8 @@ def personal_path_matches(data: bytes) -> Counter:
     return matches
 
 
-# Live2D Cubism の編集file (.cmo3) は XOR した zip entry に XML を deflate で
-# 入れている。生byteには個人pathが現れないので、展開した XML を判定する。
-# 形式は実物からの実測で、公開仕様ではない。
-CMO3_SUFFIX = ".cmo3"
-CMO3_ENTRY_NAME = b"contents"
+# .cmo3 の展開上限。試験が差し替えるので窓口に置き、呼ぶたびに部品へ渡す。
 CMO3_MAX_XML_BYTES = 64 * 1024 * 1024
-_CMO3_XOR_TABLE = bytes(value ^ 0xE3 for value in range(256))
-_ZIP_LOCAL_HEADER = re.compile(re.escape(b"PK\x03\x04"))
 
 # 親プロセスの GIT_DIR / GIT_WORK_TREE 等は、--repo で指した path と別の
 # repository へ判定対象を飛ばす。subdirectory を囲っている repo へ広げるのと
@@ -537,6 +538,19 @@ def run_subprocess(*args, **kwargs):
         else:
             kwargs["args"] = git_hardened_command(cmd)
     return subprocess.run(*call_args, **kwargs)
+
+
+class GitPort:
+    """部品が git を呼ぶための口。呼ばれた時点の窓口の run_subprocess へ転送する。
+
+    試験が窓口の run_subprocess を差し替えても、部品の奥まで届く。
+    """
+
+    PIPE = subprocess.PIPE
+
+    @staticmethod
+    def run_subprocess(*args, **kwargs):
+        return run_subprocess(*args, **kwargs)
 
 
 def run(repo: Path, *args: str) -> tuple[int, str]:
@@ -854,37 +868,6 @@ def normalized_personal_path_matches(data: bytes, normalizer=None) -> Counter:
             )
         matches |= raw + extra
     return matches
-
-
-def media_kind(data: bytes, source_names=()):
-    """Declared media and magic share one fail-closed dispatch in tree and blobs."""
-    declared = {Path(name).suffix.lower().lstrip(".") for name in source_names}
-    declared &= {"pdf", "mp3", "mp4"}
-    magic = None
-    if data.startswith(b"%PDF-"):
-        magic = "pdf"
-    elif data.startswith(b"ID3") or (
-        len(data) >= 4
-        and data[0] == 255
-        and data[1] & 224 == 224
-        and data[1] & 6 == 2  # MPEG Layer III, not an arbitrary FF/UTF-16 BOM.
-        and data[1] & 24 != 8  # reserved MPEG version
-        and data[2] & 12 != 12  # reserved sample rate
-        and data[2] >> 4 != 15  # reserved bitrate
-    ):
-        magic = "mp3"
-    elif len(data) >= 8 and data[4:8] == b"ftyp":
-        magic = "mp4"
-    if declared and (len(declared) != 1 or magic not in declared):
-        raise ValueError("private_identity_media_format_mismatch")
-    return magic or next(iter(declared), None)
-
-
-def media_candidate(data: bytes, source_names=()):
-    try:
-        return media_kind(data, source_names) is not None
-    except ValueError:
-        return True
 
 
 class PrivateIdentityScan:
@@ -1704,19 +1687,7 @@ _HISTORY_BATCH_BUDGET_BYTES = 16_000_000
 _MEDIA_METADATA_DECODED_BUDGET_BYTES = 16_000_000
 
 
-def _metadata_media_names(names) -> bool:
-    suffixes = {PurePosixPath(name).suffix.lower() for name in names}
-    return bool(suffixes) and (
-        suffixes <= {".mp4"} or suffixes <= {".png"} or suffixes <= {".jpg", ".jpeg"}
-    )
-
-
-def _inspect_history_media(repo, object_id, size, names, identity):
-    """非公開送信の明示policy。Git objectと検査済みmetadataを同じSHAへ結ぶ。"""
-    if size <= 0 or size > 64_000_000:
-        raise RuntimeError("media_metadata_size_limit")
-    if identity.report.get("provider_kind") != "bundled_canonical":
-        raise RuntimeError("media_metadata_provider_unverified")
+def _load_media_providers(identity):
     source = Path(__file__).resolve().with_name("media_metadata.py")
     source_bytes = source.read_bytes()
     module = types.ModuleType("_bundled_media_metadata")
@@ -1731,89 +1702,28 @@ def _inspect_history_media(repo, object_id, size, names, identity):
     media = types.ModuleType("_metadata_probe_runner")
     media.__file__ = str(media_source)
     exec(compile(media_bytes, str(media_source), "exec"), media.__dict__)
-    with tempfile.TemporaryDirectory(prefix="preflight-media-") as directory:
-        path = Path(directory) / ("asset" + PurePosixPath(names[0]).suffix.lower())
-        with path.open("xb") as target:
-            fetched = run_subprocess(
-                ["git", "cat-file", "blob", object_id],
-                cwd=repo,
-                stdout=target,
-                stderr=subprocess.PIPE,
-                timeout=60,
-            )
-        if fetched.returncode or path.stat().st_size != size:
-            raise RuntimeError("git_history_inventory_failed")
-        oid = hashlib.new(
-            "sha1" if len(object_id) == 40 else "sha256", usedforsecurity=False
-        )
-        oid.update(f"blob {size}\0".encode("ascii"))
-        sha = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                oid.update(chunk)
-                sha.update(chunk)
-        if oid.hexdigest() != object_id:
-            raise RuntimeError("git_history_inventory_failed")
-        result = module.inspect_media_metadata(
-            path,
-            tuple(names),
-            probe_runner=media._run,
-            xml_reader=media._pdf_xml_metadata,
-        )
-        if (
-            result["source_sha256"] != sha.hexdigest()
-            or type(result["size_bytes"]) is not int
-            or result["size_bytes"] != size
-            or result.get("payload_inspected") is not False
-        ):
-            raise RuntimeError("media_metadata_source_changed")
-    if source.read_bytes() != source_bytes or media_source.read_bytes() != media_bytes:
-        raise RuntimeError("media_metadata_provider_changed")
-    # Decode each raw item before joining: byte order/alignment must not depend
-    # on adjacent binary fields or the single-byte separator.
-    decoded_views = []
-    seen_views = set()
-    decoded_size = 0
-    raw_views = [
-        *result["metadata_views"],
-        result["head_sample"],
-        result["tail_sample"],
-    ]
-    for raw in raw_views:
-        candidates = [("utf-8", 0), ("latin-1", 0)]
-        candidates.extend(
-            (codec, offset) for codec in ("utf-16-le", "utf-16-be") for offset in (0, 1)
-        )
-        for codec, offset in candidates:
-            value = raw[offset:].decode(codec, "replace").encode("utf-8")
-            if value in seen_views:
-                continue
-            decoded_size += len(value) + 1
-            if decoded_size > _MEDIA_METADATA_DECODED_BUDGET_BYTES:
-                raise RuntimeError("media_metadata_decoded_limit")
-            seen_views.add(value)
-            decoded_views.append(value)
-    views = [b"\n".join(decoded_views)]
-    secret_found = path_found = False
-    for view in views:
-        secret_found |= bool(secret_matches(view))
-        path_found |= bool(personal_path_matches(view))
-        identity.check(b"media metadata\n" + view)
-        path_found |= identity.last_text_path_match
-    if identity.report.get("status") == "tool_error":
-        raise RuntimeError("media_metadata_callback_failed")
-    record = {
-        "git_object": object_id,
-        "source_sha256": sha.hexdigest(),
-        "size_bytes": size,
-        "kind": result["kind"],
-        "head_sample_bytes": len(result["head_sample"]),
-        "tail_sample_bytes": len(result["tail_sample"]),
-        "payload_inspected": False,
-        "inspector_sha256": hashlib.sha256(source_bytes).hexdigest(),
-    }
-    identity.report.setdefault("metadata_media_inspections", []).append(record)
-    return secret_found, path_found
+    return types.SimpleNamespace(
+        metadata=module,
+        metadata_bytes=source_bytes,
+        probe=media,
+        unchanged=lambda: source.read_bytes() == source_bytes
+        and media_source.read_bytes() == media_bytes,
+    )
+
+
+def _inspect_history_media(repo, object_id, size, names, identity):
+    return _media._inspect_history_media(
+        repo,
+        object_id,
+        size,
+        names,
+        identity,
+        git=GitPort(),
+        load_providers=_load_media_providers,
+        secret_matches=secret_matches,
+        personal_path_matches=personal_path_matches,
+        decoded_budget_bytes=_MEDIA_METADATA_DECODED_BUDGET_BYTES,
+    )
 
 
 def changed_committed_entries(repo: Path, revisions: tuple[str, ...]) -> list[tuple]:
@@ -1870,14 +1780,9 @@ def changed_committed_entries(repo: Path, revisions: tuple[str, ...]) -> list[tu
 def changed_committed_media_entries(
     repo: Path, revisions: tuple[str, ...]
 ) -> dict[str, str]:
-    return {
-        new_oid: name
-        for _, _, name, _, mode, _, new_oid in changed_committed_entries(
-            repo, revisions
-        )
-        if mode in {b"100644", b"100755"}
-        and PurePosixPath(name).suffix.lower() in {".pdf", ".mp3", ".mp4"}
-    }
+    return _media.changed_committed_media_entries(
+        changed_committed_entries(repo, revisions)
+    )
 
 
 def submission_text(data: bytes, names, opaque_suffixes=frozenset()) -> str | None:
@@ -2672,71 +2577,18 @@ def _bytes_pattern_hit(patterns: tuple[re.Pattern, ...], data: bytes) -> bool:
     return any(re.search(pattern.pattern.encode("ascii"), data) for pattern in patterns)
 
 
+def _load_caff_decoder():
+    import runpy
+
+    return runpy.run_path(str(Path(__file__).with_name("caff_archive.py")))
+
+
 def cmo3_contents_xml(data: bytes) -> bytes | None:
-    """Return the ``contents`` XML inside a .cmo3, or None if it cannot be read.
-
-    XOR-ing every byte with 0xE3 exposes a zip local file header.  Its flag
-    0x0808 leaves the header sizes at zero, so the raw deflate stream right
-    after the header is inflated until the stream itself ends, then checked
-    against the CRC-32 and size in the data descriptor that follows it (raw
-    deflate alone can decode damaged bytes into plausible garbage).  The header
-    offset is not fixed, so every signature is tried.  A truncated or corrupt
-    entry, or expanding past ``CMO3_MAX_XML_BYTES`` across all entries, makes
-    the whole file unreadable rather than partly clean.
-    """
-    if data[:14] == b"CAFF\0\0\0----\0\0\0":
-        # 実際のCAFFはヘッダにentry用キーを持つ。旧固定キーheuristicと混ぜない。
-        import runpy
-
-        try:
-            decoder = runpy.run_path(str(Path(__file__).with_name("caff_archive.py")))
-            documents = [
-                content
-                for entry, content in decoder["Archive"](data).contents()
-                if entry.tag == "main_xml"
-            ]
-            if len(documents) != 1 or len(documents[0]) > CMO3_MAX_XML_BYTES:
-                return None
-            return documents[0]
-        except Exception:
-            return None
-    plain = data.translate(_CMO3_XOR_TABLE)
-    documents: list[bytes] = []
-    for match in _ZIP_LOCAL_HEADER.finditer(plain):
-        offset = match.start()
-        if len(plain) < offset + 30:
-            continue
-        (method,) = struct.unpack_from("<H", plain, offset + 8)
-        name_length, extra_length = struct.unpack_from("<HH", plain, offset + 26)
-        name_start = offset + 30
-        if (
-            method != 8
-            or plain[name_start : name_start + name_length] != CMO3_ENTRY_NAME
-        ):
-            continue
-        # 上限は全entryの合計に効かせる (0 は zlib で「無制限」の意味になる)
-        remaining = CMO3_MAX_XML_BYTES - sum(map(len, documents))
-        if remaining <= 0:
-            return None
-        inflater = zlib.decompressobj(-15)
-        try:
-            document = inflater.decompress(
-                plain[name_start + name_length + extra_length :], remaining
-            )
-        except zlib.error:
-            return None
-        if not inflater.eof:
-            return None
-        descriptor = inflater.unused_data
-        if descriptor.startswith(b"PK\x07\x08"):
-            descriptor = descriptor[4:]
-        if len(descriptor) < 12:
-            return None
-        crc, _compressed_size, size = struct.unpack_from("<III", descriptor)
-        if crc != zlib.crc32(document) or size != len(document):
-            return None
-        documents.append(document)
-    return b"\n".join(documents) if documents else None
+    return _media.cmo3_contents_xml(
+        data,
+        max_xml_bytes=CMO3_MAX_XML_BYTES,
+        load_caff_decoder=_load_caff_decoder,
+    )
 
 
 def comparison_parent(repo: Path, base_ref: str, commit: str) -> str:

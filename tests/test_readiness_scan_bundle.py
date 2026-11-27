@@ -476,3 +476,49 @@ def test_interactive_menu_prints_the_boundary_text_of_the_facade(monkeypatch):
         parsed, stdin_is_tty=True, input_fn=lambda _: "", output_fn=lines.append
     )
     assert "boundary-marker" in lines
+
+
+MEDIA = MODULE._media
+
+
+def test_moved_media_names_are_republished_by_the_facade():
+    for name in (
+        "CMO3_SUFFIX",
+        "CMO3_ENTRY_NAME",
+        "_CMO3_XOR_TABLE",
+        "_ZIP_LOCAL_HEADER",
+        "media_kind",
+        "media_candidate",
+        "_metadata_media_names",
+    ):
+        assert getattr(MODULE, name) is getattr(MEDIA, name)
+
+
+def test_git_port_calls_the_run_subprocess_the_facade_has_now(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        MODULE, "run_subprocess", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    MODULE.GitPort().run_subprocess(["git", "status"], cwd="here")
+    assert calls == [((["git", "status"],), {"cwd": "here"})]
+
+
+def test_media_part_reaches_git_through_the_port(monkeypatch):
+    requested = []
+
+    def fake_run_subprocess(args, **kwargs):
+        requested.append(list(args))
+        return types.SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(MODULE, "run_subprocess", fake_run_subprocess)
+    identity = types.SimpleNamespace(
+        report={"provider_kind": "bundled_canonical", "media_adapter_sha256": None}
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_load_media_providers",
+        lambda _: types.SimpleNamespace(),
+    )
+    with pytest.raises(RuntimeError, match="git_history_inventory_failed"):
+        MODULE._inspect_history_media(Path("."), "0" * 40, 10, ("asset.png",), identity)
+    assert requested == [["git", "cat-file", "blob", "0" * 40]]
