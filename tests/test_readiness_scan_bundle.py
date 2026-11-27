@@ -423,3 +423,56 @@ def test_secret_rules_are_published_by_the_facade():
     part = MODULE._secrets
     for name in ("SECRET_PATTERNS", "SECRET_RULE_IDS", "_zip_exact", "secret_matches"):
         assert getattr(MODULE, name) is getattr(part, name)
+
+
+CLI = MODULE._cli
+
+
+def test_moved_cli_names_are_republished_by_the_facade():
+    for name in (
+        "DEFAULT_CONSISTENCY_BASE_REF",
+        "AUDIENCE_CHOICES",
+        "MODE_CHOICES",
+        "ScanOptions",
+        "valid_initial_private_scope",
+        "_emit",
+        "prompt_from_stdin",
+        "prompt_text",
+        "prompt_choice",
+        "prompt_yes_no",
+    ):
+        assert getattr(MODULE, name) is getattr(CLI, name)
+
+
+def test_default_input_function_is_the_moved_prompt():
+    for function in (
+        MODULE.main,
+        MODULE.resolve_options,
+        MODULE.collect_interactive_options,
+        CLI.resolve_options,
+        CLI.collect_interactive_options,
+    ):
+        assert function.__kwdefaults__["input_fn"] is CLI.prompt_from_stdin
+
+
+def test_cli_part_receives_the_gate_the_facade_loads(monkeypatch):
+    gate = types.SimpleNamespace(
+        INTENTS=("only_intent",), intent_needs_scan=lambda intent: False
+    )
+    monkeypatch.setattr(MODULE, "load_dialogue_gate", lambda: gate)
+    parsed = MODULE.build_parser().parse_args(["--intent", "only_intent"])
+    options = MODULE.resolve_options(parsed, stdin_is_tty=False)
+    assert (options.repo, options.intent) == (None, "only_intent")
+
+
+def test_interactive_menu_prints_the_boundary_text_of_the_facade(monkeypatch):
+    monkeypatch.setattr(MODULE, "format_boundary_text", lambda: "boundary-marker")
+    lines = []
+    MODULE.collect_interactive_options(input_fn=lambda _: "", output_fn=lines.append)
+    assert "boundary-marker" in lines
+    lines.clear()
+    parsed = MODULE.build_parser().parse_args(["--interactive"])
+    MODULE.resolve_options(
+        parsed, stdin_is_tty=True, input_fn=lambda _: "", output_fn=lines.append
+    )
+    assert "boundary-marker" in lines
