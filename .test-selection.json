@@ -280,6 +280,7 @@
         "scripts/readiness_scan_cli.py",
         "scripts/readiness_scan_leak_rules.py",
         "scripts/readiness_scan_media.py",
+        "scripts/readiness_scan_identity.py",
         "scripts/type1_identity.py"
       ],
       "tests": [

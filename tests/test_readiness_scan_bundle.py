@@ -522,3 +522,96 @@ def test_media_part_reaches_git_through_the_port(monkeypatch):
     with pytest.raises(RuntimeError, match="git_history_inventory_failed"):
         MODULE._inspect_history_media(Path("."), "0" * 40, 10, ("asset.png",), identity)
     assert requested == [["git", "cat-file", "blob", "0" * 40]]
+
+
+IDENTITY = MODULE._identity
+
+
+def test_moved_identity_names_are_republished_by_the_facade():
+    for name in (
+        "_is_coauthor_line",
+        "effective_identity",
+        "_guard_worktree_parent_components",
+        "IdentityScanCache",
+        "IDENTITY_SCAN_CACHE_VERSION",
+        "_IDENTITY_SCAN_CACHE_DISABLED",
+        "_IDENTITY_SCAN_CACHE_MAX_ENTRIES",
+        "_IDENTITY_SCAN_CACHE_MAX_BYTES",
+        "_HEX64",
+    ):
+        assert getattr(MODULE, name) is getattr(IDENTITY, name)
+    assert issubclass(MODULE.PrivateIdentityScan, IDENTITY.PrivateIdentityScan)
+
+
+def test_identity_port_calls_the_names_the_facade_has_now(monkeypatch):
+    port = MODULE.PrivateIdentityScan.port
+    monkeypatch.setattr(MODULE, "media_kind", lambda data, names=(): ("kind", data))
+    monkeypatch.setattr(MODULE, "media_candidate", lambda data, names=(): "candidate")
+    monkeypatch.setattr(MODULE, "secret_matches", lambda data: ("secret", data))
+    monkeypatch.setattr(MODULE, "text_has", lambda patterns, data: (patterns, data))
+    monkeypatch.setattr(MODULE, "SECRET_PATTERNS", "patterns")
+    monkeypatch.setattr(
+        MODULE, "diagnostic_evidence_label", lambda label, scan=None: "label"
+    )
+    assert port.media_kind(b"x") == ("kind", b"x")
+    assert port.media_candidate(b"x") == "candidate"
+    assert port.secret_matches(b"x") == ("secret", b"x")
+    assert port.secret_text_has(b"x") == ("patterns", b"x")
+    assert port.diagnostic_evidence_label("a") == "label"
+
+
+def test_patched_check_reaches_the_label_probe(monkeypatch, tmp_path):
+    monkeypatch.delenv("PUBLIC_IDENTITY_GUARD_SCRIPT", raising=False)
+    monkeypatch.delenv("PUBLIC_IDENTITY_DENYLIST", raising=False)
+    scan = MODULE.PrivateIdentityScan(tmp_path, False)
+    assert scan.report["status"] == "not_configured"
+    scan.checker = lambda *args: None
+    seen = []
+
+    def check(self, data, **kwargs):
+        seen.append(bytes(data))
+        self.findings += 1
+
+    monkeypatch.setattr(MODULE.PrivateIdentityScan, "check", check)
+    assert scan.label_status("probe.txt") == "private"
+    assert seen == [b"probe.txt"]
+
+
+def test_identity_lines_load_the_gate_only_for_coauthor_lines(monkeypatch):
+    def unavailable():
+        raise ImportError("identity_gate_unavailable")
+
+    monkeypatch.setattr(MODULE, "load_identity_gate", unavailable)
+    author = "A <a@example.invalid>|A <a@example.invalid>"
+    assert MODULE._identity_line_mismatch(author, "A <a@example.invalid>") is False
+    with pytest.raises(ImportError):
+        MODULE._identity_line_mismatch("A <a@example.invalid>", None)
+    with pytest.raises(ImportError):
+        MODULE._coauthor_line_blocked("A <a@example.invalid>")
+
+
+def test_cache_reads_the_environment_when_it_opens(monkeypatch, tmp_path):
+    scan = types.SimpleNamespace(checker=None, report={})
+    calls = []
+
+    def setting():
+        calls.append("setting")
+        return MODULE._identity_cache_setting()
+
+    monkeypatch.setenv(MODULE.IDENTITY_SCAN_CACHE_ENV, "off")
+    assert (
+        MODULE.IdentityScanCache.open(
+            tmp_path,
+            scan,
+            None,
+            "",
+            setting=setting,
+            cache_home=lambda: calls.append("home"),
+            scanner_sha256=lambda: calls.append("sha"),
+            distribution_version=lambda name: calls.append(name),
+        )
+        is None
+    )
+    assert calls == ["setting"]
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "late"))
+    assert MODULE._identity_cache_home() == str(tmp_path / "late")
