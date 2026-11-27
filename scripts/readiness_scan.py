@@ -15,7 +15,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, TextIO
+from typing import Callable, NamedTuple, TextIO
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 _BUNDLE_PART_PREFIX = "readiness_scan_"
@@ -1755,6 +1755,25 @@ def verify_private_submission(
     }
 
 
+class _ScanTarget(NamedTuple):
+    """git で確かめた走査の対象。_resolve_scan_target が作り、以後の段は書き換えない。"""
+
+    repo: Path
+    report_repo_label: str
+    history_roots: tuple[str, ...]
+    identity_base: tuple[str, str] | None
+    head: str
+    dirty: str
+    identities: str
+    historical_identities: str
+    resolved_base_ref: str | None
+    base_oid: str | None
+    consistency_base_ref: str | None
+    resolved_consistency_base_ref: str | None
+    consistency_base_oid: str | None
+    remote: str
+
+
 def scan(
     repo: Path,
     expected_identity: str | None = None,
@@ -1771,6 +1790,171 @@ def scan(
     allow_expected_private_commit_identity: bool = False,
     initial_private_save: str | None = None,
 ) -> dict:
+    scope_error = _scan_scope_error(
+        initial_private_save=initial_private_save,
+        base_ref=base_ref,
+        consistency_base_ref=consistency_base_ref,
+        identity_base_ref=identity_base_ref,
+        private_submission=private_submission,
+        release=release,
+        expected_identity=expected_identity,
+        allow_expected_private_commit_identity=allow_expected_private_commit_identity,
+        media_inspection=media_inspection,
+        reviewed_secret_exceptions=reviewed_secret_exceptions,
+    )
+    if scope_error is not None:
+        return scope_error
+    if initial_private_save is not None:
+        require_private_identity = True
+    target = _resolve_scan_target(
+        repo,
+        expected_identity=expected_identity,
+        release=release,
+        base_ref=base_ref,
+        private_submission=private_submission,
+        consistency_base_ref=consistency_base_ref,
+        identity_base_ref=identity_base_ref,
+        initial_private_save=initial_private_save,
+    )
+    if isinstance(target, dict):
+        return target
+    inputs = _load_scan_inputs(
+        target,
+        initial_private_save=initial_private_save,
+        private_submission=private_submission,
+        reviewed_secret_exceptions=reviewed_secret_exceptions,
+        allowed_identities=allowed_identities,
+    )
+    if isinstance(inputs, dict):
+        return inputs
+    (
+        initial_proof,
+        push_ref,
+        private_submission_proof,
+        reviewed_exceptions,
+        allowed_identity_set,
+    ) = inputs
+    missing, invalid_documents = _required_documents(target, base_ref=base_ref)
+    worktree = _scan_worktree(
+        target,
+        base_ref=base_ref,
+        private_submission=private_submission,
+        initial_private_save=initial_private_save,
+        require_private_identity=require_private_identity,
+        media_inspection=media_inspection,
+        push_ref=push_ref,
+        reviewed_exceptions=reviewed_exceptions,
+        reviewed_secret_exceptions=reviewed_secret_exceptions,
+    )
+    if isinstance(worktree, dict):
+        return worktree
+    (
+        private_identity,
+        credential_finding_count,
+        credential_locations,
+        path_hits,
+        unscanned_path_files,
+        private_worktree_enabled,
+        private_worktree_inventory_count,
+        private_worktree_scanned_count,
+        private_worktree_cache_reused,
+        private_worktree_symlinks_excluded,
+        private_worktree_sensitive_names,
+    ) = worktree
+    history = _scan_history(
+        target,
+        base_ref=base_ref,
+        private_submission=private_submission,
+        initial_private_save=initial_private_save,
+        expected_identity=expected_identity,
+        allow_expected_private_commit_identity=allow_expected_private_commit_identity,
+        private_identity=private_identity,
+        reviewed_exceptions=reviewed_exceptions,
+        credential_finding_count=credential_finding_count,
+        credential_locations=credential_locations,
+        path_hits=path_hits,
+    )
+    if isinstance(history, dict):
+        return history
+    (
+        credential_finding_count,
+        credential_locations,
+        path_hits,
+        identity_gate_report,
+    ) = history
+    checks = _collect_checks(
+        target,
+        base_ref=base_ref,
+        private_submission=private_submission,
+        initial_private_save=initial_private_save,
+        release=release,
+        expected_identity=expected_identity,
+        allowed_identity_set=allowed_identity_set,
+        initial_proof=initial_proof,
+        reviewed_exceptions=reviewed_exceptions,
+        missing=missing,
+        invalid_documents=invalid_documents,
+        private_identity=private_identity,
+        credential_finding_count=credential_finding_count,
+        credential_locations=credential_locations,
+        path_hits=path_hits,
+        unscanned_path_files=unscanned_path_files,
+        private_worktree_enabled=private_worktree_enabled,
+        private_worktree_inventory_count=private_worktree_inventory_count,
+        private_worktree_scanned_count=private_worktree_scanned_count,
+        private_worktree_cache_reused=private_worktree_cache_reused,
+        private_worktree_symlinks_excluded=private_worktree_symlinks_excluded,
+        private_worktree_sensitive_names=private_worktree_sensitive_names,
+        identity_gate_report=identity_gate_report,
+    )
+    report = _aggregate_report(
+        target,
+        checks,
+        base_ref=base_ref,
+        private_submission=private_submission,
+        release=release,
+        require_private_identity=require_private_identity,
+        allowed_identity_set=allowed_identity_set,
+        private_identity=private_identity,
+        private_submission_proof=private_submission_proof,
+    )
+    refs_error = _recheck_refs(
+        target,
+        report,
+        initial_private_save=initial_private_save,
+        initial_proof=initial_proof,
+        push_ref=push_ref,
+        private_submission=private_submission,
+    )
+    if refs_error is not None:
+        return refs_error
+    return sanitized_ref_report(
+        report,
+        (
+            base_ref,
+            target.resolved_base_ref,
+            target.consistency_base_ref,
+            target.resolved_consistency_base_ref,
+            identity_base_ref,
+            target.identity_base[0] if target.identity_base else None,
+        ),
+        private_identity,
+    )
+
+
+def _scan_scope_error(
+    *,
+    initial_private_save: str | None,
+    base_ref: str | None,
+    consistency_base_ref: str | None,
+    identity_base_ref: str | None,
+    private_submission: bool,
+    release: bool,
+    expected_identity: str | None,
+    allow_expected_private_commit_identity: bool,
+    media_inspection: str,
+    reviewed_secret_exceptions: Path | None,
+) -> dict | None:
     if initial_private_save is not None:
         if not valid_initial_private_scope(
             initial_private_save,
@@ -1784,7 +1968,6 @@ def scan(
                 "status": "tool_error",
                 "issues": ["invalid_initial_private_save_scope"],
             }
-        require_private_identity = True
     if allow_expected_private_commit_identity and (
         not private_submission or not base_ref or release or not expected_identity
     ):
@@ -1814,6 +1997,20 @@ def scan(
         not base_ref or release or consistency_base_ref or identity_base_ref
     ):
         return {"status": "tool_error", "issues": ["invalid_private_submission_scope"]}
+    return None
+
+
+def _resolve_scan_target(
+    repo: Path,
+    *,
+    expected_identity: str | None,
+    release: bool,
+    base_ref: str | None,
+    private_submission: bool,
+    consistency_base_ref: str | None,
+    identity_base_ref: str | None,
+    initial_private_save: str | None,
+) -> _ScanTarget | dict:
     repo = repo.resolve()
     root_error = repository_root_error(repo)
     if root_error is not None:
@@ -1956,24 +2153,54 @@ def scan(
         resolved_base_ref = symbolic_probe[1]
         base_oid = base_probe[1]
     _, remote = run(repo, "git", "remote", "get-url", "origin")
+    return _ScanTarget(
+        repo=repo,
+        report_repo_label=report_repo_label,
+        history_roots=history_roots,
+        identity_base=identity_base,
+        head=head,
+        dirty=dirty,
+        identities=identities,
+        historical_identities=probes.get("historical_identities", probes["identities"])[
+            1
+        ],
+        resolved_base_ref=resolved_base_ref,
+        base_oid=base_oid,
+        consistency_base_ref=consistency_base_ref,
+        resolved_consistency_base_ref=resolved_consistency_base_ref,
+        consistency_base_oid=consistency_base_oid,
+        remote=remote,
+    )
+
+
+def _load_scan_inputs(
+    target: _ScanTarget,
+    *,
+    initial_private_save: str | None,
+    private_submission: bool,
+    reviewed_secret_exceptions: Path | None,
+    allowed_identities: Path | None,
+) -> dict | tuple:
     initial_proof = None
     push_ref = None
     if initial_private_save:
-        push_ref = initial_save_branch(repo)
+        push_ref = initial_save_branch(target.repo)
         if push_ref is None:
             return {
                 "status": "tool_error",
                 "issues": ["initial_private_save_requires_current_branch"],
             }
         try:
-            initial_proof = verify_initial_private_save(repo, initial_private_save)
+            initial_proof = verify_initial_private_save(
+                target.repo, initial_private_save
+            )
         except RuntimeError as exc:
             return {"status": "tool_error", "issues": [str(exc)]}
     private_submission_proof = None
     if private_submission:
         try:
             private_submission_proof = verify_private_submission(
-                repo, remote, resolved_base_ref, base_oid
+                target.repo, target.remote, target.resolved_base_ref, target.base_oid
             )
         except RuntimeError as exc:
             return {"status": "tool_error", "issues": [str(exc)]}
@@ -1981,7 +2208,7 @@ def scan(
     if reviewed_secret_exceptions is not None:
         try:
             reviewed_exceptions = ReviewedSecretExceptions(
-                Path(reviewed_secret_exceptions), remote
+                Path(reviewed_secret_exceptions), target.remote
             )
         except RuntimeError:
             return {
@@ -1997,11 +2224,25 @@ def scan(
                 "status": "tool_error",
                 "issues": ["allowed_identities_invalid"],
             }
+    return (
+        initial_proof,
+        push_ref,
+        private_submission_proof,
+        reviewed_exceptions,
+        allowed_identity_set,
+    )
+
+
+def _required_documents(
+    target: _ScanTarget, *, base_ref: str | None
+) -> tuple[list[str], list[str]]:
     missing = (
-        [] if base_ref else [name for name in REQUIRED if not (repo / name).is_file()]
+        []
+        if base_ref
+        else [name for name in REQUIRED if not (target.repo / name).is_file()]
     )
     invalid_documents: list[str] = []
-    review_record = repo / REVIEW_RECORD
+    review_record = target.repo / REVIEW_RECORD
     if not base_ref and REVIEW_RECORD not in missing:
         try:
             record_text = review_record.read_text(encoding="utf-8")
@@ -2011,7 +2252,22 @@ def scan(
         else:
             if REVIEW_RECORD_MARKER not in record_text:
                 invalid_documents.append(REVIEW_RECORD)
-    private_identity = PrivateIdentityScan(repo, require_private_identity)
+    return missing, invalid_documents
+
+
+def _scan_worktree(
+    target: _ScanTarget,
+    *,
+    base_ref: str | None,
+    private_submission: bool,
+    initial_private_save: str | None,
+    require_private_identity: bool,
+    media_inspection: str,
+    push_ref: str | None,
+    reviewed_exceptions: ReviewedSecretExceptions | None,
+    reviewed_secret_exceptions: Path | None,
+) -> dict | tuple:
+    private_identity = PrivateIdentityScan(target.repo, require_private_identity)
     private_identity.media_inspection = media_inspection
     if media_inspection == "metadata":
         private_identity.report["media_inspection"] = "metadata_private_only"
@@ -2040,14 +2296,14 @@ def scan(
         if private_submission:
             paths, deleted_paths = [], set()
         elif base_ref:
-            paths, deleted_paths = changed_working_tree_files(repo, base_ref)
+            paths, deleted_paths = changed_working_tree_files(target.repo, base_ref)
         else:
-            paths = working_tree_files(repo)
-            deleted_paths = deleted_working_tree_files(repo)
+            paths = working_tree_files(target.repo)
+            deleted_paths = deleted_working_tree_files(target.repo)
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": report_repo_label,
+            "repo": target.report_repo_label,
             "issues": ["git_worktree_inventory_failed"],
         }
     # 明示private送信以外は個人識別子を作業treeの在庫全体で見る。
@@ -2065,10 +2321,10 @@ def scan(
     if private_worktree_enabled:
         try:
             if base_ref:
-                private_paths = working_tree_files(repo)
+                private_paths = working_tree_files(target.repo)
                 submission_rels = {
-                    path.relative_to(repo).as_posix()
-                    for path in submission_files(repo, paths)
+                    path.relative_to(target.repo).as_posix()
+                    for path in submission_files(target.repo, paths)
                 }
             else:
                 private_paths = paths
@@ -2076,7 +2332,7 @@ def scan(
         except RuntimeError:
             return {
                 "status": "tool_error",
-                "repo": report_repo_label,
+                "repo": target.report_repo_label,
                 "issues": ["git_worktree_inventory_failed"],
             }
         current_paths = []
@@ -2090,17 +2346,17 @@ def scan(
             current_paths.append(path)
         private_worktree_inventory_count = len(current_paths)
         identity_cache = IdentityScanCache.open(
-            repo,
+            target.repo,
             private_identity,
             reviewed_secret_exceptions,
-            remote,
+            target.remote,
             setting=_identity_cache_setting,
             cache_home=_identity_cache_home,
             scanner_sha256=_scanner_source_sha256,
             distribution_version=_optional_distribution_version,
         )
         for path in current_paths:
-            relative = path.relative_to(repo)
+            relative = path.relative_to(target.repo)
             rel = relative.as_posix()
             name_views = [rel]
             # filename metadataだけ最後のsuffixを外す。username文法は変更しない。
@@ -2132,7 +2388,7 @@ def scan(
             except OSError:
                 return {
                     "status": "tool_error",
-                    "repo": report_repo_label,
+                    "repo": target.report_repo_label,
                     "issues": [f"worktree_file_unreadable:{label}"],
                 }
             content_sha256 = None
@@ -2186,7 +2442,7 @@ def scan(
     for path in paths:
         if path in deleted_paths:
             continue
-        rel = path.relative_to(repo).as_posix()
+        rel = path.relative_to(target.repo).as_posix()
         label = sanitized_evidence_label(
             rel,
             private_name=(
@@ -2198,7 +2454,7 @@ def scan(
         if not path.is_file():
             return {
                 "status": "tool_error",
-                "repo": report_repo_label,
+                "repo": target.report_repo_label,
                 "issues": [f"worktree_file_unreadable:{label}"],
             }
         try:
@@ -2206,7 +2462,7 @@ def scan(
         except OSError:
             return {
                 "status": "tool_error",
-                "repo": report_repo_label,
+                "repo": target.report_repo_label,
                 "issues": [f"worktree_file_unreadable:{label}"],
             }
         if (
@@ -2238,9 +2494,40 @@ def scan(
                 or _bytes_pattern_hit(PATH_PATTERNS, xml)
             ):
                 path_hits.append(label)
+    return (
+        private_identity,
+        credential_finding_count,
+        credential_locations,
+        path_hits,
+        unscanned_path_files,
+        private_worktree_enabled,
+        private_worktree_inventory_count,
+        private_worktree_scanned_count,
+        private_worktree_cache_reused,
+        private_worktree_symlinks_excluded,
+        private_worktree_sensitive_names,
+    )
+
+
+def _scan_history(
+    target: _ScanTarget,
+    *,
+    base_ref: str | None,
+    private_submission: bool,
+    initial_private_save: str | None,
+    expected_identity: str | None,
+    allow_expected_private_commit_identity: bool,
+    private_identity: PrivateIdentityScan,
+    reviewed_exceptions: ReviewedSecretExceptions | None,
+    credential_finding_count: int,
+    credential_locations: list[str],
+    path_hits: list[str],
+) -> dict | tuple:
     identity_gate_report = None
     if allow_expected_private_commit_identity:
-        identity_gate_report = _identity_gate_result(repo, base_oid, head_ref=head)
+        identity_gate_report = _identity_gate_result(
+            target.repo, target.base_oid, head_ref=target.head
+        )
     approved_private_commit_identity = None
     if (
         allow_expected_private_commit_identity
@@ -2256,11 +2543,11 @@ def scan(
         )
     try:
         history_credential_findings, history_path_hits = history_hits(
-            repo,
+            target.repo,
             (
-                (f"{base_oid}..{head}",)
+                (f"{target.base_oid}..{target.head}",)
                 if private_submission
-                else (f"{base_ref}..HEAD",) if base_ref else history_roots
+                else (f"{base_ref}..HEAD",) if base_ref else target.history_roots
             ),
             reviewed_exceptions,
             private_identity if private_identity.checker is not None else None,
@@ -2285,7 +2572,7 @@ def scan(
     except RuntimeError:
         return {
             "status": "tool_error",
-            "repo": report_repo_label,
+            "repo": target.report_repo_label,
             "issues": ["git_history_inventory_failed"],
         }
     if private_submission:
@@ -2293,17 +2580,53 @@ def scan(
     elif base_ref:
         try:
             path_hits.extend(
-                target_diff_personal_path_hits(repo, base_ref, reviewed_exceptions)
+                target_diff_personal_path_hits(
+                    target.repo, base_ref, reviewed_exceptions
+                )
             )
         except RuntimeError:
             return {
                 "status": "tool_error",
-                "repo": report_repo_label,
+                "repo": target.report_repo_label,
                 "issues": ["git_target_diff_inventory_failed"],
             }
     else:
         path_hits.extend(history_path_hits)
-    identity_lines = {line for line in identities.splitlines() if line}
+    return (
+        credential_finding_count,
+        credential_locations,
+        path_hits,
+        identity_gate_report,
+    )
+
+
+def _collect_checks(
+    target: _ScanTarget,
+    *,
+    base_ref: str | None,
+    private_submission: bool,
+    initial_private_save: str | None,
+    release: bool,
+    expected_identity: str | None,
+    allowed_identity_set,
+    initial_proof: dict | None,
+    reviewed_exceptions: ReviewedSecretExceptions | None,
+    missing: list[str],
+    invalid_documents: list[str],
+    private_identity: PrivateIdentityScan,
+    credential_finding_count: int,
+    credential_locations: list[str],
+    path_hits: list[str],
+    unscanned_path_files: list[str],
+    private_worktree_enabled: bool,
+    private_worktree_inventory_count: int,
+    private_worktree_scanned_count: int,
+    private_worktree_cache_reused: int,
+    private_worktree_symlinks_excluded: int,
+    private_worktree_sensitive_names: set[str],
+    identity_gate_report: dict | None,
+) -> dict:
+    identity_lines = {line for line in target.identities.splitlines() if line}
     identity_mismatches = {
         line
         for line in identity_lines
@@ -2316,11 +2639,7 @@ def scan(
             if not _identity_line_allowed(allowed_identity_set, line)
         }
     historical_identity_lines = {
-        line
-        for line in probes.get("historical_identities", probes["identities"])[
-            1
-        ].splitlines()
-        if line
+        line for line in target.historical_identities.splitlines() if line
     }
     historical_identity_mismatches = {
         line
@@ -2333,8 +2652,8 @@ def scan(
     effective_mismatches: set[str] = set()
     if expected_identity:
         effective_probes = (
-            run(repo, "git", "var", "GIT_AUTHOR_IDENT"),
-            run(repo, "git", "var", "GIT_COMMITTER_IDENT"),
+            run(target.repo, "git", "var", "GIT_AUTHOR_IDENT"),
+            run(target.repo, "git", "var", "GIT_COMMITTER_IDENT"),
         )
         # probeは個別に評価する。片方が失敗しても、成功した側が示すmismatchは
         # 捨てない (失敗を理由にunknownへ丸めると既知の不一致が隠れる)
@@ -2353,8 +2672,8 @@ def scan(
         else:
             effective_status = "pass"
     workflows = sorted(
-        list((repo / ".github" / "workflows").glob("*.y*ml"))
-        if (repo / ".github" / "workflows").is_dir()
+        list((target.repo / ".github" / "workflows").glob("*.y*ml"))
+        if (target.repo / ".github" / "workflows").is_dir()
         else []
     )
     invalid_workflows: list[str] = []
@@ -2364,11 +2683,11 @@ def scan(
         except (OSError, UnicodeDecodeError):
             invalid_workflows.append(
                 sanitized_evidence_label(
-                    workflow.relative_to(repo).as_posix(),
+                    workflow.relative_to(target.repo).as_posix(),
                     private_name=(
                         private_submission
                         or initial_private_save is not None
-                        or workflow.relative_to(repo).as_posix()
+                        or workflow.relative_to(target.repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
                     ),
@@ -2378,18 +2697,18 @@ def scan(
         if not re.search(r"(?m)^jobs\s*:", workflow_text):
             invalid_workflows.append(
                 sanitized_evidence_label(
-                    workflow.relative_to(repo).as_posix(),
+                    workflow.relative_to(target.repo).as_posix(),
                     private_name=(
                         private_submission
                         or initial_private_save is not None
-                        or workflow.relative_to(repo).as_posix()
+                        or workflow.relative_to(target.repo).as_posix()
                         in private_worktree_sensitive_names
                         or private_identity.report.get("status") == "tool_error"
                     ),
                 )
             )
     dependency_files = sorted(
-        name for name in DEPENDENCY_FILES if (repo / name).is_file()
+        name for name in DEPENDENCY_FILES if (target.repo / name).is_file()
     )
     private_identity_report = private_identity.result()
     private_identity_report.update(
@@ -2437,7 +2756,7 @@ def scan(
             )
         ]
     checks = {
-        "clean_worktree": {"status": "pass" if not dirty else "fail"},
+        "clean_worktree": {"status": "pass" if not target.dirty else "fail"},
         "required_documents": {
             "status": (
                 "not_evaluated"
@@ -2472,18 +2791,21 @@ def scan(
             ),
         },
         "public_attribution": public_attribution_result(
-            repo, base_ref, allowed_identity_set, history_roots=history_roots
+            target.repo,
+            base_ref,
+            allowed_identity_set,
+            history_roots=target.history_roots,
         ),
         "private_identity_scan": private_identity_report,
         "identity_gate": (
             identity_gate_report
             if identity_gate_report is not None
             else _identity_gate_result(
-                repo,
+                target.repo,
                 base_ref,
-                identity_base[1] if identity_base is not None else None,
-                history_roots=history_roots,
-                head_ref=head,
+                target.identity_base[1] if target.identity_base is not None else None,
+                history_roots=target.history_roots,
+                head_ref=target.head,
             )
         ),
         "commit_identity": {
@@ -2507,11 +2829,11 @@ def scan(
             "effective_mismatch_count": len(effective_mismatches),
             "scope": (
                 "pending_commits"
-                if identity_base
+                if target.identity_base
                 else "target_diff" if base_ref else "repository_history"
             ),
-            "base_ref": identity_base[0] if identity_base else None,
-            "base_oid": identity_base[1] if identity_base else None,
+            "base_ref": target.identity_base[0] if target.identity_base else None,
+            "base_oid": target.identity_base[1] if target.identity_base else None,
         },
         "dependency_configuration": {
             "status": "pass" if dependency_files else "not_applicable",
@@ -2537,11 +2859,11 @@ def scan(
             "reason": "explicit_human_review_required",
         },
         "origin": {
-            "status": "pass" if remote else "unknown",
+            "status": "pass" if target.remote else "unknown",
             "url": (
                 "<private-origin>"
                 if private_submission or initial_private_save
-                else redact_remote(remote)
+                else redact_remote(target.remote)
             ),
         },
     }
@@ -2557,7 +2879,7 @@ def scan(
         ):
             for exception in checks[name].get(key, []):
                 exception["id"] = "<reviewed-exception>"
-    if identity_base:
+    if target.identity_base:
         checks["historical_identity_audit"] = {
             "status": "observed",
             "identity_count": len(historical_identity_lines),
@@ -2565,23 +2887,23 @@ def scan(
             "scope": "all_refs",
         }
     checks["repository_consistency"] = run_consistency_gate(
-        repo,
-        consistency_base_ref or base_ref,
+        target.repo,
+        target.consistency_base_ref or base_ref,
         **({"initial_private_save": True} if initial_proof else {}),
     )
     if release:
         release_baseline = (
-            (resolved_consistency_base_ref, consistency_base_oid)
-            if resolved_consistency_base_ref
-            and resolved_consistency_base_ref.startswith("refs/tags/")
-            and consistency_base_oid
+            (target.resolved_consistency_base_ref, target.consistency_base_oid)
+            if target.resolved_consistency_base_ref
+            and target.resolved_consistency_base_ref.startswith("refs/tags/")
+            and target.consistency_base_oid
             else None
         )
         checks["readme_release_freshness"] = check_release_readme_freshness(
-            repo, baseline=release_baseline
+            target.repo, baseline=release_baseline
         )
-        if (repo / "README.md").is_file():
-            readme_report = run_readme_release_gate(repo)
+        if (target.repo / "README.md").is_file():
+            readme_report = run_readme_release_gate(target.repo)
             checks["readme_release_design"] = {
                 "status": "pass" if readme_report["status"] == "pass" else "fail",
                 "design_status": readme_report["status"],
@@ -2606,6 +2928,21 @@ def scan(
                 "recommended_capabilities": ["Template Creator"],
                 "human_visual_review_required": True,
             }
+    return checks
+
+
+def _aggregate_report(
+    target: _ScanTarget,
+    checks: dict,
+    *,
+    base_ref: str | None,
+    private_submission: bool,
+    release: bool,
+    require_private_identity: bool,
+    allowed_identity_set,
+    private_identity: PrivateIdentityScan,
+    private_submission_proof: dict | None,
+) -> dict:
     gate = _report.gating(
         identity_gate=checks["identity_gate"],
         allowed_identities_configured=allowed_identity_set is not None,
@@ -2619,8 +2956,8 @@ def scan(
     report = {
         "status": _report.aggregate_status(checks, gate.names),
         "publication_decision": "blocked_human_review_required",
-        "repo": report_repo_label,
-        "head": head,
+        "repo": target.report_repo_label,
+        "head": target.head,
         "scan_scope": (
             {
                 "mode": (
@@ -2629,13 +2966,16 @@ def scan(
                     else "target_diff"
                 ),
                 **(
-                    {"private_submission": private_submission_proof, "head_oid": head}
+                    {
+                        "private_submission": private_submission_proof,
+                        "head_oid": target.head,
+                    }
                     if private_submission
                     else {}
                 ),
                 "base_ref": sanitized_evidence_label(base_ref),
-                "resolved_base_ref": sanitized_evidence_label(resolved_base_ref),
-                "base_oid": base_oid,
+                "resolved_base_ref": sanitized_evidence_label(target.resolved_base_ref),
+                "base_oid": target.base_oid,
             }
             if base_ref
             else {"mode": "repository"}
@@ -2643,31 +2983,46 @@ def scan(
         "consistency_scope": (
             {
                 "mode": "target_diff",
-                "base_ref": sanitized_evidence_label(consistency_base_ref),
+                "base_ref": sanitized_evidence_label(target.consistency_base_ref),
                 "resolved_base_ref": sanitized_evidence_label(
-                    resolved_consistency_base_ref
+                    target.resolved_consistency_base_ref
                 ),
-                "base_oid": consistency_base_oid,
+                "base_oid": target.consistency_base_oid,
             }
-            if consistency_base_ref
+            if target.consistency_base_ref
             else {"mode": "same_as_scan"}
         ),
         "checks": checks,
     }
+    return report
+
+
+def _recheck_refs(
+    target: _ScanTarget,
+    report: dict,
+    *,
+    initial_private_save: str | None,
+    initial_proof: dict | None,
+    push_ref: str | None,
+    private_submission: bool,
+) -> dict | None:
     if initial_proof:
         try:
-            if verify_initial_private_save(repo, initial_private_save) != initial_proof:
+            if (
+                verify_initial_private_save(target.repo, initial_private_save)
+                != initial_proof
+            ):
                 raise RuntimeError("initial_private_save_destination_changed")
         except RuntimeError as exc:
             return {"status": "tool_error", "issues": [str(exc)]}
         try:
-            current_roots = fixed_history_revisions(repo, ("--all",))
+            current_roots = fixed_history_revisions(target.repo, ("--all",))
         except RuntimeError:
             current_roots = ()
         if (
-            initial_save_branch(repo) != push_ref
-            or current_roots != history_roots
-            or run(repo, "git", "rev-parse", "HEAD") != (0, head)
+            initial_save_branch(target.repo) != push_ref
+            or current_roots != target.history_roots
+            or run(target.repo, "git", "rev-parse", "HEAD") != (0, target.head)
         ):
             return {
                 "status": "tool_error",
@@ -2677,29 +3032,19 @@ def scan(
             mode="initial_private_save",
             initial_private_save=initial_proof,
             destination_ref_sha256=hashlib.sha256(push_ref.encode("utf-8")).hexdigest(),
-            head_oid=head,
+            head_oid=target.head,
         )
         report["consistency_scope"] = {"mode": "initial_private_save"}
     if private_submission and (
-        run(repo, "git", "rev-parse", "HEAD") != (0, head)
-        or run(repo, "git", "rev-parse", resolved_base_ref) != (0, base_oid)
+        run(target.repo, "git", "rev-parse", "HEAD") != (0, target.head)
+        or run(target.repo, "git", "rev-parse", target.resolved_base_ref)
+        != (0, target.base_oid)
     ):
         return {
             "status": "tool_error",
             "issues": ["private_submission_local_refs_changed"],
         }
-    return sanitized_ref_report(
-        report,
-        (
-            base_ref,
-            resolved_base_ref,
-            consistency_base_ref,
-            resolved_consistency_base_ref,
-            identity_base_ref,
-            identity_base[0] if identity_base else None,
-        ),
-        private_identity,
-    )
+    return None
 
 
 def enrich_report(report: dict, options: ScanOptions) -> dict:

@@ -40,6 +40,10 @@
 - pypdf 7 で削除されたモジュール定数 `pypdf.filters.ZLIB_MAX_OUTPUT_LENGTH` の代わりに、`pypdf.overwrite_configuration(zlib_maximum_output_length=...)` で Flate 展開の上限を同じ値に設定する。
 - pypdf 7.0.0 は Python 3.10 以上を要するので、両方の依存に `python_version >= '3.10'` を付けた。Python 3.9 の PDF 検査はこれまでどおり dependency unavailable で止まる。3.9 では pypdf で合成 PDF を作るテストを飛ばす。3.9 で止まることの確認は、pypdf を読み込まずに走る試験に分けて残した。
 
+### readiness_scan の窓口 `scan()` を段の関数に分ける
+
+- `scripts/readiness_scan.py` の `scan()`（本体 929 行）を、9 つの段の関数（`_scan_scope_error`・`_resolve_scan_target`・`_load_scan_inputs`・`_required_documents`・`_scan_worktree`・`_scan_history`・`_collect_checks`・`_aggregate_report`・`_recheck_refs`）に分け、`scan()` の本体を段を順に呼ぶ 150 行にした（ADR-0022）。段の関数には元の文を同じ順番のまま移し、早期の return と `try` の範囲も変えていない。git で確かめた走査の対象は小さな型 `_ScanTarget` にまとめ、以後の段は書き換えない。段の関数は窓口に置くので、試験が差し替える窓口の名前は、段の中からも呼ぶ時点の値で読む。`scan()` の名前と引数、呼ぶパス・終了コード・出力の JSON は変わらない。窓口の中身が変わるので、名義検査の合格控えは 1 回だけ全部外れる。
+
 ### readiness_scan の履歴と差分の検査を部品に移す
 
 - `scripts/readiness_scan.py` から、履歴の検査（`history_hits`・`fixed_history_revisions`・`changed_committed_entries`・`verified_parent_blob`・`submission_text`・`private_commit_identity_view`）と差分の検査（`diff_added_lines_have`・`comparison_parent`・`target_diff_personal_path_hits`・`_decode_scannable_text`）を部品 `scripts/readiness_scan_history.py` に移した（ADR-0022）。部品は窓口の名前を、窓口が呼ぶたびに作る `HistoryPort` から読む。`HistoryPort` は `GitPort` を継ぎ、属性を読んだ時点の窓口の値（`run`・`fixed_history_revisions`・`text_has`・`SECRET_PATTERNS`・`_HISTORY_BATCH_BUDGET_BYTES` など）を返すので、試験が窓口の名前を差し替えても部品の奥まで届く。窓口には同じ引数の薄い関数が残る。呼ぶパス・引数・終了コード・出力の JSON は変わらない。部品が 1 つ増えるので、名義検査の合格控えは 1 回だけ全部外れる。
