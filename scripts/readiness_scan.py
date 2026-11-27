@@ -14,7 +14,6 @@ import json
 import os
 import re
 import subprocess
-import tempfile
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, TextIO
