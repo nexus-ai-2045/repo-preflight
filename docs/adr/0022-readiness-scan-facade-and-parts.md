@@ -41,6 +41,7 @@
 3. 1 と 2 が両方入ってから、部品を 1 つずつ移す。1 つにつき 1 つの変更依頼にする。
 4. 最初の部品として `scripts/readiness_scan_report.py` に、出力の約束の定数（`SCHEMA`・`GUARANTEES`・`NON_GUARANTEES`）、報告の整形（`enrich_report`・`format_human_report`・`sanitized_evidence_label`・`sanitized_ref_report` の本体など）、終了コード（`report_exit_code`・`dialogue_exit_code`）、`unexpected_exception_issue`、`scan()` の集計を純粋関数にした `gating`・`aggregate_status` を移した。差し替えられる名前と秘密情報の規則は窓口に残し、引数で渡す。
 5. 次の部品では、秘密情報の規則と検出件数の集計を `readiness_scan_leak_rules.py` に移す。窓口から既存名を引き続き使え、部品は全体の照合値に含まれる。個人パスとの組み合わせやレビュー済み例外の判定は窓口が担当する。
+6. 次の部品 `scripts/readiness_scan_cli.py` に、引数の定義（`build_parser`）・検査オプションの解決（`resolve_options`）・対話入力（`prompt_*`・`collect_interactive_options`）・`ScanOptions`・`AUDIENCE_CHOICES`・`MODE_CHOICES`・`valid_initial_private_scope`・`DEFAULT_CONSISTENCY_BASE_REF` を移した。部品は兄弟ファイルを読まないので、`dialogue_gate` の読み込みは窓口に残し、窓口の `build_parser`・`resolve_options`・`collect_interactive_options` が、`dialogue_gate` を読み込む関数と境界文を作る関数を部品の関数へ渡す。部品は、変更前と同じ枝でだけそれを呼ぶ。この 3 つの名前は試験が直接呼ぶので、同じ引数のまま窓口に置く。
 
 ## 残す課題
 
