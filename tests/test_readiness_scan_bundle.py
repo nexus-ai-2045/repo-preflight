@@ -615,3 +615,96 @@ def test_cache_reads_the_environment_when_it_opens(monkeypatch, tmp_path):
     assert calls == ["setting"]
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "late"))
     assert MODULE._identity_cache_home() == str(tmp_path / "late")
+
+
+def test_patched_revision_resolver_reaches_history(monkeypatch):
+    def resolver(repo, rev_args):
+        raise RuntimeError("resolver_probe")
+
+    monkeypatch.setattr(MODULE, "fixed_history_revisions", resolver)
+    with pytest.raises(RuntimeError, match="resolver_probe"):
+        MODULE.history_hits(Path("."))
+
+
+def test_parent_blob_reads_the_budget_and_git_the_facade_has_now(monkeypatch):
+    requested = []
+    monkeypatch.setattr(MODULE, "run", lambda repo, *args: (0, "10"))
+    monkeypatch.setattr(
+        MODULE,
+        "run_subprocess",
+        lambda args, **kwargs: requested.append(list(args))
+        or types.SimpleNamespace(returncode=1),
+    )
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 5)
+    assert MODULE.verified_parent_blob(Path("."), "0" * 40) is None
+    assert requested == []
+    monkeypatch.setattr(MODULE, "_HISTORY_BATCH_BUDGET_BYTES", 100)
+    with pytest.raises(RuntimeError, match="git_history_inventory_failed"):
+        MODULE.verified_parent_blob(Path("."), "0" * 40)
+    assert requested == [["git", "cat-file", "blob", "0" * 40]]
+
+
+def test_comparison_parent_reaches_git_through_the_facade(monkeypatch):
+    requested = []
+    monkeypatch.setattr(
+        MODULE,
+        "run_subprocess",
+        lambda args, **kwargs: requested.append(list(args))
+        or types.SimpleNamespace(returncode=1),
+    )
+    with pytest.raises(RuntimeError, match="git_target_diff_inventory_failed"):
+        MODULE.comparison_parent(Path("."), "base", "commit")
+    assert requested == [["git", "show", "-s", "--format=%P", "commit"]]
+
+
+def test_added_lines_use_the_text_rule_the_facade_has_now(monkeypatch):
+    monkeypatch.setattr(
+        MODULE,
+        "run_subprocess",
+        lambda args, **kwargs: types.SimpleNamespace(
+            returncode=0, stdout=b"@@ -0,0 +1 @@\n+probe\n"
+        ),
+    )
+    monkeypatch.setattr(MODULE, "text_has", lambda patterns, data: data == b"probe")
+    assert MODULE.diff_added_lines_have(Path("."), MODULE.PATH_PATTERNS, "HEAD")
+
+
+def test_commit_identity_view_loads_the_gate_the_facade_has_now(monkeypatch):
+    def unavailable():
+        raise ImportError("identity_gate_unavailable")
+
+    monkeypatch.setattr(MODULE, "load_identity_gate", unavailable)
+    with pytest.raises(ImportError):
+        MODULE.private_commit_identity_view(b"tree x\n\nbody", "A <a@example.invalid>")
+
+
+HISTORY = MODULE._history
+
+
+def test_moved_history_names_are_reached_through_the_facade():
+    assert MODULE._decode_scannable_text is HISTORY._decode_scannable_text
+    for name in (
+        "fixed_history_revisions",
+        "changed_committed_entries",
+        "submission_text",
+        "verified_parent_blob",
+        "private_commit_identity_view",
+        "history_hits",
+        "diff_added_lines_have",
+        "comparison_parent",
+        "target_diff_personal_path_hits",
+    ):
+        assert callable(getattr(HISTORY, name))
+        assert getattr(MODULE, name) is not getattr(HISTORY, name)
+
+
+def test_history_port_reads_the_names_the_facade_has_now(monkeypatch):
+    port = MODULE.HistoryPort()
+    for name in MODULE.HistoryPort._NAMES:
+        marker = object()
+        monkeypatch.setattr(MODULE, name, marker)
+        assert getattr(port, name) is marker
+    with pytest.raises(AttributeError):
+        port.scan
+    assert port.SubprocessError is MODULE.subprocess.SubprocessError
+    assert isinstance(port, MODULE.GitPort)
