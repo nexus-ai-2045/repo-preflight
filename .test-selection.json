@@ -281,6 +281,7 @@
         "scripts/readiness_scan_leak_rules.py",
         "scripts/readiness_scan_media.py",
         "scripts/readiness_scan_identity.py",
+        "scripts/readiness_scan_history.py",
         "scripts/type1_identity.py"
       ],
       "tests": [
